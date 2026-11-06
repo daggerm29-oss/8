@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { ToolRegistry, type Tool } from './registry.ts';
+import { codeSearch, findSymbol } from './index-tools.ts';
 
 const SKIP_DIRS = new Set(['node_modules', '.git', '.next', 'dist', 'build', '__pycache__', '.venv', 'target']);
 
@@ -140,8 +141,36 @@ const runShell: Tool = {
   },
 };
 
+/** Plan Mode output (F-AGT-2, §9.4). Only offered under the `plan` profile. */
+export const submitPlan: Tool = {
+  spec: {
+    name: 'submit_plan',
+    description: 'Submit the final implementation plan (Plan Mode). Call exactly once when the plan is complete. Cite concrete files found with find_symbol/code_search/read_file.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        goal: { type: 'string' },
+        assumptions: { type: 'array', items: { type: 'string' } },
+        affectedFiles: { type: 'array', items: { type: 'object', properties: { path: { type: 'string' }, reason: { type: 'string' }, evidence: { type: 'string', description: 'symbol/line/import that proves relevance' } }, required: ['path', 'reason'] } },
+        steps: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, description: { type: 'string' }, writeSet: { type: 'array', items: { type: 'string' } }, dependsOn: { type: 'array', items: { type: 'string' } } }, required: ['id', 'description'] } },
+        risks: { type: 'array', items: { type: 'string' } },
+        verification: { type: 'array', items: { type: 'string' } },
+        openQuestions: { type: 'array', items: { type: 'string' } },
+      },
+      required: ['goal', 'affectedFiles', 'steps', 'verification'],
+    },
+  },
+  async run(args, { submitArtifact, sandbox }) {
+    if (!submitArtifact) return { content: 'submit_plan is only available in Plan Mode', isError: true };
+    const files = (args.affectedFiles as Array<{ path: string }>) ?? [];
+    const missing = files.filter((f) => { try { sandbox.resolvePath(f.path); return !existsSync(sandbox.resolvePath(f.path)); } catch { return true; } }).map((f) => f.path);
+    const id = submitArtifact('plan', String(args.goal).slice(0, 120), { ...args, unverifiedPaths: missing });
+    return { content: `plan saved as ${id}${missing.length ? `; note: these paths do not exist yet (new files?): ${missing.join(', ')}` : ''}. Now reply with a one-paragraph summary and stop.`, summary: `plan ${id}: ${(args.steps as unknown[]).length} steps` };
+  },
+};
+
 export function builtinTools(): ToolRegistry {
   const reg = new ToolRegistry();
-  for (const t of [readFile, listDir, search, writeFile, editFile, runShell]) reg.register(t);
+  for (const t of [readFile, listDir, search, findSymbol, codeSearch, writeFile, editFile, runShell, submitPlan]) reg.register(t);
   return reg;
 }

@@ -176,6 +176,20 @@ Statuses: Not Started / In Progress / Implemented / Tested / Verified / Blocked 
 | gateway + ledger | Ledger reconciliation vs provider-reported usage, retries, breaker, budgets, vault | Test passed (7/7) | `packages/engine/test/models.test.ts` |
 | typecheck | all Helix packages | Test passed | `tsc -p tsconfig.helix.json` |
 
+## Session 4 (M1 start) — live plan
+
+Branch: `helix/m1-core` on github.com/daggerm29-oss/8 (repo moved from /7). Baseline re-verified: engine 29/29, CLI 2/2, tsc clean. `GEMINI_API` is set in project env.
+Order (tick when done; next session resumes at the first unticked item):
+- [x] S4-1 F-TRM-2 diagnostic parsers (`packages/engine/src/diagnostics/parsers.ts`): tsc, node:test/TAP, pytest+unittest, eslint, go, generic path:line:col + Python traceback → `Diagnostic[]`; verify retry prompt now = structured diagnostics + 40-line tail (§9.5); `verify.result` event carries diagnostics.
+- [x] S4-2 F-CTX-3 project instructions (`context/instructions.ts`): `$HELIX_HOME/HELIX.md` → root `AGENTS.md`/`HELIX.md` → nested; 12k-char budget with truncation warning.
+- [x] S4-3 F-IDX-1/F-IDX-4 v0 (`index/extract.ts`, `index/index.ts`, migration v2): heuristic extractor (TS/JS/Py/Go/Rust/Java/MD), FTS5 BM25 chunks (symbol-aligned + 60-line windows, camelCase term splitting), SHA-256 incremental reindex, import edges + covering tests, RRF(k=60) over bm25/symbol/path; tools `find_symbol`, `code_search`; RPC `index.update|search|symbols`; CLI `helix search|symbols`.
+- [x] S4-4 F-CTX-1 v0 (`context/assembler.ts`): quotas instructions 30% / repo map 25% / slices 45% with carry-over, default 6000 tokens, persisted as `context` artifact (stable prefix across restarts), `context.composed` event.
+- [x] S4-5 F-GIT-2 checkpoint list/restore (`runtime.checkpoints/restore`, atomic temp+rename, pre-restore content saved in `checkpoint_restores` so restore is undoable; RPC `checkpoint.list|restore`; CLI `helix checkpoints|restore`).
+- [x] S4-6 F-AGT-2 Plan Mode: `plan` profile exposes only read tools + `submit_plan`; plan artifact (§9.4 schema + `unverifiedPaths`), up to 2 nudges if not submitted; CLI `--plan` and `helix plan <task>`.
+- [x] S4-7a Offline tests: `packages/engine/test/m1.test.ts` 8/8; engine total 37/37; CLI 2/2; conformance 12/12 (+2 live skipped); tsc clean.
+- [ ] S4-7b Live Gemini M1 eval (fixtures, with index/context on) → `evals/results/m1-*.json`; then commit + push.
+- [ ] S4-8 (stretch) F-SBX-2 mount-namespace containment (ISSUE-004).
+
 ## Next Actions
 
 M0 is complete. Resume here for **M1 — Core MVP** (read plan.md §12 M1 and architecture.md before starting):

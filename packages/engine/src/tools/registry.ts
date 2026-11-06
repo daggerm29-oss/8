@@ -1,9 +1,13 @@
 import type { JsonSchema, ToolSpec } from '@helix/protocol';
 import type { LocalSandbox } from '../sandbox/sandbox.ts';
+import type { WorkspaceIndex } from '../index/index.ts';
 
 export interface ToolContext {
   sandbox: LocalSandbox;
   signal: AbortSignal;
+  index?: WorkspaceIndex;
+  /** Persist a task artifact (plan, report); returns the artifact id (§5.6). */
+  submitArtifact?: (kind: string, title: string, data: unknown) => string;
   /** Called with the previous content (null = new file) before any write, for checkpoints (§20.3). */
   beforeWrite?: (absPath: string, previous: string | null) => void;
 }

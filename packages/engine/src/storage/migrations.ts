@@ -58,4 +58,21 @@ export const MIGRATIONS: string[] = [
   CREATE TABLE blob_refs (hash TEXT NOT NULL, owner_kind TEXT NOT NULL, owner_id TEXT NOT NULL, PRIMARY KEY (hash, owner_kind, owner_id));
   CREATE TABLE sandboxes (id TEXT PRIMARY KEY, provider TEXT NOT NULL, ws TEXT NOT NULL, owner_engine TEXT NOT NULL, state TEXT NOT NULL, created_at TEXT NOT NULL, destroyed_at TEXT, labels_json TEXT NOT NULL);
   `,
+  /* v2: M1 index v0 (§11.3), artifacts (§5.6), checkpoint restores (§20.3) */ `
+  CREATE TABLE idx_files (ws TEXT NOT NULL, path TEXT NOT NULL, hash TEXT NOT NULL, lang TEXT NOT NULL, size INTEGER NOT NULL, lines INTEGER NOT NULL, is_test INTEGER NOT NULL, indexed_at TEXT NOT NULL, PRIMARY KEY (ws, path));
+  CREATE TABLE idx_symbols (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, ws TEXT NOT NULL, path TEXT NOT NULL, kind TEXT NOT NULL, name TEXT NOT NULL,
+    qualified_name TEXT NOT NULL, line INTEGER NOT NULL, end_line INTEGER NOT NULL, signature TEXT NOT NULL, exported INTEGER NOT NULL
+  );
+  CREATE INDEX idx_symbols_name ON idx_symbols(ws, name);
+  CREATE INDEX idx_symbols_path ON idx_symbols(ws, path);
+  CREATE TABLE idx_imports (ws TEXT NOT NULL, path TEXT NOT NULL, spec TEXT NOT NULL, resolved TEXT);
+  CREATE INDEX idx_imports_path ON idx_imports(ws, path);
+  CREATE INDEX idx_imports_resolved ON idx_imports(ws, resolved);
+  CREATE VIRTUAL TABLE idx_chunks USING fts5(ws UNINDEXED, path UNINDEXED, start_line UNINDEXED, end_line UNINDEXED, symbol, terms, body, tokenize = 'unicode61');
+  CREATE TABLE idx_generation (ws TEXT PRIMARY KEY, gen INTEGER NOT NULL);
+  CREATE TABLE artifacts (id TEXT PRIMARY KEY, task TEXT NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL, data_json TEXT NOT NULL, at TEXT NOT NULL);
+  CREATE INDEX artifacts_task ON artifacts(task);
+  CREATE TABLE checkpoint_restores (id TEXT PRIMARY KEY, task TEXT NOT NULL, target TEXT NOT NULL, files_json TEXT NOT NULL, at TEXT NOT NULL);
+  `,
 ];
