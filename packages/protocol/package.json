@@ -1,0 +1,10 @@
+{
+  "name": "@helix/protocol",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Helix Engine JSON-RPC 2.0 protocol: types, framing, and peer (architecture.md §22, §23).",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}

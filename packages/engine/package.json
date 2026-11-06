@@ -1,0 +1,26 @@
+{
+  "name": "@helix/engine",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Helix Engine: modular monolith (architecture.md §6.2).",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "bin": {
+    "helix-engine": "./src/main.ts"
+  },
+  "scripts": {
+    "test": "node --disable-warning=ExperimentalWarning --test --test-concurrency=1 \"test/**/*.test.ts\""
+  },
+  "dependencies": {
+    "@helix/protocol": "workspace:*",
+    "@helix/provider-gemini": "workspace:*",
+    "@helix/provider-openai": "workspace:*",
+    "ws": "^8.22.1"
+  },
+  "devDependencies": {
+    "@helix/provider-conformance": "workspace:*",
+    "@types/ws": "^8.18.2"
+  }
+}

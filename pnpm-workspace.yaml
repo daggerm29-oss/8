@@ -1,0 +1,11 @@
+packages:
+  - "packages/*"
+  - "packages/providers/*"
+  - "packages/sandbox-providers/*"
+  - "apps/*"
+
+pmOnFail: ignore
+
+minimumReleaseAgeExclude:
+  - '@next/*'
+  - next

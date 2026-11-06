@@ -1,0 +1,194 @@
+import {
+  ProviderError,
+  estimateTokens,
+  emptyUsage,
+  type FinishReason,
+  type Message,
+  type ModelManifest,
+  type ModelRequest,
+  type ProviderAdapter,
+  type StreamEvent,
+  type Usage,
+} from '@helix/protocol';
+import type { Vault } from '../vault/vault.ts';
+import type { Tracer } from '../obs/tracing.ts';
+import type { Logger } from '../util/log.ts';
+import { costOf, type Ledger, type ModelRole } from './ledger.ts';
+
+export class BudgetExceededError extends Error {
+  readonly reason: string;
+  constructor(reason: string) {
+    super(reason);
+    this.name = 'BudgetExceededError';
+    this.reason = reason;
+  }
+}
+
+export interface GatewayCall {
+  provider: string;
+  model: string;
+  role: ModelRole;
+  request: Omit<ModelRequest, 'model'>;
+  ws?: string;
+  task?: string;
+  agent?: string;
+  step?: string;
+  signal?: AbortSignal;
+  onEvent?: (e: StreamEvent) => void;
+  contextBreakdown?: Record<string, number>;
+  toolTokens?: Record<string, number>;
+}
+
+export interface GatewayResult {
+  message: Message;
+  usage: Usage;
+  finishReason: FinishReason;
+  responseId?: string;
+  ledgerEntryId: string;
+  costUsd: number | null;
+  attempts: number;
+  latencyMs: number;
+}
+
+interface BreakerState {
+  consecutiveFailures: number;
+  openedAt: number | null;
+}
+
+export interface GatewayOptions {
+  adapters: ProviderAdapter[];
+  vault: Vault;
+  ledger: Ledger;
+  tracer: Tracer;
+  logger?: Logger;
+  retry?: { maxRetries?: number; baseDelayMs?: number; maxDelayMs?: number };
+  breaker?: { threshold?: number; cooldownMs?: number };
+}
+
+/**
+ * Model Gateway (§7, §27.1): budget pre-check → circuit breaker → stream → jittered retry (≤ 2) on
+ * transient/rate-limit errors → ledger entry per attempt → OTel span. Multi-provider fallback chains and
+ * the router are M2 (F-MDL-5).
+ */
+export class ModelGateway {
+  private readonly adapters = new Map<string, ProviderAdapter>();
+  private readonly vault: Vault;
+  private readonly ledger: Ledger;
+  private readonly tracer: Tracer;
+  private readonly logger?: Logger;
+  private readonly maxRetries: number;
+  private readonly baseDelayMs: number;
+  private readonly maxDelayMs: number;
+  private readonly breakerThreshold: number;
+  private readonly breakerCooldownMs: number;
+  private readonly breakers = new Map<string, BreakerState>();
+  private readonly liveManifests = new Map<string, ModelManifest>();
+
+  constructor(opts: GatewayOptions) {
+    for (const a of opts.adapters) this.adapters.set(a.id, a);
+    this.vault = opts.vault;
+    this.ledger = opts.ledger;
+    this.tracer = opts.tracer;
+    this.logger = opts.logger;
+    this.maxRetries = opts.retry?.maxRetries ?? 2;
+    this.baseDelayMs = opts.retry?.baseDelayMs ?? 500;
+    this.maxDelayMs = opts.retry?.maxDelayMs ?? 20_000;
+    this.breakerThreshold = opts.breaker?.threshold ?? 5;
+    this.breakerCooldownMs = opts.breaker?.cooldownMs ?? 30_000;
+  }
+
+  adapter(id: string): ProviderAdapter {
+    const a = this.adapters.get(id);
+    if (!a) throw new ProviderError(id, 'invalid_request', `unknown provider '${id}' (available: ${[...this.adapters.keys()].join(', ')})`);
+    return a;
+  }
+
+  providers(): Array<{ id: string; configured: boolean; defaultModel: string }> {
+    return [...this.adapters.values()].map((a) => ({ id: a.id, configured: this.vault.isConfigured(a.id), defaultModel: a.defaultModel }));
+  }
+
+  defaultProvider(): string {
+    const configured = this.providers().find((p) => p.configured);
+    return configured?.id ?? [...this.adapters.keys()][0];
+  }
+
+  manifest(provider: string, model: string): ModelManifest | undefined {
+    return this.liveManifests.get(`${provider}:${model}`) ?? this.adapter(provider).bundledModels().find((m) => m.id === model);
+  }
+
+  async listModels(provider: string): Promise<ModelManifest[]> {
+    const models = await this.adapter(provider).listModels(this.vault.providerAuth(provider));
+    for (const m of models) this.liveManifests.set(`${provider}:${m.id}`, m);
+    return models;
+  }
+
+  private breaker(key: string): BreakerState {
+    let b = this.breakers.get(key);
+    if (!b) {
+      b = { consecutiveFailures: 0, openedAt: null };
+      this.breakers.set(key, b);
+    }
+    return b;
+  }
+
+  private backoff(attempt: number, retryAfterMs?: number): number {
+    if (retryAfterMs !== undefined) return Math.min(retryAfterMs, this.maxDelayMs);
+    const exp = this.baseDelayMs * 2 ** attempt;
+    return Math.min(this.maxDelayMs, Math.round(exp / 2 + Math.random() * (exp / 2)));
+  }
+
+  async call(c: GatewayCall): Promise<GatewayResult> {
+    const adapter = this.adapter(c.provider);
+    const auth = this.vault.providerAuth(c.provider);
+    const req: ModelRequest = { ...c.request, model: c.model };
+    const manifest = this.manifest(c.provider, c.model);
+    const estInput = estimateTokens(req);
+    const estOutput = Math.min(req.maxOutputTokens ?? 4096, 4096);
+    const decision = this.ledger.check({ task: c.task, ws: c.ws, estimateUsd: costOf(manifest?.pricing, { inputTokens: estInput, cachedInputTokens: 0, outputTokens: estOutput }), estimateTokens: estInput + estOutput });
+    if (decision.decision === 'deny') throw new BudgetExceededError(decision.reason ?? 'budget exceeded');
+
+    const key = `${c.provider}:${c.model}`;
+    const breaker = this.breaker(key);
+    let attempt = 0;
+    while (true) {
+      if (breaker.openedAt !== null) {
+        if (Date.now() - breaker.openedAt < this.breakerCooldownMs) {
+          throw new ProviderError(c.provider, 'transient', `circuit open for ${key} after ${breaker.consecutiveFailures} consecutive failures`);
+        }
+        breaker.openedAt = null; // half-open: allow one probe
+      }
+      const started = performance.now();
+      try {
+        const result = await this.tracer.withSpan('model.call', { provider: c.provider, model: c.model, role: c.role, attempt, 'task.id': c.task ?? '', 'step.id': c.step ?? '' }, async (span) => {
+          let final: Extract<StreamEvent, { type: 'done' }> | undefined;
+          for await (const e of adapter.stream(req, auth, c.signal ?? new AbortController().signal)) {
+            if (e.type === 'done') final = e;
+            else c.onEvent?.(e);
+          }
+          if (!final) throw new ProviderError(c.provider, 'transient', 'stream ended without a final event');
+          span.setAttributes({ 'usage.input_tokens': final.usage.inputTokens, 'usage.cached_input_tokens': final.usage.cachedInputTokens, 'usage.output_tokens': final.usage.outputTokens, 'usage.source': final.usage.source, finish_reason: final.finishReason });
+          return final;
+        });
+        const latencyMs = performance.now() - started;
+        const entry = this.ledger.record({
+          ws: c.ws, task: c.task, agent: c.agent, step: c.step, role: c.role, provider: c.provider, model: c.model, usage: result.usage, latencyMs,
+          status: 'ok', providerResponseId: result.responseId, contextBreakdown: c.contextBreakdown, toolTokens: c.toolTokens,
+        }, manifest?.pricing);
+        breaker.consecutiveFailures = 0;
+        return { message: result.message, usage: result.usage, finishReason: result.finishReason, responseId: result.responseId, ledgerEntryId: entry.id, costUsd: entry.costUsd, attempts: attempt + 1, latencyMs };
+      } catch (error) {
+        const e = adapter.normalizeError(error);
+        const latencyMs = performance.now() - started;
+        this.ledger.record({ ws: c.ws, task: c.task, agent: c.agent, step: c.step, role: c.role, provider: c.provider, model: c.model, usage: emptyUsage('estimate'), latencyMs, status: e.kind === 'cancelled' ? 'cancelled' : 'error', error: `${e.kind}: ${e.message}` }, manifest?.pricing);
+        if (e.kind === 'cancelled') throw e;
+        breaker.consecutiveFailures++;
+        if (breaker.consecutiveFailures >= this.breakerThreshold) breaker.openedAt = Date.now();
+        if (!e.retryable || attempt >= this.maxRetries) throw e;
+        const delay = this.backoff(attempt, e.retryAfterMs);
+        this.logger?.warn('model call failed; retrying', { provider: c.provider, model: c.model, kind: e.kind, attempt, delayMs: delay });
+        await new Promise((r) => setTimeout(r, delay));
+        attempt++;
+      }
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "name": "@helix/provider-gemini",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Gemini ProviderAdapter + bundled manifest overlay (architecture.md §7.3).",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@helix/protocol": "workspace:*"
+  }
+}

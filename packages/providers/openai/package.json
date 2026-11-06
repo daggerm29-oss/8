@@ -1,0 +1,13 @@
+{
+  "name": "@helix/provider-openai",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "OpenAI ProviderAdapter (Responses API, API-key mode) + bundled manifest overlay (architecture.md §7.4).",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@helix/protocol": "workspace:*"
+  }
+}

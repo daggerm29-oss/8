@@ -1,0 +1,147 @@
+import { spawn } from 'node:child_process';
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { ToolRegistry, type Tool } from './registry.ts';
+
+const SKIP_DIRS = new Set(['node_modules', '.git', '.next', 'dist', 'build', '__pycache__', '.venv', 'target']);
+
+const readFile: Tool = {
+  spec: {
+    name: 'read_file',
+    description: 'Read a UTF-8 text file in the workspace. Returns numbered lines. Use startLine/endLine (1-based, inclusive) for large files.',
+    inputSchema: { type: 'object', properties: { path: { type: 'string', description: 'Path relative to the workspace root' }, startLine: { type: 'integer', minimum: 1 }, endLine: { type: 'integer', minimum: 1 } }, required: ['path'] },
+  },
+  async run(args, { sandbox }) {
+    const abs = sandbox.resolvePath(String(args.path));
+    if (!existsSync(abs)) return { content: `file not found: ${args.path}`, isError: true };
+    if (statSync(abs).isDirectory()) return { content: `${args.path} is a directory; use list_dir`, isError: true };
+    const lines = readFileSync(abs, 'utf8').split('\n');
+    const start = Math.max(1, Number(args.startLine ?? 1));
+    const end = Math.min(lines.length, Number(args.endLine ?? lines.length));
+    const body = lines.slice(start - 1, end).map((l, i) => `${String(start + i).padStart(5)}  ${l}`).join('\n');
+    return { content: `${sandbox.relative(abs)} (lines ${start}-${end} of ${lines.length})\n${body}`, summary: `read ${sandbox.relative(abs)}` };
+  },
+};
+
+const listDir: Tool = {
+  spec: {
+    name: 'list_dir',
+    description: 'List files and directories (skips node_modules, .git, build output). Directories end with /.',
+    inputSchema: { type: 'object', properties: { path: { type: 'string' }, depth: { type: 'integer', minimum: 1, maximum: 5 } } },
+  },
+  async run(args, { sandbox }) {
+    const root = sandbox.resolvePath(String(args.path ?? '.'));
+    const depth = Number(args.depth ?? 2);
+    const out: string[] = [];
+    const walk = (dir: string, level: number) => {
+      if (out.length > 500) return;
+      for (const e of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+        if (SKIP_DIRS.has(e.name)) continue;
+        const p = join(dir, e.name);
+        out.push(`${'  '.repeat(level)}${e.name}${e.isDirectory() ? '/' : ''}`);
+        if (e.isDirectory() && level + 1 < depth) walk(p, level + 1);
+      }
+    };
+    walk(root, 0);
+    return { content: out.join('\n') || '(empty)', summary: `listed ${sandbox.relative(root)}` };
+  },
+};
+
+const search: Tool = {
+  spec: {
+    name: 'search',
+    description: 'Exact (fixed-string) search across workspace files. Returns path:line:text matches.',
+    inputSchema: { type: 'object', properties: { pattern: { type: 'string', minLength: 1 }, path: { type: 'string' }, glob: { type: 'string', description: 'e.g. *.ts' } }, required: ['pattern'] },
+  },
+  async run(args, { sandbox, signal }) {
+    const root = sandbox.resolvePath(String(args.path ?? '.'));
+    const rgArgs = ['--fixed-strings', '--line-number', '--no-heading', '--color=never', '--max-count=50', '--max-columns=300'];
+    if (args.glob) rgArgs.push('--glob', String(args.glob));
+    rgArgs.push('--', String(args.pattern), '.');
+    const text = await new Promise<string>((resolve) => {
+      const child = spawn('rg', rgArgs, { cwd: root, signal, stdio: ['ignore', 'pipe', 'pipe'] });
+      let buf = '';
+      child.stdout.on('data', (c: Buffer) => { if (buf.length < 100_000) buf += c.toString('utf8'); });
+      child.on('close', () => resolve(buf));
+      child.on('error', () => resolve(jsSearch(root, String(args.pattern))));
+    });
+    const lines = text.split('\n').filter(Boolean).slice(0, 200);
+    return { content: lines.length ? lines.join('\n') : 'no matches', summary: `search '${args.pattern}': ${lines.length} matches` };
+  },
+};
+
+function jsSearch(root: string, pattern: string): string {
+  const out: string[] = [];
+  const walk = (dir: string) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      if (SKIP_DIRS.has(e.name) || out.length >= 200) continue;
+      const p = join(dir, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (statSync(p).size < 1_000_000) readFileSync(p, 'utf8').split('\n').forEach((l, i) => { if (l.includes(pattern)) out.push(`${p.slice(root.length + 1)}:${i + 1}:${l.slice(0, 300)}`); });
+    }
+  };
+  walk(root);
+  return out.join('\n');
+}
+
+function writeWithCheckpoint(abs: string, content: string, beforeWrite?: (p: string, prev: string | null) => void): void {
+  beforeWrite?.(abs, existsSync(abs) ? readFileSync(abs, 'utf8') : null);
+  mkdirSync(dirname(abs), { recursive: true });
+  writeFileSync(abs, content);
+}
+
+const writeFile: Tool = {
+  spec: {
+    name: 'write_file',
+    description: 'Create or overwrite a file with the full content. Prefer edit_file for small changes to existing files.',
+    inputSchema: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] },
+  },
+  async run(args, { sandbox, beforeWrite }) {
+    const abs = sandbox.resolvePath(String(args.path), 'write');
+    writeWithCheckpoint(abs, String(args.content), beforeWrite);
+    return { content: `wrote ${sandbox.relative(abs)} (${String(args.content).split('\n').length} lines)`, summary: `wrote ${sandbox.relative(abs)}` };
+  },
+};
+
+const editFile: Tool = {
+  spec: {
+    name: 'edit_file',
+    description: 'Replace an exact string in a file. old_string must match exactly once unless replace_all is true. Include enough context to be unique.',
+    inputSchema: { type: 'object', properties: { path: { type: 'string' }, old_string: { type: 'string', minLength: 1 }, new_string: { type: 'string' }, replace_all: { type: 'boolean' } }, required: ['path', 'old_string', 'new_string'] },
+  },
+  async run(args, { sandbox, beforeWrite }) {
+    const abs = sandbox.resolvePath(String(args.path), 'write');
+    if (!existsSync(abs)) return { content: `file not found: ${args.path}`, isError: true };
+    const text = readFileSync(abs, 'utf8');
+    const oldS = String(args.old_string);
+    const count = text.split(oldS).length - 1;
+    if (count === 0) return { content: `old_string not found in ${args.path}. Re-read the file and copy the exact text (including whitespace).`, isError: true };
+    if (count > 1 && !args.replace_all) return { content: `old_string matches ${count} times in ${args.path}; add surrounding context or set replace_all`, isError: true };
+    const next = args.replace_all ? text.split(oldS).join(String(args.new_string)) : text.replace(oldS, () => String(args.new_string));
+    writeWithCheckpoint(abs, next, beforeWrite);
+    return { content: `edited ${sandbox.relative(abs)} (${args.replace_all ? count : 1} replacement${count > 1 && args.replace_all ? 's' : ''})`, summary: `edited ${sandbox.relative(abs)}` };
+  },
+};
+
+const runShell: Tool = {
+  spec: {
+    name: 'run_shell',
+    description: 'Run a bash command in the workspace sandbox (no network). Returns exit code, stdout, and stderr. Use it to run tests.',
+    inputSchema: { type: 'object', properties: { command: { type: 'string', minLength: 1 }, cwd: { type: 'string' }, timeoutMs: { type: 'integer', minimum: 1000, maximum: 600_000 } }, required: ['command'] },
+  },
+  async run(args, { sandbox, signal }) {
+    const r = await sandbox.exec(String(args.command), { cwd: args.cwd ? String(args.cwd) : undefined, timeoutMs: Number(args.timeoutMs ?? 120_000), signal });
+    const status = r.timedOut ? `timed out after ${args.timeoutMs ?? 120_000}ms` : `exit code ${r.exitCode ?? r.signal}`;
+    return {
+      content: `${status}${r.truncated ? ' (output truncated)' : ''}\n--- stdout ---\n${r.stdout}\n--- stderr ---\n${r.stderr}`,
+      isError: r.exitCode !== 0,
+      summary: `$ ${String(args.command).slice(0, 80)} → ${status}`,
+    };
+  },
+};
+
+export function builtinTools(): ToolRegistry {
+  const reg = new ToolRegistry();
+  for (const t of [readFile, listDir, search, writeFile, editFile, runShell]) reg.register(t);
+  return reg;
+}

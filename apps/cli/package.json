@@ -1,0 +1,20 @@
+{
+  "name": "@helix/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "helix CLI (architecture.md §5.7).",
+  "bin": {
+    "helix": "./bin/helix"
+  },
+  "scripts": {
+    "test": "node --disable-warning=ExperimentalWarning --test --test-concurrency=1 \"test/**/*.test.ts\""
+  },
+  "dependencies": {
+    "@helix/engine": "workspace:*",
+    "@helix/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "@helix/provider-conformance": "workspace:*"
+  }
+}

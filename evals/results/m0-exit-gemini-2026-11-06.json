@@ -1,0 +1,72 @@
+{
+  "at": "2026-11-06T14:37:20.212Z",
+  "pass": false,
+  "results": [
+    {
+      "fixture": "js-calc",
+      "status": "done",
+      "model": "gemini-3.5-flash-lite",
+      "steps": 7,
+      "verifyAttempts": 1,
+      "seconds": 5,
+      "ledger": {
+        "calls": 7,
+        "inputTokens": 9573,
+        "outputTokens": 204,
+        "costUsd": 0,
+        "providerReportedCalls": 7,
+        "estimatedCalls": 0
+      },
+      "providerRaw": {
+        "inputTokens": 9573,
+        "outputTokens": 204
+      },
+      "reconciled": true,
+      "error": null
+    },
+    {
+      "fixture": "py-strings",
+      "status": "done",
+      "model": "gemini-3.5-flash-lite",
+      "steps": 8,
+      "verifyAttempts": 1,
+      "seconds": 6,
+      "ledger": {
+        "calls": 8,
+        "inputTokens": 11811,
+        "outputTokens": 265,
+        "costUsd": 0,
+        "providerReportedCalls": 8,
+        "estimatedCalls": 0
+      },
+      "providerRaw": {
+        "inputTokens": 11811,
+        "outputTokens": 265
+      },
+      "reconciled": true,
+      "error": null
+    },
+    {
+      "fixture": "ts-inventory",
+      "status": "failed",
+      "model": "gemini-3.5-flash-lite",
+      "steps": 1,
+      "verifyAttempts": 0,
+      "seconds": 1,
+      "ledger": {
+        "calls": 1,
+        "inputTokens": 718,
+        "outputTokens": 25,
+        "costUsd": 0,
+        "providerReportedCalls": 1,
+        "estimatedCalls": 0
+      },
+      "providerRaw": {
+        "inputTokens": 718,
+        "outputTokens": 25
+      },
+      "reconciled": true,
+      "error": "ProviderError: gemini 429 RESOURCE_EXHAUSTED: You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 15, model: gemini-3.5-flash-lite, description: Generate content requests per minute limit exceeded on Free Tier. See https://ai.google.dev/gemini-api/docs/rate-limits.\nPlease retry in 39.799601279s."
+    }
+  ]
+}

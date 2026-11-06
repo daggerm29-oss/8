@@ -1,0 +1,8 @@
+{
+  "name": "@helix/evals",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "m0-exit": "node --disable-warning=ExperimentalWarning m0-exit.ts"
+  }
+}

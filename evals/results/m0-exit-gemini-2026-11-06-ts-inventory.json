@@ -1,0 +1,28 @@
+{
+  "at": "2026-11-06T14:40:21.766Z",
+  "pass": true,
+  "results": [
+    {
+      "fixture": "ts-inventory",
+      "status": "done",
+      "model": "gemini-3.5-flash-lite",
+      "steps": 7,
+      "verifyAttempts": 1,
+      "seconds": 6,
+      "ledger": {
+        "calls": 7,
+        "inputTokens": 10021,
+        "outputTokens": 235,
+        "costUsd": 0,
+        "providerReportedCalls": 7,
+        "estimatedCalls": 0
+      },
+      "providerRaw": {
+        "inputTokens": 10021,
+        "outputTokens": 235
+      },
+      "reconciled": true,
+      "error": null
+    }
+  ]
+}
