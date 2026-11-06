@@ -36,7 +36,17 @@ const TOOL_CLASS: Record<string, ActionClass> = {
   run_shell: 'exec',
 };
 
+/** Dynamically registered tools (MCP, F-MCP-3 v0) declare their class here; unknown `mcp__*` tools default to network. */
+const DYNAMIC_CLASS = new Map<string, { actionClass: ActionClass; reason: string }>();
+
+export function registerToolClass(tool: string, actionClass: ActionClass, reason: string): void {
+  DYNAMIC_CLASS.set(tool, { actionClass, reason });
+}
+
 export function classify(tool: string, args: unknown): { actionClass: ActionClass; reason: string } {
+  const dynamic = DYNAMIC_CLASS.get(tool);
+  if (dynamic) return dynamic;
+  if (tool.startsWith('mcp__')) return { actionClass: 'network', reason: 'MCP tool (external side effects)' };
   if (tool === 'run_shell') {
     const command = String((args as { command?: unknown })?.command ?? '');
     for (const [re, reason] of DESTRUCTIVE) if (re.test(command)) return { actionClass: 'destructive', reason };

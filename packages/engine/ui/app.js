@@ -356,6 +356,19 @@ async function loadWorkspaces() {
   if (!input.value && ws[0]) input.value = ws[0].path;
 }
 
+async function loadMcp() {
+  const servers = await rpc.call('mcp.list').catch(() => []);
+  const list = $('mcp-list');
+  if (!servers.length) {
+    list.replaceChildren(h('li', { class: 'note' }, 'No servers. Add them to $HELIX_HOME/mcp.json.'));
+    return;
+  }
+  list.replaceChildren(...servers.map((s) => h('li', { class: 'mcp' },
+    h('div', { class: 'm' }, h('span', { class: `badge ${s.state === 'connected' ? 'done' : s.state === 'failed' ? 'failed' : ''}` }, s.state), h('span', { class: 't' }, s.name), h('span', {}, `${s.tools.length} tools`)),
+    s.error ? h('div', { class: 'note err' }, s.error) : null,
+    s.tools.length ? h('div', { class: 'tools mono' }, s.tools.map((t) => `${t.name}${t.actionClass === 'read' ? ' (read)' : ''}`).join(', ')) : null)));
+}
+
 let retry = 0;
 async function start() {
   const cfg = await fetch('/config.json').then((r) => r.json()).catch(() => ({ auth: 'token' }));
@@ -371,6 +384,7 @@ async function start() {
     setStatus(`engine ${init.engineVersion} · ${init.capabilities.sandboxProviders.join(',')} · ${init.capabilities.providers.join(', ')}`, true);
     await refreshTasks();
     await loadWorkspaces();
+    loadMcp();
     if (state.selected) await select(state.selected);
   } catch (err) {
     if (/token/i.test(err.message)) {
