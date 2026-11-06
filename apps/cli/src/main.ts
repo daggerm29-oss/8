@@ -16,10 +16,11 @@ Usage:
   helix plan <task-id>            print the plan artifact of a Plan Mode task
   helix search "<query>"          hybrid code search over the workspace index
   helix symbols <name>            find symbol definitions in the workspace index
+  helix impact <symbol|file>      callers, affected files and covering tests (code graph)
 
 Options:
   -C, --cwd <dir>         workspace directory (default: current directory)
-  --verify <command>      verification command; the task succeeds only if it exits 0
+  --verify <command>      verification command (or "auto" to infer gates; .helix/verify.json is used when omitted)
   --provider <id>         gemini | openai (default: first configured provider)
   -m, --model <id>        model id (default: provider default)
   --max-steps <n>         model turn limit (default 40)
@@ -53,6 +54,7 @@ function render(e: HelixEvent): string | null {
     case 'task.resumed': return '↻ resumed after engine restart';
     case 'agent.message': return `${d.text ? `◆ ${String(d.text).trim().slice(0, 400)}` : ''}${d.toolCalls?.length ? `${d.text ? '\n' : ''}  → ${d.toolCalls.join(', ')}` : ''}` || null;
     case 'tool.result': return `  ${d.verdict === 'deny' ? '✗ denied' : d.isError ? '!' : '✓'} ${d.summary ?? d.tool}`;
+    case 'verify.gate': return `  gate ${d.gate} (${d.kind}${d.required ? '' : ', optional'}): ${d.passed ? 'passed' : `failed (exit ${d.exitCode})`} in ${d.durationMs} ms`;
     case 'verify.result': return `  verify #${d.attempt}: ${d.passed ? 'passed' : `failed (exit ${d.exitCode})${d.diagnostics?.length ? ` · ${d.diagnostics.length} diagnostics: ${d.diagnostics.slice(0, 3).map((x: any) => `${x.file ?? '?'}:${x.line ?? '?'} ${x.message}`.slice(0, 120)).join(' | ')}` : ''}`}`;
     case 'context.composed': return `  ⌁ context: ${d.items?.length ?? 0} items, ${d.usedTokens}/${d.budgetTokens} tokens${d.index ? ` · index ${d.index.files} files/${d.index.symbols} symbols (${d.index.indexed} reindexed)` : ''}`;
     case 'artifact.created': return `  ▣ ${d.kind} artifact ${d.artifactId}`;
@@ -157,6 +159,14 @@ export async function main(argv: string[]): Promise<number> {
     if (cmd === 'symbols' && arg) {
       for (const s of await peer.request<Array<{ path: string; line: number; kind: string; qualifiedName: string; signature: string }>>(Methods.indexSymbols, { workspacePath: ws, name: arg }))
         process.stdout.write(`${s.path}:${s.line}  ${s.kind} ${s.qualifiedName}  — ${s.signature}\n`);
+      return 0;
+    }
+    if (cmd === 'impact' && arg) {
+      const r = await peer.request<{ kind: string; definitions: Array<{ qualifiedName: string; path: string; line: number }>; callers: Array<{ path: string; line: number; caller: string; calls: string; depth: number }>; affectedFiles: string[]; tests: string[] }>(Methods.indexImpact, { workspacePath: ws, target: arg });
+      if (r.kind === 'unknown') { process.stdout.write(`no symbol or indexed file named '${arg}'\n`); return 1; }
+      for (const d of r.definitions) process.stdout.write(`def  ${d.qualifiedName}  ${d.path}:${d.line}\n`);
+      for (const c of r.callers) process.stdout.write(`${'  '.repeat(c.depth)}${c.path}:${c.line}  ${c.caller || '(top level)'} -> ${c.calls}\n`);
+      process.stdout.write(`affected: ${r.affectedFiles.join(', ') || '(none)'}\ntests: ${r.tests.join(', ') || '(none)'}\n`);
       return 0;
     }
     process.stdout.write(USAGE);

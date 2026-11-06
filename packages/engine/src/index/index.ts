@@ -4,6 +4,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, normalize, relative } from 'node:path';
 import type { Db } from '../storage/db.ts';
 import { extract, identifierTerms, isTestPath, langOf, type Lang } from './extract.ts';
+import { extractRefs } from './graph.ts';
 
 const SKIP_DIRS = new Set(['node_modules', '.git', '.next', 'dist', 'build', 'out', 'coverage', '__pycache__', '.venv', 'venv', 'target', '.turbo', '.cache', 'vendor']);
 const SECRET_FILE = /(^|\/)(\.env(\.[\w-]+)?|.*\.pem|id_[a-z0-9]+|.*\.key|credentials\.json|.*secret.*\.json)$/i;
@@ -30,6 +31,25 @@ export interface SymbolHit {
   endLine: number;
   signature: string;
   exported: boolean;
+}
+
+export interface ImpactCaller {
+  path: string;
+  line: number;
+  caller: string;
+  calls: string;
+  depth: number;
+}
+
+export interface ImpactReport {
+  target: string;
+  kind: 'symbol' | 'file' | 'unknown';
+  definitions: SymbolHit[];
+  callers: ImpactCaller[];
+  /** Files that may need changes or re-verification, most direct first (excludes the definition files). */
+  affectedFiles: string[];
+  tests: string[];
+  precision: 'heuristic';
 }
 
 export interface IndexStats {
@@ -124,6 +144,7 @@ export class WorkspaceIndex {
     this.db.run('DELETE FROM idx_symbols WHERE ws = ? AND path = ?', this.ws, path);
     this.db.run('DELETE FROM idx_imports WHERE ws = ? AND path = ?', this.ws, path);
     this.db.run('DELETE FROM idx_chunks WHERE ws = ? AND path = ?', this.ws, path);
+    this.db.run('DELETE FROM idx_refs WHERE ws = ? AND path = ?', this.ws, path);
   }
 
   private add(path: string, hash: string, text: string, lang: Lang, size: number): number {
@@ -131,6 +152,7 @@ export class WorkspaceIndex {
     const { symbols, imports } = extract(lang, text);
     this.db.run('INSERT INTO idx_files (ws, path, hash, lang, size, lines, is_test, indexed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', this.ws, path, hash, lang, size, lines.length, isTestPath(path) ? 1 : 0, new Date().toISOString());
     for (const s of symbols) this.db.run('INSERT INTO idx_symbols (ws, path, kind, name, qualified_name, line, end_line, signature, exported) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', this.ws, path, s.kind, s.name, s.qualifiedName, s.line, s.endLine, s.signature, s.exported ? 1 : 0);
+    for (const r of extractRefs(lang, text, symbols)) this.db.run('INSERT INTO idx_refs (ws, path, line, name, caller) VALUES (?, ?, ?, ?, ?)', this.ws, path, r.line, r.name, r.caller);
     for (const spec of imports) this.db.run('INSERT INTO idx_imports (ws, path, spec, resolved) VALUES (?, ?, ?, ?)', this.ws, path, spec, this.resolveImport(path, spec, lang));
     // Chunks: one per top-level symbol (methods stay inside their class chunk unless the class is huge), windows for the gaps.
     const tops = symbols.filter((s) => s.kind !== 'method' || s.endLine - s.line > 80).sort((a, b) => a.line - b.line);
@@ -184,6 +206,60 @@ export class WorkspaceIndex {
   /** Files that import `path` (reverse import edges, depth 1). */
   dependents(path: string): string[] {
     return this.db.all<{ path: string }>('SELECT DISTINCT path FROM idx_imports WHERE ws = ? AND resolved = ?', this.ws, path).map((r) => r.path);
+  }
+
+  /**
+   * Impact analysis v0 (F-IDX-3, §11.5): who calls `target` (a symbol name or a file path), transitively up
+   * to `depth`, plus importing files and covering tests. Name-based call edges are narrowed to the
+   * definition file and its importers for languages with resolved imports (ts/js/py).
+   */
+  impact(target: string, opts: { depth?: number; limit?: number } = {}): ImpactReport {
+    const maxDepth = Math.min(Math.max(opts.depth ?? 2, 1), 4);
+    const limit = opts.limit ?? 60;
+    const isFile = this.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM idx_files WHERE ws = ? AND path = ?', this.ws, target)!.n > 0;
+    const defs = isFile
+      ? this.db.all<Record<string, unknown>>(`SELECT name, qualified_name, kind, path, line, end_line, signature, exported FROM idx_symbols WHERE ws = ? AND path = ? AND kind != 'heading' AND (exported = 1 OR kind IN ('class','function')) ORDER BY line`, this.ws, target)
+        .map((r) => ({ name: String(r.name), qualifiedName: String(r.qualified_name), kind: String(r.kind), path: String(r.path), line: Number(r.line), endLine: Number(r.end_line), signature: String(r.signature), exported: Boolean(r.exported) }))
+      : this.findSymbol(target, 40).filter((h) => h.name === target || h.qualifiedName === target || h.qualifiedName.endsWith(`.${target}`));
+    const report: ImpactReport = { target, kind: isFile ? 'file' : defs.length ? 'symbol' : 'unknown', definitions: defs, callers: [], affectedFiles: [], tests: [], precision: 'heuristic' };
+    if (!defs.length && !isFile) return report;
+    const langOfPath = (p: string) => this.db.get<{ lang: string }>('SELECT lang FROM idx_files WHERE ws = ? AND path = ?', this.ws, p)?.lang;
+    const scopeFor = (defPath: string): Set<string> | null => ['ts', 'js', 'py'].includes(langOfPath(defPath) ?? '') ? new Set([defPath, ...this.dependents(defPath)]) : null;
+    const seen = new Set<string>();
+    let frontier = defs.map((d) => ({ name: d.name, path: d.path, qualified: d.qualifiedName }));
+    for (let depth = 1; depth <= maxDepth && frontier.length && report.callers.length < limit; depth++) {
+      const next: typeof frontier = [];
+      for (const f of frontier) {
+        const scope = scopeFor(f.path);
+        for (const r of this.db.all<{ path: string; line: number; caller: string }>('SELECT path, line, caller FROM idx_refs WHERE ws = ? AND name = ? ORDER BY path, line LIMIT 500', this.ws, f.name)) {
+          if (scope && !scope.has(r.path)) continue;
+          if (r.path === f.path && r.caller === f.qualified) continue;
+          const key = `${r.path}:${r.line}:${f.name}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          report.callers.push({ path: r.path, line: r.line, caller: r.caller, calls: f.qualified, depth });
+          if (r.caller) {
+            const callerName = r.caller.split('.').at(-1)!;
+            if (!next.some((n) => n.name === callerName && n.path === r.path)) next.push({ name: callerName, path: r.path, qualified: r.caller });
+          }
+          if (report.callers.length >= limit) break;
+        }
+      }
+      frontier = next;
+    }
+    const defFiles = new Set(isFile ? [target] : defs.map((d) => d.path));
+    const files = new Set<string>();
+    for (const c of report.callers) files.add(c.path);
+    for (const p of defFiles) for (const d of this.dependents(p)) files.add(d);
+    for (const p of defFiles) files.delete(p);
+    const testSet = new Set<string>();
+    for (const p of [...defFiles, ...files]) {
+      if (isTestPath(p)) testSet.add(p);
+      for (const t of this.coveringTests(p)) testSet.add(t);
+    }
+    report.affectedFiles = [...files].filter((f) => !isTestPath(f));
+    report.tests = [...testSet];
+    return report;
   }
 
   /** Test files that import a file (static `tests` edges heuristic, §11.5). */

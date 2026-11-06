@@ -3,7 +3,8 @@ import { dirname, join } from 'node:path';
 import { WorkspaceIndex } from '../index/index.ts';
 import { loadInstructions } from '../context/instructions.ts';
 import { assembleContext, type ComposedContext } from '../context/assembler.ts';
-import { formatDiagnostics, parseDiagnostics } from '../diagnostics/parsers.ts';
+import { formatDiagnostics, parseDiagnostics, type Diagnostic } from '../diagnostics/parsers.ts';
+import { describeGates, resolveGates, type Gate } from '../verify/gates.ts';
 import { ProviderError, type Message, type Part, type TaskCreateParams, type TaskStatus, type TaskSummary } from '@helix/protocol';
 import type { Db } from '../storage/db.ts';
 import { json, parseJson } from '../storage/db.ts';
@@ -56,7 +57,7 @@ export interface CheckpointInfo {
   files: Array<{ path: string; created: boolean }>;
 }
 
-const PLAN_TOOLS = ['read_file', 'list_dir', 'search', 'find_symbol', 'code_search', 'submit_plan'];
+const PLAN_TOOLS = ['read_file', 'list_dir', 'search', 'find_symbol', 'code_search', 'impact', 'submit_plan'];
 
 function pidAlive(pid: number): boolean {
   if (pid === process.pid) return true;
@@ -74,10 +75,10 @@ function systemPrompt(root: string, verify: string | null, profile: PolicyProfil
     'You are Helix, an autonomous coding agent working inside a sandboxed copy of a software repository.',
     `Workspace root: ${root}. All paths are relative to it. The sandbox has no network access.`,
     plan
-      ? 'You are in PLAN MODE: you can only read. Investigate with find_symbol, code_search, read_file, list_dir, and search, then call submit_plan exactly once with a concrete, file-grounded plan. Do not attempt to edit files.'
-      : 'Work methodically: locate code with find_symbol (definitions) and code_search (ranked slices) before falling back to search/list_dir, read only the ranges you need with read_file, make minimal targeted edits with edit_file, then run the tests with run_shell to confirm.',
+      ? 'You are in PLAN MODE: you can only read. Investigate with find_symbol, code_search, impact (call sites + tests affected by a change), read_file, list_dir, and search, then call submit_plan exactly once with a concrete, file-grounded plan. Do not attempt to edit files.'
+      : 'Work methodically: locate code with find_symbol (definitions), code_search (ranked slices) and impact (callers + covering tests) before falling back to search/list_dir, read only the ranges you need with read_file, make minimal targeted edits with edit_file, then run the tests with run_shell to confirm.',
     plan ? '' : 'Never weaken, skip, or delete tests to make them pass; fix the code under test.',
-    verify && !plan ? `When you finish, Helix runs the verification command \`${verify}\`; the task only succeeds if it exits 0.` : '',
+    verify && !plan ? `When you finish, Helix runs these verification gates in order: ${verify}. The task only succeeds if every required gate exits 0.` : '',
     'When the task is complete, reply with a short summary and do not call any more tools.',
     context ? `\n${context}` : '',
   ].filter(Boolean).join('\n');
@@ -401,7 +402,7 @@ export class TaskRuntime {
     const tools = this.o.tools.specs((name) => (t.policy_profile === 'plan' ? PLAN_TOOLS.includes(name) : name !== 'submit_plan'));
     const call = () => this.o.gateway.call({
       provider: t.provider, model: t.model, role: 'coder', ws: t.ws, task: t.id, agent: 'primary', step: stepId, signal,
-      request: { system: systemPrompt(root, t.verify_command, t.policy_profile, context), messages: this.requestMessages(messages), tools, toolChoice: 'auto', maxOutputTokens: 8192 },
+      request: { system: systemPrompt(root, this.gateSummary(root, t.verify_command), t.policy_profile, context), messages: this.requestMessages(messages), tools, toolChoice: 'auto', maxOutputTokens: 8192 },
       onEvent: (e) => { if (e.type === 'text_delta') this.publish(t.id, t.ws, 'model.delta', { stepId, text: e.text }, 'none'); },
     });
     let result: Awaited<ReturnType<typeof call>>;
@@ -484,7 +485,15 @@ export class TaskRuntime {
     });
   }
 
-  /** Verification gate (§9.6 subset). Returns true when the task reached a terminal state. */
+  private gateSummary(root: string, verifyCommand: string | null): string | null {
+    try {
+      return describeGates(resolveGates(root, verifyCommand)) || null;
+    } catch {
+      return verifyCommand;
+    }
+  }
+
+  /** Verification gates (F-AGT-4, §9.6). Returns true when the task reached a terminal state. */
   private async verify(t: TaskRow, last: Message, sandbox: LocalSandbox, signal: AbortSignal): Promise<boolean> {
     const finalText = last.parts.filter((p) => p.type === 'text').map((p) => (p as { text: string }).text).join('').trim();
     if (t.policy_profile === 'plan') {
@@ -501,30 +510,53 @@ export class TaskRuntime {
       this.addMessage(t.id, null, { role: 'user', parts: [{ type: 'text', text: '[plan-mode] You have not submitted a plan. Call submit_plan now with the plan grounded in the files you inspected.' }] });
       return false;
     }
-    if (!t.verify_command) {
+    let gates: Gate[];
+    try {
+      gates = resolveGates(sandbox.root, t.verify_command).gates;
+    } catch (error) {
+      this.setStatus(t.id, 'failed', { error: (error as Error).message });
+      return true;
+    }
+    if (!gates.length) {
       this.setStatus(t.id, 'done', { result: finalText || '(no summary)' });
       return true;
     }
     this.setStatus(t.id, 'verifying');
-    const r = await sandbox.exec(t.verify_command, { timeoutMs: 300_000, signal });
-    if (signal.aborted) return true;
     const attempt = t.verify_attempts + 1;
+    const results: Array<{ gate: Gate; exitCode: number | null; signal: string | null; passed: boolean; output: string; diagnostics: Diagnostic[]; durationMs: number }> = [];
+    for (const gate of gates) {
+      const r = await sandbox.exec(gate.command, { timeoutMs: gate.timeoutMs, signal });
+      if (signal.aborted) return true;
+      const output = `${r.stdout}\n${r.stderr}${r.timedOut ? `\n[helix] gate '${gate.name}' timed out after ${gate.timeoutMs} ms` : ''}`;
+      const passed = r.exitCode === 0;
+      const diagnostics = passed ? [] : parseDiagnostics(gate.parser ?? gate.command, output, { root: sandbox.root });
+      results.push({ gate, exitCode: r.exitCode, signal: r.signal, passed, output, diagnostics, durationMs: r.durationMs });
+      this.publish(t.id, t.ws, 'verify.gate', { gate: gate.name, kind: gate.kind, command: gate.command, required: gate.required, exitCode: r.exitCode, attempt, passed, durationMs: r.durationMs, diagnostics }, 'audit');
+    }
     this.o.db.run('UPDATE tasks SET verify_attempts = ? WHERE id = ?', attempt, t.id);
-    const output = `${r.stdout}\n${r.stderr}`;
-    const diagnostics = r.exitCode === 0 ? [] : parseDiagnostics(t.verify_command, output, { root: sandbox.root });
-    this.publish(t.id, t.ws, 'verify.result', { command: t.verify_command, exitCode: r.exitCode, attempt, passed: r.exitCode === 0, diagnostics }, 'audit');
-    if (r.exitCode === 0) {
-      this.setStatus(t.id, 'done', { result: finalText || 'verification passed' });
+    const failed = results.filter((x) => !x.passed && x.gate.required);
+    const allDiagnostics = failed.flatMap((x) => x.diagnostics);
+    const command = gates.map((g) => g.command).join(' && ');
+    this.publish(t.id, t.ws, 'verify.result', {
+      command, exitCode: failed[0]?.exitCode ?? 0, attempt, passed: failed.length === 0, diagnostics: allDiagnostics,
+      gates: results.map((x) => ({ name: x.gate.name, kind: x.gate.kind, required: x.gate.required, passed: x.passed, exitCode: x.exitCode, durationMs: x.durationMs })),
+    }, 'audit');
+    if (!failed.length) {
+      const warn = results.filter((x) => !x.passed).map((x) => x.gate.name);
+      this.setStatus(t.id, 'done', { result: (finalText || 'verification passed') + (warn.length ? `\n[optional gates failed: ${warn.join(', ')}]` : '') });
       return true;
     }
     if (attempt >= MAX_VERIFY_ATTEMPTS) {
-      this.setStatus(t.id, 'failed', { error: `verification failed ${attempt} times: \`${t.verify_command}\` exit ${r.exitCode}` });
+      this.setStatus(t.id, 'failed', { error: `verification failed ${attempt} times: ${failed.map((x) => `\`${x.gate.command}\` exit ${x.exitCode}`).join('; ')}` });
       return true;
     }
-    // §9.5: structured diagnostics plus a short log tail, never the full log.
-    const tail = output.trim().split('\n').slice(-40).join('\n').slice(-2500);
-    const body = diagnostics.length ? `Diagnostics (${diagnostics.length}):\n${formatDiagnostics(diagnostics)}\n\nLog tail:\n${tail}` : output.trim().slice(-6000);
-    this.addMessage(t.id, null, { role: 'user', parts: [{ type: 'text', text: `Verification failed (attempt ${attempt}/${MAX_VERIFY_ATTEMPTS}): \`${t.verify_command}\` exited with ${r.exitCode ?? r.signal}.\n\n${body}\n\nFix the remaining problems, then finish with a summary.` }] });
+    // §9.5: structured diagnostics plus a short log tail per failing gate, never the full log.
+    const sections = failed.map((x) => {
+      const tail = x.output.trim().split('\n').slice(-40).join('\n').slice(-2500);
+      const body = x.diagnostics.length ? `Diagnostics (${x.diagnostics.length}):\n${formatDiagnostics(x.diagnostics)}\n\nLog tail:\n${tail}` : x.output.trim().slice(-6000 / failed.length);
+      return `Gate '${x.gate.name}' (${x.gate.kind}): \`${x.gate.command}\` exited with ${x.exitCode ?? x.signal}.\n\n${body}`;
+    });
+    this.addMessage(t.id, null, { role: 'user', parts: [{ type: 'text', text: `Verification failed (attempt ${attempt}/${MAX_VERIFY_ATTEMPTS}).\n\n${sections.join('\n\n---\n\n')}\n\nFix the remaining problems, then finish with a summary.` }] });
     this.setStatus(t.id, 'running');
     return false;
   }

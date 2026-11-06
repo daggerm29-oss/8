@@ -141,6 +141,11 @@ export class Engine {
       idx.update();
       return idx.findSymbol(p.name);
     }));
+    peer.handle(Methods.indexImpact, guard<{ workspacePath: string; target: string; depth?: number }>((p) => {
+      const idx = this.index(p.workspacePath);
+      idx.update();
+      return idx.impact(p.target, { depth: p.depth });
+    }));
     peer.handle(Methods.checkpointList, guard<{ task: string }>((p) => this.runtime.checkpoints(p.task)));
     peer.handle(Methods.checkpointRestore, guard<{ task: string; checkpoint?: string }>((p) => this.runtime.restore(p.task, p.checkpoint)));
     peer.handle(Methods.artifactList, guard<{ task: string; kind?: string }>((p) => this.runtime.artifacts(p.task, p.kind)));

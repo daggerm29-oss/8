@@ -75,4 +75,10 @@ export const MIGRATIONS: string[] = [
   CREATE INDEX artifacts_task ON artifacts(task);
   CREATE TABLE checkpoint_restores (id TEXT PRIMARY KEY, task TEXT NOT NULL, target TEXT NOT NULL, files_json TEXT NOT NULL, at TEXT NOT NULL);
   `,
+  /* v3: code graph v0 call-site edges (§11.5). Clears index rows so every file is re-extracted with refs. */ `
+  CREATE TABLE idx_refs (ws TEXT NOT NULL, path TEXT NOT NULL, line INTEGER NOT NULL, name TEXT NOT NULL, caller TEXT NOT NULL);
+  CREATE INDEX idx_refs_name ON idx_refs(ws, name);
+  CREATE INDEX idx_refs_path ON idx_refs(ws, path);
+  DELETE FROM idx_files; DELETE FROM idx_symbols; DELETE FROM idx_imports; DELETE FROM idx_chunks;
+  `,
 ];
