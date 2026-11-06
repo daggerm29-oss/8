@@ -53,6 +53,7 @@ function render(e: HelixEvent): string | null {
     case 'task.resumed': return '↻ resumed after engine restart';
     case 'agent.message': return `${d.text ? `◆ ${String(d.text).trim().slice(0, 400)}` : ''}${d.toolCalls?.length ? `${d.text ? '\n' : ''}  → ${d.toolCalls.join(', ')}` : ''}` || null;
     case 'tool.result': return `  ${d.verdict === 'deny' ? '✗ denied' : d.isError ? '!' : '✓'} ${d.summary ?? d.tool}`;
+    case 'verify.gate': return `  gate ${d.gate} (${d.kind}${d.required ? '' : ', optional'}): ${d.passed ? 'passed' : `failed (exit ${d.exitCode})`} in ${d.durationMs} ms`;
     case 'verify.result': return `  verify #${d.attempt}: ${d.passed ? 'passed' : `failed (exit ${d.exitCode})${d.diagnostics?.length ? ` · ${d.diagnostics.length} diagnostics: ${d.diagnostics.slice(0, 3).map((x: any) => `${x.file ?? '?'}:${x.line ?? '?'} ${x.message}`.slice(0, 120)).join(' | ')}` : ''}`}`;
     case 'context.composed': return `  ⌁ context: ${d.items?.length ?? 0} items, ${d.usedTokens}/${d.budgetTokens} tokens${d.index ? ` · index ${d.index.files} files/${d.index.symbols} symbols (${d.index.indexed} reindexed)` : ''}`;
     case 'artifact.created': return `  ▣ ${d.kind} artifact ${d.artifactId}`;

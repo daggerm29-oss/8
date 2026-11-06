@@ -202,6 +202,16 @@ Order (tick when done; next session resumes at the first unticked item):
 - [x] S4-7b Live Gemini check (ts-inventory fix + Plan Mode) passed; committed + pushed to `helix/m1-core`.
 - [ ] S4-8 (deferred to session 5) F-SBX-2 mount-namespace containment (ISSUE-004).
 
+## Session 5 (M1) — live plan
+
+Branch: `helix/m1-session5` from `main` (session 4 work was merged to main by the user; `helix/m1-core` no longer on origin).
+Order (tick when done; next session resumes at the first unticked item):
+- [x] S5-1 (DONE, sandbox.test 7/7 incl. new containment test) F-SBX-2 mount-namespace containment (closes ISSUE-004): `unshare --user --map-root-user --net --mount --pid --fork`, tmpfs new root, read-only binds of /usr,/etc,/opt + symlinked /bin,/lib,/lib64,/sbin, minimal /dev nodes, rw workspace at its host path, private /tmp=HOME, no /proc /sys /home /root /vercel; chroot. Probe `mountNsAvailable()`; falls back to net-only namespace with `fsIsolation:false`.
+- [x] S5-2 (DONE, gates.test 3/3) F-AGT-4 verification gates: `.helix/verify.json` (typecheck/lint/test/build/custom gates, `required`, `parser`, `timeoutMs`); precedence explicit `--verify cmd` > config > inferred (only with `--verify auto`: package.json scripts, tsc, go.mod, Cargo.toml, pytest/unittest); all gates run each attempt, retry prompt only includes failing *required* gates; `verify.gate` events + `verify.result.gates[]`; invalid config fails the task clearly. Code: `engine/src/verify/gates.ts`, `agent/runtime.ts#verify`.
+- [ ] S5-3 F-IDX-3 code graph v0: call-site edges + `impact(symbol|file)`; `impact` tool + RPC + CLI.
+- [ ] S5-4 tests + tsc + commit/push.
+- Later: F-CTX-2, F-MDL-4, F-UI-1 workbench, F-MCP-1.
+
 ## Next Actions
 
 Resume here for **M1 — Core MVP** (session 5). Engine-side grounding/planning slice is done (see Session 4 list above). Next, in order:

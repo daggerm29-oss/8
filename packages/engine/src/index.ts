@@ -1,6 +1,6 @@
 export { Engine, ENGINE_VERSION, wsTransport, type EngineOptions } from './engine.ts';
 export { TaskRuntime, MAX_VERIFY_ATTEMPTS } from './agent/runtime.ts';
-export { LocalSandbox, unshareAvailable, SandboxPathError, type ExecResult } from './sandbox/sandbox.ts';
+export { LocalSandbox, unshareAvailable, mountNsAvailable, SandboxPathError, type ExecResult } from './sandbox/sandbox.ts';
 export { evaluate, classify, type ActionClass, type PolicyProfile, type PolicyDecision } from './policy/policy.ts';
 export { ToolRegistry, validate, truncate, type Tool, type ToolContext, type ToolOutput } from './tools/registry.ts';
 export { builtinTools } from './tools/builtin.ts';

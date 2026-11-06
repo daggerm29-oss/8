@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, symlinkSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { LocalSandbox, SandboxPathError, unshareAvailable } from '../src/sandbox/sandbox.ts';
+import { LocalSandbox, SandboxPathError, mountNsAvailable, unshareAvailable } from '../src/sandbox/sandbox.ts';
 import { classify, evaluate } from '../src/policy/policy.ts';
 import { builtinTools } from '../src/tools/builtin.ts';
 import { validate } from '../src/tools/registry.ts';
@@ -27,6 +27,24 @@ test('sandbox runs commands in the workspace with a scrubbed environment', async
     assert.ok(!r.stdout.includes(`home=${process.env.HOME}\n`), 'HOME is private');
   } finally {
     delete process.env.GEMINI_API_KEY;
+    sbx.destroy();
+  }
+});
+
+test('shell commands cannot read host files outside the workspace (F-SBX-2, ISSUE-004)', { skip: !mountNsAvailable() && 'mount namespaces unavailable' }, async () => {
+  const outside = mkdtempSync(join(tmpdir(), 'helix-secret-'));
+  writeFileSync(join(outside, 'secret.txt'), 'TOP-SECRET');
+  const sbx = new LocalSandbox('sbx_t6', workspace());
+  try {
+    assert.equal(sbx.info().fsIsolation, true);
+    const r = await sbx.exec(`cat ${join(outside, 'secret.txt')} 2>&1; ls ${process.env.HOME} 2>&1; ls /proc 2>&1; (echo x > /usr/helix-x) 2>&1; echo ws > src/new.txt; cat src/a.js; node -e "console.log('node-ok')"`);
+    assert.ok(!r.stdout.includes('TOP-SECRET'), 'host file outside the workspace is invisible');
+    assert.match(r.stdout, /No such file or directory/);
+    assert.match(r.stdout, /Read-only file system/);
+    assert.ok(r.stdout.includes('export const x = 1;'), 'workspace readable');
+    assert.ok(r.stdout.includes('node-ok'), 'toolchain usable');
+    assert.equal(readFileSync(join(sbx.root, 'src', 'new.txt'), 'utf8'), 'ws\n', 'workspace writable');
+  } finally {
     sbx.destroy();
   }
 });
