@@ -38,3 +38,26 @@ export const codeSearch: Tool = {
     };
   },
 };
+
+export const impactTool: Tool = {
+  spec: {
+    name: 'impact',
+    description: 'Impact analysis from the code graph: given a symbol name or a file path, lists call sites (transitively, with depth), importing files, and tests that cover them. Use before changing a function signature or behavior to find everything that may break.',
+    inputSchema: { type: 'object', properties: { target: { type: 'string', minLength: 1, description: 'Symbol name (e.g. Inventory.total) or workspace-relative file path' }, depth: { type: 'integer', minimum: 1, maximum: 4 } }, required: ['target'] },
+  },
+  async run(args, { index }) {
+    if (!index) return { content: 'code index unavailable for this task; use search', isError: true };
+    index.update();
+    const r = index.impact(String(args.target), { depth: args.depth === undefined ? 2 : Number(args.depth) });
+    if (r.kind === 'unknown') return { content: `no symbol or indexed file named '${args.target}'`, summary: `impact ${args.target}: unknown` };
+    const out = [
+      `Impact of ${r.kind} ${r.target} (heuristic, name-based call edges):`,
+      `definitions: ${r.definitions.slice(0, 10).map((d) => `${d.qualifiedName} @ ${d.path}:${d.line}`).join(', ') || '(none)'}`,
+      `callers (${r.callers.length}):`,
+      ...r.callers.slice(0, 40).map((c) => `  ${'  '.repeat(c.depth - 1)}${c.path}:${c.line} in ${c.caller || '(top level)'} -> ${c.calls}`),
+      `affected files: ${r.affectedFiles.join(', ') || '(none)'}`,
+      `tests: ${r.tests.join(', ') || '(none found)'}`,
+    ];
+    return { content: out.join('\n'), summary: `impact ${args.target}: ${r.callers.length} callers, ${r.affectedFiles.length} files, ${r.tests.length} tests` };
+  },
+};

@@ -6,17 +6,17 @@
 
 - Project: Helix
 - Current Phase: M1 — Core MVP (engine-side slice in progress)
-- Overall Completion: ~15% (M0 Verified; M1 engine slice ~35%: index v0, context, instructions, diagnostics, plan mode, restore)
-- Current Status: M1 session 4 — 6 features Tested, live Gemini check passed
-- Last Updated: 2026-11-06 (session 4)
-- Current Development Branch: `helix/m1-core` (base: `main` of github.com/daggerm29-oss/8)
+- Overall Completion: ~18% (M0 Verified; M1 engine slice ~50%: index v0, code graph v0, context, instructions, diagnostics, plan mode, restore, verification gates, fs-contained sandbox)
+- Current Status: M1 session 5 — sandbox containment, verification gates, code graph v0 Tested
+- Last Updated: 2026-11-06 (session 5)
+- Current Development Branch: `helix/m1-session5` (base: `main` of github.com/daggerm29-oss/8)
 
 ## Phase Overview
 
 | Phase | Name | Status | Completion |
 |---|---|---|---|
 | M0 | Engineering Foundations | Verified (exit criteria met live, 2026-11-06) | 100% |
-| M1 | Core MVP | In Progress | ~35% engine-side; desktop UI, MCP, preview, egress proxy not started |
+| M1 | Core MVP | In Progress | ~50% engine-side; desktop UI, MCP, preview, egress proxy not started |
 | M2 | Advanced Intelligence | Not Started | 0% |
 | M3 | Multi-Agent Intelligence | Not Started | 0% |
 | M4 | Team and Ecosystem | Not Started | 0% |
@@ -53,7 +53,7 @@ Statuses: Not Started / In Progress / Implemented / Tested / Verified / Blocked 
 | F-AUTH-3 | Helix account and org SSO | Not Started | — | Arch §8.5 |
 | F-IDX-1 | Incremental parser and symbol index | Tested | m1.test (extractor, index) | v0 heuristic extractor TS/JS/Py/Go/Rust/Java/MD (IMPL-ADR-014), SHA-256 content-hash incremental, import edges, `git ls-files` + secret-file filter. tree-sitter pending. Arch §11.1–11.3, §12.1, §12.4 |
 | F-IDX-2 | Precise references (SCIP/LSP) | Not Started | — | Arch §11.4 |
-| F-IDX-3 | Code graph | Not Started | — | Arch §11.5 |
+| F-IDX-3 | Code graph | Tested | graph.test (2) | v0: heuristic call-site edges `idx_refs` (migration v3, enclosing-symbol caller), `impact(symbol|file, depth≤4)` → callers by depth, affected files, covering tests; scoped by import edges for ts/js/py (IMPL-ADR-016). `impact` tool (also in Plan Mode), RPC `index.impact`, CLI `helix impact`. Plan artifacts do not yet auto-attach graph evidence. Arch §11.5 |
 | F-IDX-4 | Hybrid retrieval engine | Tested | m1.test (index) | FTS5 BM25 + symbol + path retrievers, deterministic query planning, RRF(k=60) with weights, overlap dedupe, `why[]`. No vectors/rerank yet. Arch §11.6 |
 | F-IDX-5 | Domain extractors | Not Started | — | Arch §11.7 |
 | F-IDX-6 | Semantic embeddings (local-first) | Not Started | — | Arch §12.3 |
@@ -64,7 +64,7 @@ Statuses: Not Started / In Progress / Implemented / Tested / Verified / Blocked 
 | F-AGT-1 | Primary agent loop | Tested | agent.test (7), cli.test (2) | M0 scope: transcript-derived state machine, per-step persistence, task-level backoff on 503/429. Arch §9.1–9.3, §30.1 |
 | F-AGT-2 | Plan Mode | Verified | m1.test (plan mode); live gemini-3.5-flash-lite plan task | Write tools absent from the tool list + policy deny; `submit_plan` → plan artifact with `unverifiedPaths`; CLI `--plan`, `helix plan`. No graph evidence yet (F-IDX-3). Arch §9.4 |
 | F-AGT-3 | Self-correction loop | Tested | agent.test, m1.test (diagnostics retry) | Retry prompt = structured diagnostics + 40-line tail (no full logs), max 3 attempts. Minimal-diff-since-green not yet. Arch §9.5 |
-| F-AGT-4 | Verification gates | Tested | agent.test | M0 subset: single verify command gate run in the sandbox (full gates M1). Arch §9.6 |
+| F-AGT-4 | Verification gates | Tested | agent.test, gates.test (3) | Configurable gates: `.helix/verify.json` or `--verify auto` (inferred from package.json/tsconfig/go.mod/Cargo.toml/python) or a single `--verify cmd`; required vs optional, per-gate timeout + parser, all gates each attempt, `verify.gate` events. No baseline (pre-existing failure) detection or change-based test selection yet. Arch §9.6 |
 | F-AGT-5 | Skills and hooks | Not Started | — | Arch §9.7 |
 | F-ORC-1 | Subagents | Not Started | — | Arch §10.1–10.2 |
 | F-ORC-2 | Task DAG scheduler | Not Started | — | Arch §10.3 |
@@ -72,7 +72,7 @@ Statuses: Not Started / In Progress / Implemented / Tested / Verified / Blocked 
 | F-ORC-4 | Human-in-the-loop approvals | Tested | sandbox.test (policy), agent.test (approve + headless deny) | `policy/policy.ts`; approvals table + `agent.approve`; pending approvals expire on recovery. Arch §10.5, §25.4 |
 | F-ORC-5 | Background and scheduled agents | Not Started | — | Arch §10.6, §30.4 |
 | F-SBX-1 | Sandbox provider abstraction | Tested | sandbox.test (4) | `LocalSandbox`: `unshare` user+net ns (fallback plain process), scrubbed env, private HOME, path confinement incl. symlinks/.git. Provider interface formalized in M1. Arch §16.1–16.2 |
-| F-SBX-2 | Whole-toolchain containment | Not Started | — | Arch §16.3 |
+| F-SBX-2 | Whole-toolchain containment | Tested | sandbox.test (containment case) | `unshare -U -r -n -m -p -f` + tmpfs root + chroot: ro /usr,/etc,/opt (+ `roPaths` option) and /bin,/lib* links, minimal /dev, rw workspace at its host path, private /tmp=HOME; no /proc,/sys,/home,/root. Probe `mountNsAvailable()`; `SandboxInfo.fsIsolation`. Arch §16.3 |
 | F-SBX-3 | Network egress control | Not Started | — | Arch §16.5 |
 | F-SBX-4 | Credential masking | Not Started | — | Arch §16.6, §8.3, §30.5 |
 | F-SBX-5 | Lifecycle and resources | Tested | sandbox.test (timeout/cap), agent.test (destroyed state) | Per-task sandbox, process-group kill on timeout/abort, output cap, reaper on engine start. No cgroups (not delegated). Arch §16.4 |
@@ -89,7 +89,7 @@ Statuses: Not Started / In Progress / Implemented / Tested / Verified / Blocked 
 | F-GIT-4 | PR integration | Not Started | — | Arch §20.5 |
 | F-GIT-5 | Git safeguards | Not Started | — | Arch §20.6 |
 | F-MCP-1 | MCP client manager | Not Started | — | Arch §14.1–14.3 |
-| F-MCP-2 | Tool registry and tool search (X7) | In Progress | sandbox.test, m1.test | `ToolRegistry` + 9 builtin tools (+ find_symbol, code_search, submit_plan); tool search not started. Arch §14.4, §15.2 |
+| F-MCP-2 | Tool registry and tool search (X7) | In Progress | sandbox.test, m1.test, graph.test | `ToolRegistry` + 10 builtin tools (+ find_symbol, code_search, impact, submit_plan); tool search not started. Arch §14.4, §15.2 |
 | F-MCP-3 | Permissions and trust tiers | Not Started | — | Arch §14.6 |
 | F-MCP-4 | Result normalization, compression, caching | Not Started | — | Arch §15.4 |
 | F-MCP-5 | Injection defense | Not Started | — | Arch §25.6 |
@@ -148,7 +148,8 @@ Statuses: Not Started / In Progress / Implemented / Tested / Verified / Blocked 
 | BUG-001 | Fixture verify `node --test test/` fails on Node 24 even when tests pass (directory treated as a file pattern) | Medium | fixtures, tests | Node ≥21 test-runner arg semantics | Fixed | Use explicit globs `node --test "test/*.test.js"` |
 | BUG-002 | Gemini free-tier *daily* quota 429 was retried as a short rate limit (would back off for minutes against a 17 h reset) | Medium | provider-gemini | All 429s mapped to `rate_limit` | Fixed | per-day quota or retryDelay > 10 min → `plan_limit` (non-retryable); per-minute stays `rate_limit`; regression test in models.test |
 | ISSUE-003 | Live Gemini free tier on this key: ~15 req/min and ~20 req/day per model; gemini-3.8-flash / 3.7-flash often 503 "high demand" | Info | live evals | Provider limits | Open | Use `--model gemini-3.5-flash-lite` or `--models a,b,c` (one model per fixture); task-level backoff absorbs 503s |
-| ISSUE-004 | Shell commands in the sandbox can still *read* host paths the user can read (only Helix's own tools are path-confined) | Medium (known M0 scope) | sandbox | No mount namespace / bind-mounted root yet | Open | F-SBX-2 (M1): mount ns with read-only bind of toolchain + workspace only |
+| ISSUE-004 | Shell commands in the sandbox could *read* host paths the user can read | Medium | sandbox | No mount namespace | Fixed (session 5) | F-SBX-2 contained root; regression test in sandbox.test. Falls back to old behaviour (fsIsolation:false) only where mount namespaces are unavailable |
+| ISSUE-008 | No /proc inside the contained sandbox (tools that read /proc/self, e.g. some `ps`/process-substitution uses, fail) | Low | sandbox | Mounting a fresh procfs is denied in this VM; binding host /proc would leak same-uid /proc/<pid>/environ (incl. Engine keys) | Open | Mount a fresh procfs when permitted (pid ns is already created); never bind the host /proc |
 | ISSUE-006 | CLI misses `context.composed` for a new task: the event fires before the CLI learns the task id and installs its filter | Low | CLI | Race between task.create response and the first events | Open | Buffer events by task until the id is known, or replay with `events.replay` |
 | ISSUE-007 | Index tools call `index.update()` (hash every file) on each invocation — fine for small repos, slow on 50k-file repos | Low | index | No file watcher yet | Open | Watcher + dirty set (§11.1) in the desktop/engine M1 indexer |
 | ISSUE-005 | No cgroup limits (CPU/memory/pids) — cgroup v2 not delegated in dev VM | Low | sandbox | Environment | Open | M1: systemd-run --user --scope or delegated cgroup when available |
@@ -170,6 +171,8 @@ Statuses: Not Started / In Progress / Implemented / Tested / Verified / Blocked 
 | IMPL-ADR-013 | Headless profile allows workspace writes and sandboxed exec; network and destructive classes resolve ask→deny unless `--allow` | `helix -p` must be able to fix code unattended while never pushing/publishing/fetching implicitly | Ask for every write | Matches §5.7; interactive profile asks for exec | policy, CLI |
 | IMPL-ADR-014 | Index v0 uses a line-oriented heuristic extractor + SQLite FTS5 (in engine.sqlite) instead of tree-sitter + Tantivy + trigram (§11.1, §12.1) | Zero native deps on Node 24 type-stripping; FTS5 ships with node:sqlite; same symbol model (§11.3) so tree-sitter swaps in behind `extract()` | web-tree-sitter WASM now | Less precise ranges for unusual syntax; no call-site edges yet. Edges table + SCIP/LSP in F-IDX-2/3 |
 | IMPL-ADR-015 | The composed context is built once per task and persisted as a `context` artifact; per-turn retrieval happens through the find_symbol/code_search tools | Byte-stable prompt prefix (prompt caching, §13.2 step 5) and exact replay after restart | Re-assemble every turn | Context does not refresh automatically after large edits; compaction (F-CTX-2) will add a session block |
+| IMPL-ADR-016 | Code graph v0 = name-based call-site edges (`idx_refs`) narrowed by import edges, not SCIP/LSP (§11.4–11.5) | Fast, zero-dep, good enough for impact hints and test selection; same query API will sit on precise edges later | Wait for tree-sitter/SCIP | Over-reports on common names in go/rust/java (no import scoping); reports `precision: 'heuristic'` | index |
+| IMPL-ADR-017 | Sandbox containment by `unshare` mount ns + tmpfs root + chroot (no pivot_root, no /proc) instead of bubblewrap/containers (§16.3) | bwrap/Docker unavailable in the dev VM; util-linux is universal on Linux | bubblewrap; OCI runtime | Linux-only; macOS/Windows providers still needed (Seatbelt / AppContainer) | sandbox |
 | IMPL-ADR-011 | Provider tests use protocol-faithful fake HTTP servers (`@helix/provider-conformance`) instead of mocked adapters; live tests run automatically when keys exist | Exercises the real adapter code, SSE parsing, and usage reconciliation offline and deterministically | Mock `fetch`; recorded cassettes | Fake servers must track provider API changes; they verify plumbing, never model quality | providers, engine tests |
 
 ## Test and Verification Results
@@ -186,6 +189,9 @@ Statuses: Not Started / In Progress / Implemented / Tested / Verified / Blocked 
 | gateway + ledger | Ledger reconciliation vs provider-reported usage, retries, breaker, budgets, vault | Test passed (7/7) | `packages/engine/test/models.test.ts` |
 | typecheck | all Helix packages | Test passed | `tsc -p tsconfig.helix.json` |
 | M1 engine slice | diagnostics, extractor, index, instructions+assembler, runtime context+restore, plan mode, diagnostics retry | Test passed (8/8) | `packages/engine/test/m1.test.ts`, session 4 |
+| sandbox containment | host files invisible, /usr read-only, workspace rw, toolchain usable | Test passed | `sandbox.test.ts` (7/7), session 5 |
+| verification gates | precedence, inference, validation, multi-gate runtime, optional gates, invalid config | Test passed (3/3) | `gates.test.ts`, session 5 |
+| code graph | refs extraction, transitive impact, import scoping, file impact, tool output | Test passed (2/2) | `graph.test.ts`, session 5 |
 | M1 live | ts-inventory fix + Plan Mode on js-calc with gemini-3.5-flash-lite | Verified | session 4 CLI runs (see Completed Work Log) |
 
 ## Session 4 (M1 start) — live plan
@@ -208,21 +214,19 @@ Branch: `helix/m1-session5` from `main` (session 4 work was merged to main by th
 Order (tick when done; next session resumes at the first unticked item):
 - [x] S5-1 (DONE, sandbox.test 7/7 incl. new containment test) F-SBX-2 mount-namespace containment (closes ISSUE-004): `unshare --user --map-root-user --net --mount --pid --fork`, tmpfs new root, read-only binds of /usr,/etc,/opt + symlinked /bin,/lib,/lib64,/sbin, minimal /dev nodes, rw workspace at its host path, private /tmp=HOME, no /proc /sys /home /root /vercel; chroot. Probe `mountNsAvailable()`; falls back to net-only namespace with `fsIsolation:false`.
 - [x] S5-2 (DONE, gates.test 3/3) F-AGT-4 verification gates: `.helix/verify.json` (typecheck/lint/test/build/custom gates, `required`, `parser`, `timeoutMs`); precedence explicit `--verify cmd` > config > inferred (only with `--verify auto`: package.json scripts, tsc, go.mod, Cargo.toml, pytest/unittest); all gates run each attempt, retry prompt only includes failing *required* gates; `verify.gate` events + `verify.result.gates[]`; invalid config fails the task clearly. Code: `engine/src/verify/gates.ts`, `agent/runtime.ts#verify`.
-- [ ] S5-3 F-IDX-3 code graph v0: call-site edges + `impact(symbol|file)`; `impact` tool + RPC + CLI.
-- [ ] S5-4 tests + tsc + commit/push.
-- Later: F-CTX-2, F-MDL-4, F-UI-1 workbench, F-MCP-1.
+- [x] S5-3 (DONE, graph.test 2/2) F-IDX-3 code graph v0: call-site edges + `impact(symbol|file)`; `impact` tool + RPC + CLI.
+- [x] S5-4 (DONE) engine 43/43, CLI 2/2, conformance 12/12 (+2 live skipped), tsc clean. Live: gemini-3.5-flash-lite fixed js-calc inside the fs-contained sandbox with `--verify auto` (inferred gate `npm test --silent` passed first attempt; 8 calls, 15981 in / 287 out tokens). Pushed to `helix/m1-session5`.
+- Next session starts at **Next Actions** item 1 (F-UI-1 workbench).
 
 ## Next Actions
 
-Resume here for **M1 — Core MVP** (session 5). Engine-side grounding/planning slice is done (see Session 4 list above). Next, in order:
-1. F-SBX-2 whole-toolchain containment: mount namespace (`unshare --mount`), read-only bind of /usr,/bin,/lib + toolchains, writable bind of workspace + private tmp; closes ISSUE-004. Add to `sandbox/sandbox.ts` behind `unshareAvailable()`.
-2. F-AGT-4 full verification gates: `.helix/verify.yaml` (§9.6) with inferred gates (typecheck/lint/unit), parser per gate, `required` flags; feed F-TRM-2 diagnostics per gate.
-3. F-IDX-3 code graph v0: call-site edges + `impact()` report; cite graph evidence in Plan Mode affectedFiles.
-4. F-CTX-2 compaction (structured summary at 80% budget) and F-MDL-4 role-based model config (`coder`/`explore`/`summarize` roles).
-5. F-UI-1 workbench: decide desktop shell (Electron per plan) vs. web workbench served by the Engine over the existing WS JSON-RPC (§22.2); then agent panel + task monitor + diff/restore UI.
-6. F-MCP-1 MCP client (stdio/HTTP) + F-MCP-3 permissions; F-SBX-3 egress proxy; F-PRV-1/2 dev-server detection + preview.
+Resume here for **M1 — Core MVP** (session 6). Session 5 closed priorities 1-3 at v0 level (see Session 5 list). Next, in order:
+1. F-UI-1 workbench (priority 4): web workbench served by the Engine over the existing token-authenticated WS JSON-RPC (§22.2) — agent panel (task create/stream), task monitor (events), diff + checkpoint restore, gate results, impact explorer. Electron shell wraps it later.
+2. F-MCP-1 MCP client (stdio + streamable HTTP), F-MCP-3 per-server/tool permissions through `policy.ts`, F-MCP-2 tool search (priority 5).
+3. Polish of priorities 2-3: baseline gate run (pre-existing failures), F-TST-1 change-based test selection from `impact().tests`, graph evidence in Plan Mode `affectedFiles`, tree-sitter extractor swap.
+4. F-CTX-2 compaction, F-MDL-4 role-based models, F-SBX-3 egress proxy, F-PRV-1/2 preview.
 Fix ISSUE-006 when touching the CLI.
 
-How to run: `pnpm --filter @helix/engine test` (37 tests, ~70 s), `pnpm --filter @helix/cli test`, `pnpm --filter @helix/provider-conformance test`, `npx tsc -p tsconfig.helix.json`.
+How to run: `pnpm --filter @helix/engine test` (43 tests), `pnpm --filter @helix/cli test`, `pnpm --filter @helix/provider-conformance test`, `npx tsc -p tsconfig.helix.json`.
 Live: `set -a; . ./.env.development.local; set +a; node --disable-warning=ExperimentalWarning evals/m0-exit.ts --model gemini-3.5-flash-lite` (key env var: `GEMINI_API`).
-CLI: `apps/cli/bin/helix -p "fix the failing test" -C <repo> --verify "<test cmd>" -m gemini-3.5-flash-lite`; `--plan` for Plan Mode; `helix search "<q>" -C <repo>`; `helix symbols <name> -C <repo>`; `helix checkpoints|restore <task>`.
+CLI: `apps/cli/bin/helix -p "fix the failing test" -C <repo> --verify "<test cmd>" -m gemini-3.5-flash-lite`; `--plan` for Plan Mode; `helix search "<q>" -C <repo>`; `helix symbols <name> -C <repo>`; `helix impact <symbol|file> -C <repo>`; `--verify auto` or `.helix/verify.json` for gates; `helix checkpoints|restore <task>`.

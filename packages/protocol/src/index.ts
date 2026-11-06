@@ -109,6 +109,7 @@ export const Methods = {
   indexUpdate: 'index.update',
   indexSearch: 'index.search',
   indexSymbols: 'index.symbols',
+  indexImpact: 'index.impact',
   checkpointList: 'checkpoint.list',
   checkpointRestore: 'checkpoint.restore',
   artifactList: 'artifact.list',

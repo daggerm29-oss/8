@@ -57,7 +57,7 @@ export interface CheckpointInfo {
   files: Array<{ path: string; created: boolean }>;
 }
 
-const PLAN_TOOLS = ['read_file', 'list_dir', 'search', 'find_symbol', 'code_search', 'submit_plan'];
+const PLAN_TOOLS = ['read_file', 'list_dir', 'search', 'find_symbol', 'code_search', 'impact', 'submit_plan'];
 
 function pidAlive(pid: number): boolean {
   if (pid === process.pid) return true;
@@ -75,8 +75,8 @@ function systemPrompt(root: string, verify: string | null, profile: PolicyProfil
     'You are Helix, an autonomous coding agent working inside a sandboxed copy of a software repository.',
     `Workspace root: ${root}. All paths are relative to it. The sandbox has no network access.`,
     plan
-      ? 'You are in PLAN MODE: you can only read. Investigate with find_symbol, code_search, read_file, list_dir, and search, then call submit_plan exactly once with a concrete, file-grounded plan. Do not attempt to edit files.'
-      : 'Work methodically: locate code with find_symbol (definitions) and code_search (ranked slices) before falling back to search/list_dir, read only the ranges you need with read_file, make minimal targeted edits with edit_file, then run the tests with run_shell to confirm.',
+      ? 'You are in PLAN MODE: you can only read. Investigate with find_symbol, code_search, impact (call sites + tests affected by a change), read_file, list_dir, and search, then call submit_plan exactly once with a concrete, file-grounded plan. Do not attempt to edit files.'
+      : 'Work methodically: locate code with find_symbol (definitions), code_search (ranked slices) and impact (callers + covering tests) before falling back to search/list_dir, read only the ranges you need with read_file, make minimal targeted edits with edit_file, then run the tests with run_shell to confirm.',
     plan ? '' : 'Never weaken, skip, or delete tests to make them pass; fix the code under test.',
     verify && !plan ? `When you finish, Helix runs these verification gates in order: ${verify}. The task only succeeds if every required gate exits 0.` : '',
     'When the task is complete, reply with a short summary and do not call any more tools.',
