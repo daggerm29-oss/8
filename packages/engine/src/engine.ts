@@ -1,6 +1,8 @@
-import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { timingSafeEqual } from 'node:crypto';
+import { createServer, type Server } from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
 import {
   Methods, Notifications, PROTOCOL_VERSION, RpcError, RpcErrorCode, RpcPeer, streamTransport,
@@ -24,6 +26,13 @@ import { WorkspaceIndex } from './index/index.ts';
 import { parseDiagnostics } from './diagnostics/parsers.ts';
 
 export const ENGINE_VERSION = '0.1.0';
+
+const UI_DIR = fileURLToPath(new URL('../ui/', import.meta.url));
+const UI_FILES: Record<string, { name: string; type: string }> = {
+  '/index.html': { name: 'index.html', type: 'text/html; charset=utf-8' },
+  '/app.js': { name: 'app.js', type: 'text/javascript; charset=utf-8' },
+  '/app.css': { name: 'app.css', type: 'text/css; charset=utf-8' },
+};
 
 export interface EngineOptions {
   home?: string;
@@ -55,6 +64,7 @@ export class Engine {
   readonly blobs: BlobStore;
   private heartbeat?: NodeJS.Timeout;
   private wss?: WebSocketServer;
+  private http?: Server;
   private closed = false;
 
   constructor(opts: EngineOptions = {}) {
@@ -150,6 +160,9 @@ export class Engine {
     peer.handle(Methods.checkpointRestore, guard<{ task: string; checkpoint?: string }>((p) => this.runtime.restore(p.task, p.checkpoint)));
     peer.handle(Methods.artifactList, guard<{ task: string; kind?: string }>((p) => this.runtime.artifacts(p.task, p.kind)));
     peer.handle(Methods.diagnosticsParse, guard<{ command: string; output: string }>((p) => parseDiagnostics(p.command, p.output)));
+    peer.handle(Methods.checkpointDiff, guard<{ task: string; checkpoint?: string }>((p) => this.runtime.diff(p.task, p.checkpoint)));
+    peer.handle(Methods.approvalList, guard<{ task?: string }>((p) => this.runtime.approvalList(p.task)));
+    peer.handle(Methods.workspaceList, guard(() => this.runtime.workspaces()));
   }
 
   /** Index for a workspace path (registers the workspace on first use). */
@@ -166,13 +179,56 @@ export class Engine {
 
   /** Loopback WebSocket server (§22.2) with a per-start bearer token written to `$HELIX_HOME/engine.json` (0600). */
   async serveWebSocket(port = 0): Promise<{ port: number; token: string }> {
+    return this.serve({ port });
+  }
+
+  /**
+   * HTTP + WebSocket server on one port (§22.2, F-UI-1). `ui` serves the no-build workbench from
+   * `packages/engine/ui/`. The token travels in the URL fragment (`/#token=…`), which browsers never send to
+   * the server, so serving the page does not leak it. Host and Origin headers must be loopback (or listed in
+   * `allowedHosts`) to defeat DNS rebinding. `noAuth` exists only for remote dev previews and is loud about it.
+   */
+  async serve(opts: { port?: number; host?: string; ui?: boolean; noAuth?: boolean; allowedHosts?: string[] } = {}): Promise<{ port: number; token: string; url: string }> {
     const token = randomToken();
-    this.wss = new WebSocketServer({ host: '127.0.0.1', port });
-    await new Promise<void>((r) => this.wss!.once('listening', () => r()));
-    const actual = (this.wss.address() as { port: number }).port;
-    this.wss.on('connection', (socket: WebSocket) => this.attach(new RpcPeer(wsTransport(socket)), { token }));
+    const host = opts.host ?? '127.0.0.1';
+    const allowed = new Set(['127.0.0.1', 'localhost', '[::1]', ...(opts.allowedHosts ?? [])]);
+    const anyHost = opts.allowedHosts?.includes('*') ?? false;
+    const hostOk = (h: string | undefined) => {
+      if (!h) return false;
+      if (anyHost) return true;
+      const name = h.startsWith('[') ? h.slice(0, h.indexOf(']') + 1) : h.split(':')[0];
+      return allowed.has(name);
+    };
+    const originOk = (o: string | undefined, h: string | undefined) => {
+      if (!o) return true;
+      try { return new URL(o).host === h || hostOk(new URL(o).host); } catch { return false; }
+    };
+    this.http = createServer((req, res) => {
+      if (!hostOk(req.headers.host)) { res.writeHead(403).end('forbidden host'); return; }
+      const path = (req.url ?? '/').split('?')[0];
+      if (path === '/healthz') { res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ ok: true, engineId: this.id })); return; }
+      if (path === '/config.json') {
+        res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }).end(JSON.stringify({ engineVersion: ENGINE_VERSION, auth: opts.noAuth ? 'none' : 'token' }));
+        return;
+      }
+      if (!opts.ui) { res.writeHead(404).end('not found'); return; }
+      const file = UI_FILES[path === '/' ? '/index.html' : path];
+      if (!file) { res.writeHead(404).end('not found'); return; }
+      res.writeHead(200, {
+        'content-type': file.type, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer',
+        'content-security-policy': "default-src 'self'; connect-src 'self' ws: wss:; style-src 'self'; script-src 'self'; img-src 'self' data:; frame-ancestors *",
+      }).end(readFileSync(join(UI_DIR, file.name)));
+    });
+    this.wss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024 });
+    this.http.on('upgrade', (req, socket, head) => {
+      if (!hostOk(req.headers.host) || !originOk(req.headers.origin, req.headers.host)) { socket.end('HTTP/1.1 403 Forbidden\r\n\r\n'); return; }
+      this.wss!.handleUpgrade(req, socket, head, (ws) => this.attach(new RpcPeer(wsTransport(ws)), opts.noAuth ? {} : { token }));
+    });
+    await new Promise<void>((r) => this.http!.listen(opts.port ?? 0, host, () => r()));
+    const actual = (this.http.address() as { port: number }).port;
     writeFileSync(join(this.home, 'engine.json'), JSON.stringify({ engineId: this.id, pid: process.pid, port: actual, token }), { mode: 0o600 });
-    return { port: actual, token };
+    const shown = host === '0.0.0.0' || host === '::' ? '127.0.0.1' : host;
+    return { port: actual, token, url: `http://${shown}:${actual}/${opts.noAuth ? '' : `#token=${token}`}` };
   }
 
   async close(): Promise<void> {
@@ -180,7 +236,10 @@ export class Engine {
     this.closed = true;
     clearInterval(this.heartbeat);
     await this.runtime.shutdown();
+    for (const c of this.wss?.clients ?? []) c.terminate();
     this.wss?.close();
+    this.http?.closeAllConnections();
+    this.http?.close();
     rmSync(join(this.home, 'engine.json'), { force: true });
     this.db.run('UPDATE engine_instances SET stopped_at = ? WHERE id = ?', new Date().toISOString(), this.id);
     this.bus.close();

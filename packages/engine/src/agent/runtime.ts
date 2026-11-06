@@ -19,6 +19,7 @@ import { LocalSandbox } from '../sandbox/sandbox.ts';
 import { evaluate, type PolicyProfile } from '../policy/policy.ts';
 import { prefixedId } from '../util/ids.ts';
 import { globalRedactor } from '../util/redact.ts';
+import { unifiedDiff, type FileDiff } from '../util/diff.ts';
 
 export const MAX_VERIFY_ATTEMPTS = 3;
 const TASK_RETRY_DELAYS_MS = [5_000, 15_000, 30_000, 60_000];
@@ -351,6 +352,42 @@ export class TaskRuntime {
   checkpoints(task: string): CheckpointInfo[] {
     return this.o.db.all<{ id: string; files_json: string; at: string }>('SELECT id, files_json, at FROM checkpoints WHERE task = ? ORDER BY rowid', task)
       .map((r, seq) => ({ id: r.id, seq, at: r.at, files: parseJson<Array<{ path: string; before: string | null }>>(r.files_json, []).map((f) => ({ path: f.path, created: f.before === null })) }));
+  }
+
+  /**
+   * Diff of the workspace now vs its state before checkpoint `target` (default: whole task) — the exact
+   * change set `restore(task, target)` would revert (F-UI-1 diff view).
+   */
+  diff(task: string, target?: string): FileDiff[] {
+    const r = this.row(task);
+    const root = this.wsPath(r.ws);
+    const all = this.o.db.all<{ id: string; files_json: string }>('SELECT id, files_json FROM checkpoints WHERE task = ? ORDER BY rowid', task);
+    const from = target ? all.findIndex((c) => c.id === target) : 0;
+    if (from < 0) throw new Error(`unknown checkpoint ${target}`);
+    type Ref = Parameters<BlobStore['getText']>[0] | null;
+    const preimage = new Map<string, Ref>();
+    for (const c of all.slice(from)) for (const f of parseJson<Array<{ path: string; before: Ref }>>(c.files_json, [])) if (!preimage.has(f.path)) preimage.set(f.path, f.before);
+    const out: FileDiff[] = [];
+    for (const [path, ref] of preimage) {
+      const abs = join(root, path);
+      if (!abs.startsWith(root + '/')) continue;
+      const current = existsSync(abs) ? readFileSync(abs, 'utf8') : null;
+      const before = ref === null ? null : this.o.blobs ? this.o.blobs.getText(ref) : String(ref);
+      out.push(unifiedDiff(path, before, current));
+    }
+    return out;
+  }
+
+  /** Approvals for a task (or all pending ones), newest first. */
+  approvalList(task?: string): Array<{ id: string; task: string; tool: string; args: unknown; actionClass: string; status: string; at: string }> {
+    const rows = this.o.db.all<{ id: string; task: string; tool: string; args_json: string; action_class: string; status: string; at: string }>(
+      task ? 'SELECT * FROM approvals WHERE task = ? ORDER BY at DESC' : `SELECT * FROM approvals WHERE status = 'pending' ORDER BY at DESC`, ...(task ? [task] : []),
+    );
+    return rows.map((a) => ({ id: a.id, task: a.task, tool: a.tool, args: parseJson(a.args_json, {}), actionClass: a.action_class, status: a.status, at: a.at }));
+  }
+
+  workspaces(): Array<{ id: string; path: string; createdAt: string }> {
+    return this.o.db.all<{ id: string; path: string; created_at: string }>('SELECT id, path, created_at FROM workspace ORDER BY created_at DESC').map((w) => ({ id: w.id, path: w.path, createdAt: w.created_at }));
   }
 
   /**

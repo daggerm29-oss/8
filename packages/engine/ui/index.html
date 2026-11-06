@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b0d10">
+  <meta name="referrer" content="no-referrer">
+  <title>Helix Workbench</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="logo" aria-hidden="true"></span><span>Helix</span><span class="muted">Workbench</span></div>
+    <div class="engine" id="engine-status" role="status" aria-live="polite">connecting…</div>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar" aria-label="Tasks">
+      <form id="new-task" class="card form" autocomplete="off">
+        <h2>New task</h2>
+        <label>Workspace path<input name="workspacePath" list="workspaces" required placeholder="/path/to/repo"></label>
+        <datalist id="workspaces"></datalist>
+        <label>Goal<textarea name="goal" rows="3" required placeholder="Fix the failing test in src/calc.js"></textarea></label>
+        <div class="row">
+          <label>Model<input name="model" placeholder="gemini-3.5-flash-lite"></label>
+          <label>Verify<input name="verifyCommand" placeholder="auto"></label>
+        </div>
+        <div class="row">
+          <label>Policy
+            <select name="policyProfile">
+              <option value="interactive">Interactive (ask)</option>
+              <option value="headless">Headless</option>
+              <option value="plan">Plan mode (read-only)</option>
+            </select>
+          </label>
+          <label>Budget USD<input name="budgetUsd" type="number" min="0" step="0.01" placeholder="0.50"></label>
+        </div>
+        <button type="submit" class="primary">Start task</button>
+        <p class="form-error" id="form-error" role="alert"></p>
+      </form>
+
+      <div class="list-head"><h2>Tasks</h2><button type="button" id="refresh" class="ghost" aria-label="Refresh tasks">Refresh</button></div>
+      <ul id="task-list" class="task-list"></ul>
+    </aside>
+
+    <main class="main" id="main">
+      <div id="empty" class="empty">
+        <h1>No task selected</h1>
+        <p>Start a task on the left or pick one from the list to stream its activity, review diffs, and restore checkpoints.</p>
+      </div>
+
+      <section id="task-view" class="task-view" hidden>
+        <div class="task-head">
+          <div>
+            <h1 id="task-title"></h1>
+            <p class="muted mono" id="task-meta"></p>
+          </div>
+          <div class="task-actions">
+            <span class="badge" id="task-status"></span>
+            <button type="button" id="cancel" class="danger">Cancel</button>
+            <button type="button" id="resume" class="ghost">Resume</button>
+          </div>
+        </div>
+
+        <div id="approvals" class="approvals" aria-live="assertive"></div>
+
+        <div class="stats" id="stats"></div>
+
+        <div class="tabs" role="tablist" aria-label="Task panels">
+          <button role="tab" aria-selected="true" data-tab="activity">Activity</button>
+          <button role="tab" aria-selected="false" data-tab="transcript">Transcript</button>
+          <button role="tab" aria-selected="false" data-tab="diff">Diff</button>
+          <button role="tab" aria-selected="false" data-tab="gates">Gates</button>
+          <button role="tab" aria-selected="false" data-tab="impact">Impact</button>
+          <button role="tab" aria-selected="false" data-tab="artifacts">Artifacts</button>
+        </div>
+
+        <div class="panel" role="tabpanel" data-panel="activity"><ol id="activity" class="activity"></ol></div>
+        <div class="panel" role="tabpanel" data-panel="transcript" hidden><div id="transcript" class="transcript"></div></div>
+        <div class="panel" role="tabpanel" data-panel="diff" hidden>
+          <div class="diff-bar">
+            <label>Since checkpoint <select id="checkpoint-select"></select></label>
+            <button type="button" id="restore" class="danger">Restore to before this checkpoint</button>
+          </div>
+          <div id="diff"></div>
+        </div>
+        <div class="panel" role="tabpanel" data-panel="gates" hidden><div id="gates"></div></div>
+        <div class="panel" role="tabpanel" data-panel="impact" hidden>
+          <form id="impact-form" class="diff-bar">
+            <label class="grow">Symbol or file <input name="target" required placeholder="subtract or src/calc.js"></label>
+            <button type="submit" class="primary">Analyze impact</button>
+          </form>
+          <div id="impact"></div>
+        </div>
+        <div class="panel" role="tabpanel" data-panel="artifacts" hidden><div id="artifacts"></div></div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="token-dialog" aria-labelledby="token-title">
+    <form method="dialog" id="token-form">
+      <h2 id="token-title">Engine token</h2>
+      <p class="muted">Paste the token from <code>$HELIX_HOME/engine.json</code>, or open the workbench URL printed by <code>helix-engine --ui</code>.</p>
+      <label>Token<input name="token" required autocomplete="off"></label>
+      <button type="submit" class="primary">Connect</button>
+    </form>
+  </dialog>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
