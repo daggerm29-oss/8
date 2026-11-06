@@ -7,7 +7,7 @@
 - Project: Helix
 - Current Phase: M1 — Core MVP (engine-side slice in progress)
 - Overall Completion: ~20% (M0 Verified; M1 ~55%: engine slice + web workbench v0)
-- Current Status: M1 session 6 — F-UI-1 web workbench v0 Tested (live Gemini run from the UI)
+- Current Status: M1 session 6 — F-UI-1 web workbench v0 + F-MCP-1 stdio MCP client Tested (live Gemini runs from the UI)
 - Last Updated: 2026-11-06 (session 6)
 - Current Development Branch: `helix/m1-session6` (base: `main` of github.com/daggerm29-oss/8)
 
@@ -88,9 +88,9 @@ Statuses: Not Started / In Progress / Implemented / Tested / Verified / Blocked 
 | F-GIT-3 | Worktree manager | Not Started | — | Arch §20.4 |
 | F-GIT-4 | PR integration | Not Started | — | Arch §20.5 |
 | F-GIT-5 | Git safeguards | Not Started | — | Arch §20.6 |
-| F-MCP-1 | MCP client manager | Not Started | — | Arch §14.1–14.3 |
+| F-MCP-1 | MCP client manager | In Progress | mcp.test (3); live Gemini via workbench (session 6) | stdio transport + manager + `mcp.list` done; streamable HTTP not started. Arch §14.1–14.3 |
 | F-MCP-2 | Tool registry and tool search (X7) | In Progress | sandbox.test, m1.test, graph.test | `ToolRegistry` + 10 builtin tools (+ find_symbol, code_search, impact, submit_plan); tool search not started. Arch §14.4, §15.2 |
-| F-MCP-3 | Permissions and trust tiers | Not Started | — | Arch §14.6 |
+| F-MCP-3 | Permissions and trust tiers | In Progress | mcp.test | v0: MCP tools = `network`; trusted+readOnlyHint = `read`; `registerToolClass` in policy.ts. Per-tool lists not started. Arch §14.6 |
 | F-MCP-4 | Result normalization, compression, caching | Not Started | — | Arch §15.4 |
 | F-MCP-5 | Injection defense | Not Started | — | Arch §25.6 |
 | F-TOK-1 | Token ledger | Verified | engine models.test: totals reconcile exactly with provider-reported usage (Gemini + OpenAI fakes) | Live: ledger tokens == sum of raw Gemini usageMetadata for all 3 exit tasks. Per-attempt rows, provider vs estimate source, cost from manifest pricing, `ledger.entry` events. Arch §29.1, §29.6 |
@@ -193,6 +193,7 @@ Statuses: Not Started / In Progress / Implemented / Tested / Verified / Blocked 
 | sandbox containment | host files invisible, /usr read-only, workspace rw, toolchain usable | Test passed | `sandbox.test.ts` (7/7), session 5 |
 | verification gates | precedence, inference, validation, multi-gate runtime, optional gates, invalid config | Test passed (3/3) | `gates.test.ts`, session 5 |
 | code graph | refs extraction, transitive impact, import scoping, file impact, tool output | Test passed (2/2) | `graph.test.ts`, session 5 |
+| mcp | sanitizeSchema/exposedName; manager connect + 2-page tools/list, call, isError, timeout, broken/disabled servers, trust classes, no env leak; engine headless deny vs `tool:` preapprove | Test passed (3/3) | `mcp.test.ts`, session 6 |
 | workbench | unifiedDiff cases; UI served without token, foreign Host/Origin 403, token-gated WS, events over socket, checkpoint.diff whole/partial/after-restore, workspace/approval list | Test passed (2/2) | `ui.test.ts`, session 6 |
 | M1 live | ts-inventory fix + Plan Mode on js-calc with gemini-3.5-flash-lite | Verified | session 4 CLI runs (see Completed Work Log) |
 
@@ -228,18 +229,19 @@ Order (tick when done; next session resumes at the first unticked item):
 - S6-1 F-UI-1 workbench v0 (as built): the Engine serves a no-build web UI (`packages/engine/ui/{index.html,app.js,app.css}`) over HTTP on the same port as the WS JSON-RPC (`serveWebSocket` → `serve({ui:true})`). Token in the URL fragment (`/#token=…`, never sent to the server); Host/Origin loopback check against DNS rebinding; `--host`/`--no-auth` dev flags for remote previews only. Panels: task list + create (workspace, goal, model, verify, plan mode), live event stream, transcript, gate results, diff per checkpoint + restore, approvals, impact explorer, ledger.
 - S6-2 RPC additions: `checkpoint.diff` (`runtime.diff`, `util/diff.ts` LCS unified diff, whole-file fallback above 4M cells), `agent.approvals.list`, `workspace.list`.
 - S6-3 Tests (`ui.test.ts`: HTTP serving, Host/Origin rejection, token-gated WS, checkpoint.diff) + browser check of the workbench; push.
-- [ ] S6-4 If time: F-MCP-1 stdio MCP client.
+- [x] S6-4 F-MCP-1 stdio MCP client DONE: `src/mcp/client.ts` (newline JSON-RPC, initialize/initialized, paginated tools/list, tools/call, per-request timeout + notifications/cancelled, abort, minimal env allowlist so provider keys never reach MCP servers, server→client requests answered -32601), `src/mcp/manager.ts` (`$HELIX_HOME/mcp.json` `servers`|`mcpServers`, tools exposed as `mcp__<server>__<tool>` ≤64 chars, schema sanitized to the provider-safe subset, per-server failure isolation, `enabled:false`). Policy (F-MCP-3 v0): MCP tools are `network` (ask; headless deny unless `--allow network`/`tool:<name>`), except `trusted` server + `readOnlyHint` → `read`. RPC `mcp.list`; workbench sidebar shows servers/tools. `mcp.test.ts` 3/3; live: gemini-3.5-flash-lite called `mcp__demo__echo` from the workbench (2 calls, allowed as trusted read).
+  - Sandbox note: `~/.helix/mcp.json` in the v0 VM points at `test/fixtures/fake-mcp-server.mjs` as server `demo` (dev only, not in repo).
 
 ## Next Actions
 
 Resume here for **M1 — Core MVP** (session 7). Session 6 shipped F-UI-1 workbench v0 (see Session 6 list). Next, in order:
-1. F-MCP-1 MCP client (stdio + streamable HTTP), F-MCP-3 per-server/tool permissions through `policy.ts`, F-MCP-2 tool search (priority 5).
+1. MCP follow-ups: streamable HTTP transport (F-MCP-1 part 2), per-tool allow/deny lists in mcp.json + approval UI "always allow" (F-MCP-3), F-MCP-2 tool search when tool count is large, F-MCP-4 result caching; MCP resources/prompts; `helix mcp list|add` CLI.
 2. Workbench follow-ups: F-UI-2 agent activity monitor (multi-task), Monaco/CodeMirror file view, PTY terminal panel (F-TRM-1), Electron shell + OS keychain (IMPL-ADR-010).
 3. Polish of priorities 2-3: baseline gate run (pre-existing failures), F-TST-1 change-based test selection from `impact().tests`, graph evidence in Plan Mode `affectedFiles`, tree-sitter extractor swap.
 4. F-CTX-2 compaction, F-MDL-4 role-based models, F-SBX-3 egress proxy, F-PRV-1/2 preview.
 Fix ISSUE-006 when touching the CLI.
 
 Workbench: `node --disable-warning=ExperimentalWarning packages/engine/src/main.ts --ui` prints `http://127.0.0.1:<port>/#token=…`. In the v0 sandbox the registered service `helix-workbench` runs it on port 4100 with `--host 0.0.0.0 --allow-host '*' --no-auth` (dev preview only; sources `.env.development.local` for `GEMINI_API`).
-How to run: `pnpm --filter @helix/engine test` (45 tests), `pnpm --filter @helix/cli test`, `pnpm --filter @helix/provider-conformance test`, `npx tsc -p tsconfig.helix.json`.
+How to run: `pnpm --filter @helix/engine test` (48 tests), `pnpm --filter @helix/cli test`, `pnpm --filter @helix/provider-conformance test`, `npx tsc -p tsconfig.helix.json`.
 Live: `set -a; . ./.env.development.local; set +a; node --disable-warning=ExperimentalWarning evals/m0-exit.ts --model gemini-3.5-flash-lite` (key env var: `GEMINI_API`).
 CLI: `apps/cli/bin/helix -p "fix the failing test" -C <repo> --verify "<test cmd>" -m gemini-3.5-flash-lite`; `--plan` for Plan Mode; `helix search "<q>" -C <repo>`; `helix symbols <name> -C <repo>`; `helix impact <symbol|file> -C <repo>`; `--verify auto` or `.helix/verify.json` for gates; `helix checkpoints|restore <task>`.

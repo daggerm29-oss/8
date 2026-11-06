@@ -20,6 +20,7 @@ import { Vault } from './vault/vault.ts';
 import { Ledger } from './models/ledger.ts';
 import { ModelGateway } from './models/gateway.ts';
 import { builtinTools } from './tools/builtin.ts';
+import { McpManager, type McpServerConfig, type McpServerStatus } from './mcp/manager.ts';
 import { TaskRuntime } from './agent/runtime.ts';
 import { unshareAvailable } from './sandbox/sandbox.ts';
 import { WorkspaceIndex } from './index/index.ts';
@@ -45,6 +46,10 @@ export interface EngineOptions {
   recover?: boolean;
   /** Build the code index and composed context per task (default true). */
   indexing?: boolean;
+  /** Connect MCP servers from `$HELIX_HOME/mcp.json` (default true). */
+  mcp?: boolean;
+  /** Inline MCP server config (overrides mcp.json; tests). */
+  mcpServers?: Record<string, McpServerConfig>;
 }
 
 const TOPICS = ['task.*', 'agent.*', 'tool.*', 'model.*', 'verify.*', 'approval.*', 'ledger.*', 'budget.*', 'context.*', 'artifact.*', 'checkpoint.*'];
@@ -62,6 +67,9 @@ export class Engine {
   readonly gateway: ModelGateway;
   readonly runtime: TaskRuntime;
   readonly blobs: BlobStore;
+  readonly mcp: McpManager;
+  /** Resolves once configured MCP servers are connected (or failed) and their tools are registered. */
+  readonly mcpReady: Promise<McpServerStatus[]>;
   private heartbeat?: NodeJS.Timeout;
   private wss?: WebSocketServer;
   private http?: Server;
@@ -79,7 +87,10 @@ export class Engine {
     this.vault = new Vault(env);
     this.ledger = new Ledger(this.db, this.bus);
     this.gateway = new ModelGateway({ adapters: opts.adapters ?? [new GeminiAdapter(), new OpenAIAdapter()], vault: this.vault, ledger: this.ledger, tracer: this.tracer, logger: this.logger, retry: opts.retry });
-    this.runtime = new TaskRuntime({ db: this.db, bus: this.bus, gateway: this.gateway, ledger: this.ledger, tools: builtinTools(), tracer: this.tracer, engineId: this.id, blobs: this.blobs, logger: this.logger, forceProcessSandbox: opts.forceProcessSandbox, taskRetryScale: opts.taskRetryScale, helixHome: this.home, indexing: opts.indexing });
+    const tools = builtinTools();
+    this.mcp = new McpManager({ home: this.home, registry: tools, logger: this.logger, config: opts.mcpServers });
+    this.mcpReady = opts.mcp === false ? Promise.resolve([]) : this.mcp.start();
+    this.runtime = new TaskRuntime({ db: this.db, bus: this.bus, gateway: this.gateway, ledger: this.ledger, tools, tracer: this.tracer, engineId: this.id, blobs: this.blobs, logger: this.logger, forceProcessSandbox: opts.forceProcessSandbox, taskRetryScale: opts.taskRetryScale, helixHome: this.home, indexing: opts.indexing });
 
     const now = new Date().toISOString();
     this.db.run('INSERT INTO engine_instances (id, pid, started_at, heartbeat_at) VALUES (?, ?, ?, ?)', this.id, process.pid, now, now);
@@ -163,6 +174,7 @@ export class Engine {
     peer.handle(Methods.checkpointDiff, guard<{ task: string; checkpoint?: string }>((p) => this.runtime.diff(p.task, p.checkpoint)));
     peer.handle(Methods.approvalList, guard<{ task?: string }>((p) => this.runtime.approvalList(p.task)));
     peer.handle(Methods.workspaceList, guard(() => this.runtime.workspaces()));
+    peer.handle(Methods.mcpList, guard(async () => { await this.mcpReady; return this.mcp.list(); }));
   }
 
   /** Index for a workspace path (registers the workspace on first use). */
@@ -236,6 +248,8 @@ export class Engine {
     this.closed = true;
     clearInterval(this.heartbeat);
     await this.runtime.shutdown();
+    await this.mcpReady.catch(() => []);
+    await this.mcp.close();
     for (const c of this.wss?.clients ?? []) c.terminate();
     this.wss?.close();
     this.http?.closeAllConnections();
