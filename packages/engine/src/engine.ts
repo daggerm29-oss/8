@@ -50,6 +50,8 @@ export interface EngineOptions {
   mcp?: boolean;
   /** Inline MCP server config (overrides mcp.json; tests). */
   mcpServers?: Record<string, McpServerConfig>;
+  /** Hide MCP tools behind tool_search above this many tools (default 30 or mcp.json `toolSearchThreshold`). */
+  mcpToolSearchThreshold?: number;
 }
 
 const TOPICS = ['task.*', 'agent.*', 'tool.*', 'model.*', 'verify.*', 'approval.*', 'ledger.*', 'budget.*', 'context.*', 'artifact.*', 'checkpoint.*'];
@@ -88,7 +90,7 @@ export class Engine {
     this.ledger = new Ledger(this.db, this.bus);
     this.gateway = new ModelGateway({ adapters: opts.adapters ?? [new GeminiAdapter(), new OpenAIAdapter()], vault: this.vault, ledger: this.ledger, tracer: this.tracer, logger: this.logger, retry: opts.retry });
     const tools = builtinTools();
-    this.mcp = new McpManager({ home: this.home, registry: tools, logger: this.logger, config: opts.mcpServers });
+    this.mcp = new McpManager({ home: this.home, registry: tools, logger: this.logger, config: opts.mcpServers, toolSearchThreshold: opts.mcpToolSearchThreshold });
     this.mcpReady = opts.mcp === false ? Promise.resolve([]) : this.mcp.start();
     this.runtime = new TaskRuntime({ db: this.db, bus: this.bus, gateway: this.gateway, ledger: this.ledger, tools, tracer: this.tracer, engineId: this.id, blobs: this.blobs, logger: this.logger, forceProcessSandbox: opts.forceProcessSandbox, taskRetryScale: opts.taskRetryScale, helixHome: this.home, indexing: opts.indexing });
 
@@ -141,7 +143,16 @@ export class Engine {
     peer.handle(Methods.taskList, guard<{ limit?: number }>((p) => this.runtime.list(p.limit)));
     peer.handle(Methods.taskWait, guard<{ id: string; timeoutMs?: number }>((p) => this.runtime.wait(p.id, p.timeoutMs)));
     peer.handle(Methods.taskTranscript, guard<{ id: string }>((p) => this.runtime.transcript(p.id)));
-    peer.handle(Methods.approvalRespond, guard<{ approvalId: string; approved: boolean }>((p) => (this.runtime.approve(p.approvalId, p.approved), { ok: true })));
+    peer.handle(Methods.approvalRespond, guard<{ approvalId: string; approved: boolean; always?: boolean }>((p) => {
+      let alwaysAllowed: { server: string; tool: string } | null = null;
+      if (p.approved && p.always) {
+        const tool = this.runtime.approvalTool(p.approvalId);
+        alwaysAllowed = tool ? this.mcp.alwaysAllow(tool) : null;
+        if (!alwaysAllowed) throw new Error(`'always allow' is only supported for MCP tools (got ${tool ?? 'unknown approval'})`);
+      }
+      this.runtime.approve(p.approvalId, p.approved);
+      return { ok: true, alwaysAllowed };
+    }));
     peer.handle(Methods.ledgerQuery, guard<{ task?: string; ws?: string; entries?: boolean }>((p) => ({ totals: this.ledger.totals(p), entries: p.entries ? this.ledger.entries({ task: p.task }) : undefined })));
     peer.handle(Methods.budgetsSet, guard<Parameters<Ledger['setBudget']>[0]>((p) => ({ id: this.ledger.setBudget(p) })));
     peer.handle(Methods.providersList, guard(() => this.gateway.providers()));

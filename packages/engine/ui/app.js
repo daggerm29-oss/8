@@ -150,11 +150,13 @@ async function renderApprovals() {
     h('pre', { class: 'mono' }, JSON.stringify(a.args, null, 2)),
     h('div', { class: 'row' },
       h('button', { type: 'button', class: 'danger', onclick: () => respond(a.id, false) }, 'Deny'),
-      h('button', { type: 'button', class: 'primary', onclick: () => respond(a.id, true) }, 'Approve')))));
+      h('button', { type: 'button', class: 'primary', onclick: () => respond(a.id, true) }, 'Approve'),
+      a.tool.startsWith('mcp__') ? h('button', { type: 'button', title: 'Approve and stop asking for this MCP tool (saved to mcp.json)', onclick: () => respond(a.id, true, true) }, 'Always allow') : null))));
 }
 
-async function respond(approvalId, approved) {
-  await rpc.call('agent.approve', { approvalId, approved });
+async function respond(approvalId, approved, always = false) {
+  await rpc.call('agent.approve', { approvalId, approved, always });
+  if (always) loadMcp();
   renderApprovals();
 }
 
@@ -364,9 +366,10 @@ async function loadMcp() {
     return;
   }
   list.replaceChildren(...servers.map((s) => h('li', { class: 'mcp' },
-    h('div', { class: 'm' }, h('span', { class: `badge ${s.state === 'connected' ? 'done' : s.state === 'failed' ? 'failed' : ''}` }, s.state), h('span', { class: 't' }, s.name), h('span', {}, `${s.tools.length} tools`)),
+    h('div', { class: 'm' }, h('span', { class: `badge ${s.state === 'connected' ? 'done' : s.state === 'failed' ? 'failed' : ''}` }, s.state), h('span', { class: 't' }, s.name), h('span', {}, `${s.transport === 'http' ? 'http · ' : ''}${s.tools.length} tools`)),
     s.error ? h('div', { class: 'note err' }, s.error) : null,
-    s.tools.length ? h('div', { class: 'tools mono' }, s.tools.map((t) => `${t.name}${t.actionClass === 'read' ? ' (read)' : ''}`).join(', ')) : null)));
+    s.tools.length ? h('div', { class: 'tools mono' }, s.tools.map((t) => `${t.name}${t.actionClass === 'read' ? ' (read)' : ''}${t.alwaysAllow ? ' (always)' : ''}`).join(', ')) : null,
+    s.filtered?.length ? h('div', { class: 'note' }, `filtered out: ${s.filtered.join(', ')}`) : null)));
 }
 
 let retry = 0;

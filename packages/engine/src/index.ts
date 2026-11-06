@@ -15,3 +15,6 @@ export { Vault } from './vault/vault.ts';
 export { Db } from './storage/db.ts';
 export { EventBus } from './events/bus.ts';
 export { Tracer } from './obs/tracing.ts';
+export { McpManager, readMcpConfigFile, writeMcpConfigFile, mcpConfigPath, toolPermitted, globMatch, searchTools, type McpServerConfig, type McpServerStatus, type McpConfigFile } from './mcp/manager.ts';
+export { McpHttpClient } from './mcp/http.ts';
+export { helixHome } from './util/log.ts';

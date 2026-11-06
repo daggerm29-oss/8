@@ -1,4 +1,5 @@
 import { existsSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, mkdirSync } from 'node:fs';
+import { activatedTools, TOOL_SEARCH } from '../mcp/manager.ts';
 import { dirname, join } from 'node:path';
 import { WorkspaceIndex } from '../index/index.ts';
 import { loadInstructions } from '../context/instructions.ts';
@@ -224,6 +225,11 @@ export class TaskRuntime {
     return this.summary(id);
   }
 
+  /** Tool name of an approval (for "always allow"). */
+  approvalTool(approvalId: string): string | undefined {
+    return this.o.db.get<{ tool: string }>('SELECT tool FROM approvals WHERE id = ?', approvalId)?.tool;
+  }
+
   approve(approvalId: string, approved: boolean, by = 'user'): void {
     const resolve = this.approvals.get(approvalId);
     if (!resolve) throw new Error(`no pending approval ${approvalId}`);
@@ -436,7 +442,8 @@ export class TaskRuntime {
     const now = new Date().toISOString();
     this.o.db.run(`INSERT INTO steps (id, task, agent, idx, kind, status, started_at) VALUES (?, ?, 'primary', ?, 'model', 'running', ?)`, stepId, t.id, t.step_count, now);
     this.publish(t.id, t.ws, 'task.step', { stepId, index: t.step_count, kind: 'model' });
-    const tools = this.o.tools.specs((name) => (t.policy_profile === 'plan' ? PLAN_TOOLS.includes(name) : name !== 'submit_plan'));
+    const activated = activatedTools(messages.flatMap((m) => m.parts.filter((p): p is Extract<Part, { type: 'tool_result' }> => p.type === 'tool_result' && p.name === TOOL_SEARCH).map((p) => p.content)));
+    const tools = this.o.tools.specs((name) => (t.policy_profile === 'plan' ? PLAN_TOOLS.includes(name) : name !== 'submit_plan' && (!this.o.tools.isDeferred(name) || activated.has(name))));
     const call = () => this.o.gateway.call({
       provider: t.provider, model: t.model, role: 'coder', ws: t.ws, task: t.id, agent: 'primary', step: stepId, signal,
       request: { system: systemPrompt(root, this.gateSummary(root, t.verify_command), t.policy_profile, context), messages: this.requestMessages(messages), tools, toolChoice: 'auto', maxOutputTokens: 8192 },

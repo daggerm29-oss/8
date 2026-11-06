@@ -31,21 +31,22 @@ const NETWORK: Array<[RegExp, string]> = [
 ];
 
 const TOOL_CLASS: Record<string, ActionClass> = {
-  read_file: 'read', list_dir: 'read', search: 'read', find_symbol: 'read', code_search: 'read', submit_plan: 'read',
+  read_file: 'read', list_dir: 'read', tool_search: 'read', search: 'read', find_symbol: 'read', code_search: 'read', submit_plan: 'read',
   write_file: 'write', edit_file: 'write',
   run_shell: 'exec',
 };
 
 /** Dynamically registered tools (MCP, F-MCP-3 v0) declare their class here; unknown `mcp__*` tools default to network. */
-const DYNAMIC_CLASS = new Map<string, { actionClass: ActionClass; reason: string }>();
+const DYNAMIC_CLASS = new Map<string, { actionClass: ActionClass; reason: string; autoAllow?: boolean }>();
 
-export function registerToolClass(tool: string, actionClass: ActionClass, reason: string): void {
-  DYNAMIC_CLASS.set(tool, { actionClass, reason });
+/** `autoAllow` ("always allow", F-MCP-3) turns an `ask` into `allow`; it never overrides a profile `deny`. */
+export function registerToolClass(tool: string, actionClass: ActionClass, reason: string, opts: { autoAllow?: boolean } = {}): void {
+  DYNAMIC_CLASS.set(tool, { actionClass, reason, ...(opts.autoAllow ? { autoAllow: true } : {}) });
 }
 
 export function classify(tool: string, args: unknown): { actionClass: ActionClass; reason: string } {
   const dynamic = DYNAMIC_CLASS.get(tool);
-  if (dynamic) return dynamic;
+  if (dynamic) return { actionClass: dynamic.actionClass, reason: dynamic.reason };
   if (tool.startsWith('mcp__')) return { actionClass: 'network', reason: 'MCP tool (external side effects)' };
   if (tool === 'run_shell') {
     const command = String((args as { command?: unknown })?.command ?? '');
@@ -66,6 +67,7 @@ export function evaluate(input: { tool: string; args: unknown; profile: PolicyPr
   const { actionClass, reason } = classify(input.tool, input.args);
   let verdict = MATRIX[input.profile][actionClass];
   const pre = new Set(input.preapprove ?? []);
+  if (verdict === 'ask' && DYNAMIC_CLASS.get(input.tool)?.autoAllow) verdict = 'allow';
   if (verdict === 'ask' && (pre.has(actionClass) || pre.has(`tool:${input.tool}`) || pre.has('all'))) verdict = 'allow';
   if (verdict === 'ask' && input.profile === 'headless') return { verdict: 'deny', actionClass, reason: `${reason}; headless mode denies '${actionClass}' unless preapproved (--allow ${actionClass})` };
   return { verdict, actionClass, reason };

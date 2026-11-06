@@ -56,6 +56,20 @@ export function validate(schema: JsonSchema, value: unknown, path = 'args'): str
 /** Tool framework (§15.1–15.3): registration, schema exposure, validation, uniform error handling. */
 export class ToolRegistry {
   private readonly tools = new Map<string, Tool>();
+  private readonly deferred = new Set<string>();
+
+  /** Deferred tools are callable but not sent to the model until a `tool_search` activates them (X7). */
+  defer(name: string): void {
+    if (this.tools.has(name)) this.deferred.add(name);
+  }
+
+  isDeferred(name: string): boolean {
+    return this.deferred.has(name);
+  }
+
+  deferredSpecs(): ToolSpec[] {
+    return [...this.deferred].map((n) => this.tools.get(n)!.spec);
+  }
 
   register(tool: Tool): void {
     if (this.tools.has(tool.spec.name)) throw new Error(`tool '${tool.spec.name}' already registered`);
