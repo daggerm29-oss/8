@@ -4,13 +4,18 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { Methods, Notifications, PROTOCOL_VERSION, RpcPeer, streamTransport, type HelixEvent, type TaskSummary } from '@helix/protocol';
 
-const USAGE = `helix — Helix coding agent CLI (M0)
+const USAGE = `helix — Helix coding agent CLI (M1)
 
 Usage:
   helix -p "<goal>" [options]     run a task headlessly and exit when it finishes
   helix tasks                     list recent tasks
   helix resume <task-id>          resume an interrupted task and wait for it
   helix ledger <task-id>          show token/cost ledger totals for a task
+  helix checkpoints <task-id>     list shadow checkpoints written by a task
+  helix restore <task-id> [cp]    undo a task's edits (from checkpoint cp onward; default: all)
+  helix plan <task-id>            print the plan artifact of a Plan Mode task
+  helix search "<query>"          hybrid code search over the workspace index
+  helix symbols <name>            find symbol definitions in the workspace index
 
 Options:
   -C, --cwd <dir>         workspace directory (default: current directory)
@@ -20,6 +25,7 @@ Options:
   --max-steps <n>         model turn limit (default 40)
   --budget <usd>          hard USD budget for the task
   --allow <class>         preapprove an action class in headless mode (network, destructive); repeatable
+  --plan                  Plan Mode: read-only investigation that produces a plan artifact
   --json                  print the final task summary as JSON
   -q, --quiet             do not stream progress to stderr
 `;
@@ -47,7 +53,9 @@ function render(e: HelixEvent): string | null {
     case 'task.resumed': return '↻ resumed after engine restart';
     case 'agent.message': return `${d.text ? `◆ ${String(d.text).trim().slice(0, 400)}` : ''}${d.toolCalls?.length ? `${d.text ? '\n' : ''}  → ${d.toolCalls.join(', ')}` : ''}` || null;
     case 'tool.result': return `  ${d.verdict === 'deny' ? '✗ denied' : d.isError ? '!' : '✓'} ${d.summary ?? d.tool}`;
-    case 'verify.result': return `  verify #${d.attempt}: ${d.passed ? 'passed' : `failed (exit ${d.exitCode})`}`;
+    case 'verify.result': return `  verify #${d.attempt}: ${d.passed ? 'passed' : `failed (exit ${d.exitCode})${d.diagnostics?.length ? ` · ${d.diagnostics.length} diagnostics: ${d.diagnostics.slice(0, 3).map((x: any) => `${x.file ?? '?'}:${x.line ?? '?'} ${x.message}`.slice(0, 120)).join(' | ')}` : ''}`}`;
+    case 'context.composed': return `  ⌁ context: ${d.items?.length ?? 0} items, ${d.usedTokens}/${d.budgetTokens} tokens${d.index ? ` · index ${d.index.files} files/${d.index.symbols} symbols (${d.index.indexed} reindexed)` : ''}`;
+    case 'artifact.created': return `  ▣ ${d.kind} artifact ${d.artifactId}`;
     case 'approval.requested': return `  ? approval needed for ${d.tool} (${d.actionClass})`;
     default: return null;
   }
@@ -72,13 +80,29 @@ async function runAndWait(peer: RpcPeer, summary: TaskSummary, opts: { quiet: bo
   return final.status === 'done' ? 0 : 1;
 }
 
+async function printPlan(peer: RpcPeer, task: string): Promise<boolean> {
+  const arts = await peer.request<Array<{ id: string; data: any }>>(Methods.artifactList, { task, kind: 'plan' });
+  const plan = arts.at(-1)?.data;
+  if (!plan) {
+    process.stderr.write('no plan artifact for this task\n');
+    return false;
+  }
+  const lines = [`Plan: ${plan.goal}`, '', 'Affected files:', ...plan.affectedFiles.map((f: any) => `  - ${f.path} — ${f.reason}${f.evidence ? ` [${f.evidence}]` : ''}`), '', 'Steps:',
+    ...plan.steps.map((s: any) => `  ${s.id}. ${s.description}${s.writeSet?.length ? ` (writes ${s.writeSet.join(', ')})` : ''}${s.dependsOn?.length ? ` after ${s.dependsOn.join(', ')}` : ''}`),
+    '', 'Verification:', ...plan.verification.map((v: string) => `  - ${v}`)];
+  if (plan.risks?.length) lines.push('', 'Risks:', ...plan.risks.map((r: string) => `  - ${r}`));
+  if (plan.openQuestions?.length) lines.push('', 'Open questions:', ...plan.openQuestions.map((q: string) => `  - ${q}`));
+  process.stdout.write(`${lines.join('\n')}\n`);
+  return true;
+}
+
 export async function main(argv: string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args: argv, allowPositionals: true,
     options: {
       prompt: { type: 'string', short: 'p' }, cwd: { type: 'string', short: 'C' }, verify: { type: 'string' }, provider: { type: 'string' },
       model: { type: 'string', short: 'm' }, 'max-steps': { type: 'string' }, budget: { type: 'string' }, allow: { type: 'string', multiple: true },
-      json: { type: 'boolean' }, quiet: { type: 'boolean', short: 'q' }, help: { type: 'boolean', short: 'h' },
+      json: { type: 'boolean' }, plan: { type: 'boolean' }, quiet: { type: 'boolean', short: 'q' }, help: { type: 'boolean', short: 'h' },
     },
   });
   const [cmd, arg] = positionals;
@@ -87,15 +111,17 @@ export async function main(argv: string[]): Promise<number> {
     return values.help ? 0 : 2;
   }
   const opts = { quiet: Boolean(values.quiet), json: Boolean(values.json) };
-  const { peer, stop } = await connect(opts.quiet ? [] : ['task.*', 'agent.*', 'tool.*', 'verify.*', 'approval.*']);
+  const { peer, stop } = await connect(opts.quiet ? [] : ['task.*', 'agent.*', 'tool.*', 'verify.*', 'approval.*', 'context.*', 'artifact.*']);
   try {
     if (values.prompt) {
       const summary = await peer.request<TaskSummary>(Methods.taskCreate, {
         workspacePath: resolve(values.cwd ?? process.cwd()), goal: values.prompt, verifyCommand: values.verify, provider: values.provider, model: values.model,
         maxSteps: values['max-steps'] ? Number(values['max-steps']) : undefined, budgetUsd: values.budget ? Number(values.budget) : undefined,
-        policyProfile: 'headless', preapprove: values.allow ?? [],
+        policyProfile: values.plan ? 'plan' : 'headless', preapprove: values.allow ?? [],
       });
-      return await runAndWait(peer, summary, opts);
+      const code = await runAndWait(peer, summary, opts);
+      if (values.plan && !opts.json) await printPlan(peer, summary.id);
+      return code;
     }
     if (cmd === 'tasks') {
       const list = await peer.request<TaskSummary[]>(Methods.taskList, { limit: 20 });
@@ -109,6 +135,28 @@ export async function main(argv: string[]): Promise<number> {
     }
     if (cmd === 'ledger' && arg) {
       process.stdout.write(`${JSON.stringify(await peer.request(Methods.ledgerQuery, { task: arg }), null, 2)}\n`);
+      return 0;
+    }
+    const ws = resolve(values.cwd ?? process.cwd());
+    if (cmd === 'checkpoints' && arg) {
+      for (const c of await peer.request<Array<{ id: string; seq: number; at: string; files: Array<{ path: string; created: boolean }> }>>(Methods.checkpointList, { task: arg }))
+        process.stdout.write(`${String(c.seq).padStart(3)}  ${c.id}  ${c.at}  ${c.files.map((f) => `${f.created ? '+' : '~'}${f.path}`).join(' ')}\n`);
+      return 0;
+    }
+    if (cmd === 'restore' && arg) {
+      const r = await peer.request<{ restored: string[]; deleted: string[]; restoreId: string }>(Methods.checkpointRestore, { task: arg, checkpoint: positionals[2] });
+      process.stdout.write(`${r.restoreId}: restored ${r.restored.length} file(s)${r.restored.length ? ` (${r.restored.join(', ')})` : ''}, deleted ${r.deleted.length}${r.deleted.length ? ` (${r.deleted.join(', ')})` : ''}\n`);
+      return 0;
+    }
+    if (cmd === 'plan' && arg) return (await printPlan(peer, arg)) ? 0 : 1;
+    if (cmd === 'search' && arg) {
+      for (const h of await peer.request<Array<{ path: string; startLine: number; endLine: number; symbol: string | null; why: string[]; score: number }>>(Methods.indexSearch, { workspacePath: ws, query: arg, limit: 10 }))
+        process.stdout.write(`${h.path}:${h.startLine}-${h.endLine}${h.symbol ? `  ${h.symbol}` : ''}  [${h.why.join('+')}] ${h.score}\n`);
+      return 0;
+    }
+    if (cmd === 'symbols' && arg) {
+      for (const s of await peer.request<Array<{ path: string; line: number; kind: string; qualifiedName: string; signature: string }>>(Methods.indexSymbols, { workspacePath: ws, name: arg }))
+        process.stdout.write(`${s.path}:${s.line}  ${s.kind} ${s.qualifiedName}  — ${s.signature}\n`);
       return 0;
     }
     process.stdout.write(USAGE);

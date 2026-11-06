@@ -31,7 +31,7 @@ const NETWORK: Array<[RegExp, string]> = [
 ];
 
 const TOOL_CLASS: Record<string, ActionClass> = {
-  read_file: 'read', list_dir: 'read', search: 'read',
+  read_file: 'read', list_dir: 'read', search: 'read', find_symbol: 'read', code_search: 'read', submit_plan: 'read',
   write_file: 'write', edit_file: 'write',
   run_shell: 'exec',
 };

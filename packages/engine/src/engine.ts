@@ -20,6 +20,8 @@ import { ModelGateway } from './models/gateway.ts';
 import { builtinTools } from './tools/builtin.ts';
 import { TaskRuntime } from './agent/runtime.ts';
 import { unshareAvailable } from './sandbox/sandbox.ts';
+import { WorkspaceIndex } from './index/index.ts';
+import { parseDiagnostics } from './diagnostics/parsers.ts';
 
 export const ENGINE_VERSION = '0.1.0';
 
@@ -32,9 +34,11 @@ export interface EngineOptions {
   taskRetryScale?: number;
   /** Resume interrupted tasks on open (default true). */
   recover?: boolean;
+  /** Build the code index and composed context per task (default true). */
+  indexing?: boolean;
 }
 
-const TOPICS = ['task.*', 'agent.*', 'tool.*', 'model.*', 'verify.*', 'approval.*', 'ledger.*', 'budget.*'];
+const TOPICS = ['task.*', 'agent.*', 'tool.*', 'model.*', 'verify.*', 'approval.*', 'ledger.*', 'budget.*', 'context.*', 'artifact.*', 'checkpoint.*'];
 
 /** Helix Engine (§6.2): composition root for storage, bus, gateway, tools, sandbox, and the task runtime. */
 export class Engine {
@@ -65,7 +69,7 @@ export class Engine {
     this.vault = new Vault(env);
     this.ledger = new Ledger(this.db, this.bus);
     this.gateway = new ModelGateway({ adapters: opts.adapters ?? [new GeminiAdapter(), new OpenAIAdapter()], vault: this.vault, ledger: this.ledger, tracer: this.tracer, logger: this.logger, retry: opts.retry });
-    this.runtime = new TaskRuntime({ db: this.db, bus: this.bus, gateway: this.gateway, ledger: this.ledger, tools: builtinTools(), tracer: this.tracer, engineId: this.id, blobs: this.blobs, logger: this.logger, forceProcessSandbox: opts.forceProcessSandbox, taskRetryScale: opts.taskRetryScale });
+    this.runtime = new TaskRuntime({ db: this.db, bus: this.bus, gateway: this.gateway, ledger: this.ledger, tools: builtinTools(), tracer: this.tracer, engineId: this.id, blobs: this.blobs, logger: this.logger, forceProcessSandbox: opts.forceProcessSandbox, taskRetryScale: opts.taskRetryScale, helixHome: this.home, indexing: opts.indexing });
 
     const now = new Date().toISOString();
     this.db.run('INSERT INTO engine_instances (id, pid, started_at, heartbeat_at) VALUES (?, ?, ?, ?)', this.id, process.pid, now, now);
@@ -123,6 +127,30 @@ export class Engine {
     peer.handle(Methods.modelsList, guard<{ provider: string }>((p) => this.gateway.listModels(p.provider)));
     peer.handle(Methods.sandboxCheck, guard(() => ({ unshare: unshareAvailable() })));
     peer.handle(Methods.eventsReplay, guard<{ ws: string; afterSeq?: number; limit?: number }>((p) => (this.bus.flush(), this.bus.replay(p.ws, p.afterSeq ?? 0, p.limit))));
+    peer.handle(Methods.indexUpdate, guard<{ workspacePath: string }>((p) => {
+      const idx = this.index(p.workspacePath);
+      return { ...idx.update(), ...idx.counts(), generation: idx.generation() };
+    }));
+    peer.handle(Methods.indexSearch, guard<{ workspacePath: string; query: string; limit?: number }>((p) => {
+      const idx = this.index(p.workspacePath);
+      idx.update();
+      return idx.search(p.query, { limit: p.limit });
+    }));
+    peer.handle(Methods.indexSymbols, guard<{ workspacePath: string; name: string }>((p) => {
+      const idx = this.index(p.workspacePath);
+      idx.update();
+      return idx.findSymbol(p.name);
+    }));
+    peer.handle(Methods.checkpointList, guard<{ task: string }>((p) => this.runtime.checkpoints(p.task)));
+    peer.handle(Methods.checkpointRestore, guard<{ task: string; checkpoint?: string }>((p) => this.runtime.restore(p.task, p.checkpoint)));
+    peer.handle(Methods.artifactList, guard<{ task: string; kind?: string }>((p) => this.runtime.artifacts(p.task, p.kind)));
+    peer.handle(Methods.diagnosticsParse, guard<{ command: string; output: string }>((p) => parseDiagnostics(p.command, p.output)));
+  }
+
+  /** Index for a workspace path (registers the workspace on first use). */
+  index(workspacePath: string): WorkspaceIndex {
+    const ws = this.runtime.workspaceFor(workspacePath);
+    return new WorkspaceIndex(this.db, ws.id, ws.path);
   }
 
   serveStdio(input: NodeJS.ReadableStream = process.stdin, output: NodeJS.WritableStream = process.stdout): RpcPeer {

@@ -1,4 +1,9 @@
-import { existsSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, mkdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { WorkspaceIndex } from '../index/index.ts';
+import { loadInstructions } from '../context/instructions.ts';
+import { assembleContext, type ComposedContext } from '../context/assembler.ts';
+import { formatDiagnostics, parseDiagnostics } from '../diagnostics/parsers.ts';
 import { ProviderError, type Message, type Part, type TaskCreateParams, type TaskStatus, type TaskSummary } from '@helix/protocol';
 import type { Db } from '../storage/db.ts';
 import { json, parseJson } from '../storage/db.ts';
@@ -37,7 +42,21 @@ export interface RuntimeOptions {
   forceProcessSandbox?: boolean;
   /** Multiplier for task-level backoff delays (tests use a tiny value). */
   taskRetryScale?: number;
+  /** Helix home, for user-level `HELIX.md` instructions (§13.5). */
+  helixHome?: string;
+  /** Build the code index + composed context at task start (default true). */
+  indexing?: boolean;
+  contextBudgetTokens?: number;
 }
+
+export interface CheckpointInfo {
+  id: string;
+  seq: number;
+  at: string;
+  files: Array<{ path: string; created: boolean }>;
+}
+
+const PLAN_TOOLS = ['read_file', 'list_dir', 'search', 'find_symbol', 'code_search', 'submit_plan'];
 
 function pidAlive(pid: number): boolean {
   if (pid === process.pid) return true;
@@ -49,14 +68,18 @@ function pidAlive(pid: number): boolean {
   }
 }
 
-function systemPrompt(root: string, verify: string | null): string {
+function systemPrompt(root: string, verify: string | null, profile: PolicyProfile, context: string): string {
+  const plan = profile === 'plan';
   return [
     'You are Helix, an autonomous coding agent working inside a sandboxed copy of a software repository.',
     `Workspace root: ${root}. All paths are relative to it. The sandbox has no network access.`,
-    'Work methodically: explore with list_dir/search/read_file, make minimal targeted edits with edit_file, then run the tests with run_shell to confirm.',
-    'Never weaken, skip, or delete tests to make them pass; fix the code under test.',
-    verify ? `When you finish, Helix runs the verification command \`${verify}\`; the task only succeeds if it exits 0.` : '',
-    'When the task is complete, reply with a short summary of what you changed and do not call any more tools.',
+    plan
+      ? 'You are in PLAN MODE: you can only read. Investigate with find_symbol, code_search, read_file, list_dir, and search, then call submit_plan exactly once with a concrete, file-grounded plan. Do not attempt to edit files.'
+      : 'Work methodically: locate code with find_symbol (definitions) and code_search (ranked slices) before falling back to search/list_dir, read only the ranges you need with read_file, make minimal targeted edits with edit_file, then run the tests with run_shell to confirm.',
+    plan ? '' : 'Never weaken, skip, or delete tests to make them pass; fix the code under test.',
+    verify && !plan ? `When you finish, Helix runs the verification command \`${verify}\`; the task only succeeds if it exits 0.` : '',
+    'When the task is complete, reply with a short summary and do not call any more tools.',
+    context ? `\n${context}` : '',
   ].filter(Boolean).join('\n');
 }
 
@@ -84,6 +107,10 @@ export class TaskRuntime {
     const id = prefixedId('ws');
     this.o.db.run('INSERT INTO workspace (id, path, created_at) VALUES (?, ?, ?)', id, real, new Date().toISOString());
     return { id, path: real };
+  }
+
+  workspaceFor(path: string): { id: string; path: string } {
+    return this.workspace(path);
   }
 
   private row(id: string): TaskRow {
@@ -257,14 +284,16 @@ export class TaskRuntime {
     this.o.db.run('INSERT INTO sandboxes (id, provider, ws, owner_engine, state, created_at, labels_json) VALUES (?, ?, ?, ?, ?, ?, ?)',
       sandbox.id, sandbox.provider, initial.ws, this.o.engineId, 'running', new Date().toISOString(), json({ task: id }));
     this.setStatus(id, 'running');
+    const index = this.o.indexing === false ? undefined : new WorkspaceIndex(this.o.db, initial.ws, root);
     try {
+      const context = this.composeContext(initial, root, index);
       while (!signal.aborted) {
         const t = this.row(id);
         const messages = this.transcript(id);
         const pending = this.pendingCalls(messages);
         const last = messages[messages.length - 1];
         if (pending.length) {
-          await this.runTools(t, pending, sandbox, signal);
+          await this.runTools(t, pending, sandbox, signal, index);
         } else if (last?.role === 'assistant') {
           if (await this.verify(t, last, sandbox, signal)) return;
         } else {
@@ -272,7 +301,7 @@ export class TaskRuntime {
             this.setStatus(id, 'failed', { error: `step limit reached (${t.max_steps})` });
             return;
           }
-          await this.modelTurn(t, messages, root, signal);
+          await this.modelTurn(t, messages, root, signal, context);
         }
       }
     } finally {
@@ -281,15 +310,98 @@ export class TaskRuntime {
     }
   }
 
-  private async modelTurn(t: TaskRow, messages: Message[], root: string, signal: AbortSignal): Promise<void> {
+  /**
+   * Compose the task's static context block once (F-CTX-1/F-CTX-3) and persist it as a `context` artifact,
+   * so every turn — including turns after an Engine restart — sends a byte-identical prompt prefix.
+   */
+  private composeContext(t: TaskRow, root: string, index?: WorkspaceIndex): string {
+    const existing = this.o.db.get<{ data_json: string }>(`SELECT data_json FROM artifacts WHERE task = ? AND kind = 'context'`, t.id);
+    if (existing) return parseJson<ComposedContext>(existing.data_json, { text: '' } as ComposedContext).text;
+    const started = performance.now();
+    let stats;
+    try {
+      stats = index?.update();
+    } catch (error) {
+      this.o.logger?.warn('indexing failed; continuing without index', { task: t.id, error: (error as Error).message });
+    }
+    const instructions = loadInstructions(root, { helixHome: this.o.helixHome });
+    const composed = assembleContext({ goal: t.goal, index: stats ? index : undefined, instructions, budgetTokens: this.o.contextBudgetTokens });
+    this.saveArtifact(t.id, 'context', 'Composed context', composed);
+    this.publish(t.id, t.ws, 'context.composed', {
+      items: composed.items, usedTokens: composed.usedTokens, budgetTokens: composed.budgetTokens, warnings: composed.warnings,
+      index: stats ? { ...stats, ...index!.counts() } : null, durationMs: Math.round(performance.now() - started),
+    });
+    return composed.text;
+  }
+
+  saveArtifact(task: string, kind: string, title: string, data: unknown): string {
+    const id = prefixedId('art');
+    this.o.db.run('INSERT INTO artifacts (id, task, kind, title, data_json, at) VALUES (?, ?, ?, ?, ?, ?)', id, task, kind, title, json(data), new Date().toISOString());
+    return id;
+  }
+
+  artifacts(task: string, kind?: string): Array<{ id: string; kind: string; title: string; data: unknown; at: string }> {
+    return this.o.db.all<{ id: string; kind: string; title: string; data_json: string; at: string }>(
+      `SELECT id, kind, title, data_json, at FROM artifacts WHERE task = ? ${kind ? 'AND kind = ?' : ''} ORDER BY at, id`, ...(kind ? [task, kind] : [task]),
+    ).map((r) => ({ id: r.id, kind: r.kind, title: r.title, data: parseJson(r.data_json, null), at: r.at }));
+  }
+
+  /** Shadow checkpoints for a task, oldest first (F-GIT-2, §20.3). */
+  checkpoints(task: string): CheckpointInfo[] {
+    return this.o.db.all<{ id: string; files_json: string; at: string }>('SELECT id, files_json, at FROM checkpoints WHERE task = ? ORDER BY rowid', task)
+      .map((r, seq) => ({ id: r.id, seq, at: r.at, files: parseJson<Array<{ path: string; before: string | null }>>(r.files_json, []).map((f) => ({ path: f.path, created: f.before === null })) }));
+  }
+
+  /**
+   * Restore the workspace to its state *before* checkpoint `target` (default: the first one, i.e. undo the
+   * whole task). For each touched path the earliest pre-image at/after the target wins; files the agent
+   * created are deleted. Writes are atomic (temp + rename) and the current content is saved first, so
+   * a restore is itself undoable.
+   */
+  restore(task: string, target?: string): { restored: string[]; deleted: string[]; restoreId: string } {
+    const r = this.row(task);
+    if (this.running.has(task)) throw new Error(`task ${task} is running; cancel it before restoring`);
+    const root = this.wsPath(r.ws);
+    const all = this.o.db.all<{ id: string; files_json: string }>('SELECT id, files_json FROM checkpoints WHERE task = ? ORDER BY rowid', task);
+    const from = target ? all.findIndex((c) => c.id === target) : 0;
+    if (from < 0) throw new Error(`unknown checkpoint ${target}`);
+    type Ref = Parameters<BlobStore['getText']>[0] | null;
+    const preimage = new Map<string, Ref>();
+    for (const c of all.slice(from)) for (const f of parseJson<Array<{ path: string; before: Ref }>>(c.files_json, [])) if (!preimage.has(f.path)) preimage.set(f.path, f.before);
+    const restored: string[] = [];
+    const deleted: string[] = [];
+    const saved: Array<{ path: string; before: unknown }> = [];
+    for (const [path, ref] of preimage) {
+      const abs = join(root, path);
+      if (!abs.startsWith(root + '/')) continue;
+      const current = existsSync(abs) ? readFileSync(abs, 'utf8') : null;
+      saved.push({ path, before: current === null ? null : this.o.blobs ? this.o.blobs.put(current, { kind: 'checkpoint', id: task }) : current });
+      if (ref === null) {
+        if (current !== null) { rmSync(abs, { force: true }); deleted.push(path); }
+        continue;
+      }
+      const content = this.o.blobs ? this.o.blobs.getText(ref) : String(ref);
+      mkdirSync(dirname(abs), { recursive: true });
+      const tmp = `${abs}.helix-restore-${process.pid}`;
+      writeFileSync(tmp, content);
+      renameSync(tmp, abs);
+      restored.push(path);
+    }
+    const restoreId = prefixedId('rst');
+    this.o.db.run('INSERT INTO checkpoint_restores (id, task, target, files_json, at) VALUES (?, ?, ?, ?, ?)', restoreId, task, all[from]?.id ?? '', json(saved), new Date().toISOString());
+    this.publish(task, r.ws, 'checkpoint.restored', { restoreId, target: all[from]?.id ?? null, restored, deleted }, 'audit');
+    return { restored, deleted, restoreId };
+  }
+
+  private async modelTurn(t: TaskRow, messages: Message[], root: string, signal: AbortSignal, context = ''): Promise<void> {
     const stepId = prefixedId('step');
     const now = new Date().toISOString();
     this.o.db.run(`INSERT INTO steps (id, task, agent, idx, kind, status, started_at) VALUES (?, ?, 'primary', ?, 'model', 'running', ?)`, stepId, t.id, t.step_count, now);
     this.publish(t.id, t.ws, 'task.step', { stepId, index: t.step_count, kind: 'model' });
-    const tools = this.o.tools.specs((name) => t.policy_profile !== 'plan' || ['read_file', 'list_dir', 'search'].includes(name));
+    const tools = this.o.tools.specs((name) => (t.policy_profile === 'plan' ? PLAN_TOOLS.includes(name) : name !== 'submit_plan'));
     const call = () => this.o.gateway.call({
       provider: t.provider, model: t.model, role: 'coder', ws: t.ws, task: t.id, agent: 'primary', step: stepId, signal,
-      request: { system: systemPrompt(root, t.verify_command), messages: this.requestMessages(messages), tools, toolChoice: 'auto', maxOutputTokens: 8192 },
+      request: { system: systemPrompt(root, t.verify_command, t.policy_profile, context), messages: this.requestMessages(messages), tools, toolChoice: 'auto', maxOutputTokens: 8192 },
       onEvent: (e) => { if (e.type === 'text_delta') this.publish(t.id, t.ws, 'model.delta', { stepId, text: e.text }, 'none'); },
     });
     let result: Awaited<ReturnType<typeof call>>;
@@ -316,7 +428,7 @@ export class TaskRuntime {
     this.publish(t.id, t.ws, 'agent.message', { stepId, text, toolCalls: result.message.parts.filter((p) => p.type === 'tool_call').map((p) => (p as { name: string }).name), costUsd: result.costUsd });
   }
 
-  private async runTools(t: TaskRow, calls: Array<Extract<Part, { type: 'tool_call' }>>, sandbox: LocalSandbox, signal: AbortSignal): Promise<void> {
+  private async runTools(t: TaskRow, calls: Array<Extract<Part, { type: 'tool_call' }>>, sandbox: LocalSandbox, signal: AbortSignal, index?: WorkspaceIndex): Promise<void> {
     const preapprove = parseJson<string[]>(t.preapprove_json, []);
     for (const call of calls) {
       if (signal.aborted) return;
@@ -326,7 +438,15 @@ export class TaskRuntime {
       const started = performance.now();
       const out = allowed
         ? await this.o.tracer.withSpan('tool.call', { tool: call.name, 'task.id': t.id, action_class: decision.actionClass }, () =>
-            this.o.tools.run(call.name, call.args, { sandbox, signal, beforeWrite: (abs, prev) => this.checkpoint(t, sandbox, abs, prev) }))
+            this.o.tools.run(call.name, call.args, {
+              sandbox, signal, index,
+              beforeWrite: (abs, prev) => this.checkpoint(t, sandbox, abs, prev),
+              submitArtifact: t.policy_profile === 'plan' ? (kind, title, data) => {
+                const artId = this.saveArtifact(t.id, kind, title, data);
+                this.publish(t.id, t.ws, 'artifact.created', { artifactId: artId, kind, title });
+                return artId;
+              } : undefined,
+            }))
         : { content: `denied by policy: ${decision.reason}`, isError: true, summary: `denied ${call.name}` };
       if (signal.aborted) return;
       const durationMs = Math.round(performance.now() - started);
@@ -367,6 +487,20 @@ export class TaskRuntime {
   /** Verification gate (§9.6 subset). Returns true when the task reached a terminal state. */
   private async verify(t: TaskRow, last: Message, sandbox: LocalSandbox, signal: AbortSignal): Promise<boolean> {
     const finalText = last.parts.filter((p) => p.type === 'text').map((p) => (p as { text: string }).text).join('').trim();
+    if (t.policy_profile === 'plan') {
+      const plan = this.artifacts(t.id, 'plan').at(-1);
+      if (plan) {
+        this.setStatus(t.id, 'done', { result: finalText || `plan ${plan.id}` });
+        return true;
+      }
+      const nudges = this.transcript(t.id).filter((m) => m.role === 'user' && m.parts.some((p) => p.type === 'text' && p.text.startsWith('[plan-mode]'))).length;
+      if (nudges >= 2) {
+        this.setStatus(t.id, 'failed', { error: 'plan mode finished without calling submit_plan' });
+        return true;
+      }
+      this.addMessage(t.id, null, { role: 'user', parts: [{ type: 'text', text: '[plan-mode] You have not submitted a plan. Call submit_plan now with the plan grounded in the files you inspected.' }] });
+      return false;
+    }
     if (!t.verify_command) {
       this.setStatus(t.id, 'done', { result: finalText || '(no summary)' });
       return true;
@@ -376,7 +510,9 @@ export class TaskRuntime {
     if (signal.aborted) return true;
     const attempt = t.verify_attempts + 1;
     this.o.db.run('UPDATE tasks SET verify_attempts = ? WHERE id = ?', attempt, t.id);
-    this.publish(t.id, t.ws, 'verify.result', { command: t.verify_command, exitCode: r.exitCode, attempt, passed: r.exitCode === 0 }, 'audit');
+    const output = `${r.stdout}\n${r.stderr}`;
+    const diagnostics = r.exitCode === 0 ? [] : parseDiagnostics(t.verify_command, output, { root: sandbox.root });
+    this.publish(t.id, t.ws, 'verify.result', { command: t.verify_command, exitCode: r.exitCode, attempt, passed: r.exitCode === 0, diagnostics }, 'audit');
     if (r.exitCode === 0) {
       this.setStatus(t.id, 'done', { result: finalText || 'verification passed' });
       return true;
@@ -385,8 +521,10 @@ export class TaskRuntime {
       this.setStatus(t.id, 'failed', { error: `verification failed ${attempt} times: \`${t.verify_command}\` exit ${r.exitCode}` });
       return true;
     }
-    const diag = `${r.stdout}\n${r.stderr}`.trim().slice(-6000);
-    this.addMessage(t.id, null, { role: 'user', parts: [{ type: 'text', text: `Verification failed (attempt ${attempt}/${MAX_VERIFY_ATTEMPTS}): \`${t.verify_command}\` exited with ${r.exitCode ?? r.signal}.\n\n${diag}\n\nFix the remaining problems, then finish with a summary.` }] });
+    // §9.5: structured diagnostics plus a short log tail, never the full log.
+    const tail = output.trim().split('\n').slice(-40).join('\n').slice(-2500);
+    const body = diagnostics.length ? `Diagnostics (${diagnostics.length}):\n${formatDiagnostics(diagnostics)}\n\nLog tail:\n${tail}` : output.trim().slice(-6000);
+    this.addMessage(t.id, null, { role: 'user', parts: [{ type: 'text', text: `Verification failed (attempt ${attempt}/${MAX_VERIFY_ATTEMPTS}): \`${t.verify_command}\` exited with ${r.exitCode ?? r.signal}.\n\n${body}\n\nFix the remaining problems, then finish with a summary.` }] });
     this.setStatus(t.id, 'running');
     return false;
   }

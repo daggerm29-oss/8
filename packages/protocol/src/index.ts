@@ -105,6 +105,14 @@ export const Methods = {
   providersList: 'models.providers.list',
   sandboxCheck: 'sandbox.check',
   eventsReplay: 'events.replay',
+  /* M1 */
+  indexUpdate: 'index.update',
+  indexSearch: 'index.search',
+  indexSymbols: 'index.symbols',
+  checkpointList: 'checkpoint.list',
+  checkpointRestore: 'checkpoint.restore',
+  artifactList: 'artifact.list',
+  diagnosticsParse: 'diagnostics.parse',
 } as const;
 
 export const Notifications = {
