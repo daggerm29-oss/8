@@ -114,6 +114,10 @@ export const Methods = {
   checkpointRestore: 'checkpoint.restore',
   artifactList: 'artifact.list',
   diagnosticsParse: 'diagnostics.parse',
+  /* M1 — workbench (F-UI-1) */
+  checkpointDiff: 'checkpoint.diff',
+  approvalList: 'agent.approvals.list',
+  workspaceList: 'workspace.list',
 } as const;
 
 export const Notifications = {

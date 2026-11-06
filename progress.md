@@ -6,10 +6,10 @@
 
 - Project: Helix
 - Current Phase: M1 — Core MVP (engine-side slice in progress)
-- Overall Completion: ~18% (M0 Verified; M1 engine slice ~50%: index v0, code graph v0, context, instructions, diagnostics, plan mode, restore, verification gates, fs-contained sandbox)
-- Current Status: M1 session 5 — sandbox containment, verification gates, code graph v0 Tested
-- Last Updated: 2026-11-06 (session 5)
-- Current Development Branch: `helix/m1-session5` (base: `main` of github.com/daggerm29-oss/8)
+- Overall Completion: ~20% (M0 Verified; M1 ~55%: engine slice + web workbench v0)
+- Current Status: M1 session 6 — F-UI-1 web workbench v0 Tested (live Gemini run from the UI)
+- Last Updated: 2026-11-06 (session 6)
+- Current Development Branch: `helix/m1-session6` (base: `main` of github.com/daggerm29-oss/8)
 
 ## Phase Overview
 
@@ -108,7 +108,7 @@ Statuses: Not Started / In Progress / Implemented / Tested / Verified / Blocked 
 | F-REV-1 | Review agent | Not Started | — | Arch §10.2 |
 | F-REV-2 | Security analysis | Not Started | — | Arch §25.10 |
 | F-REV-3 | Dependency risk gate (X17) | Not Started | — | Arch §16.7 |
-| F-UI-1 | Workbench | Not Started | — | Arch §5.1–5.3 |
+| F-UI-1 | Workbench | Tested | ui.test (2); browser + live Gemini run (session 6) | v0 web workbench served by the Engine (`packages/engine/ui/`, no build): task create/list, live event stream, transcript, diff per checkpoint + restore, gates, approvals, impact explorer, artifacts, ledger stats. Fragment token, Host/Origin loopback check, CSP. No editor/terminal/Electron yet. Arch §5.1–5.3 |
 | F-UI-2 | Agent activity monitor | Not Started | — | Arch §5.4 |
 | F-UI-3 | Intelligence Explorer | Not Started | — | Arch §5.5 |
 | F-UI-4 | Artifacts | Not Started | — | Arch §5.6 |
@@ -173,6 +173,7 @@ Statuses: Not Started / In Progress / Implemented / Tested / Verified / Blocked 
 | IMPL-ADR-015 | The composed context is built once per task and persisted as a `context` artifact; per-turn retrieval happens through the find_symbol/code_search tools | Byte-stable prompt prefix (prompt caching, §13.2 step 5) and exact replay after restart | Re-assemble every turn | Context does not refresh automatically after large edits; compaction (F-CTX-2) will add a session block |
 | IMPL-ADR-016 | Code graph v0 = name-based call-site edges (`idx_refs`) narrowed by import edges, not SCIP/LSP (§11.4–11.5) | Fast, zero-dep, good enough for impact hints and test selection; same query API will sit on precise edges later | Wait for tree-sitter/SCIP | Over-reports on common names in go/rust/java (no import scoping); reports `precision: 'heuristic'` | index |
 | IMPL-ADR-017 | Sandbox containment by `unshare` mount ns + tmpfs root + chroot (no pivot_root, no /proc) instead of bubblewrap/containers (§16.3) | bwrap/Docker unavailable in the dev VM; util-linux is universal on Linux | bubblewrap; OCI runtime | Linux-only; macOS/Windows providers still needed (Seatbelt / AppContainer) | sandbox |
+| IMPL-ADR-018 | Workbench v0 is a no-build HTML/ES-module UI served by the Engine on the WS port; token in URL fragment; Host/Origin allowlist | Ships the UI now without React/bundler toolchain (IMPL-ADR-001); same JSON-RPC surface the Electron shell will use | Next.js app; Electron first | Plain DOM code; migrate to the desktop React app when the shell lands. `--no-auth` exists only for remote dev previews | engine, ui |
 | IMPL-ADR-011 | Provider tests use protocol-faithful fake HTTP servers (`@helix/provider-conformance`) instead of mocked adapters; live tests run automatically when keys exist | Exercises the real adapter code, SSE parsing, and usage reconciliation offline and deterministically | Mock `fetch`; recorded cassettes | Fake servers must track provider API changes; they verify plumbing, never model quality | providers, engine tests |
 
 ## Test and Verification Results
@@ -192,6 +193,7 @@ Statuses: Not Started / In Progress / Implemented / Tested / Verified / Blocked 
 | sandbox containment | host files invisible, /usr read-only, workspace rw, toolchain usable | Test passed | `sandbox.test.ts` (7/7), session 5 |
 | verification gates | precedence, inference, validation, multi-gate runtime, optional gates, invalid config | Test passed (3/3) | `gates.test.ts`, session 5 |
 | code graph | refs extraction, transitive impact, import scoping, file impact, tool output | Test passed (2/2) | `graph.test.ts`, session 5 |
+| workbench | unifiedDiff cases; UI served without token, foreign Host/Origin 403, token-gated WS, events over socket, checkpoint.diff whole/partial/after-restore, workspace/approval list | Test passed (2/2) | `ui.test.ts`, session 6 |
 | M1 live | ts-inventory fix + Plan Mode on js-calc with gemini-3.5-flash-lite | Verified | session 4 CLI runs (see Completed Work Log) |
 
 ## Session 4 (M1 start) — live plan
@@ -218,15 +220,26 @@ Order (tick when done; next session resumes at the first unticked item):
 - [x] S5-4 (DONE) engine 43/43, CLI 2/2, conformance 12/12 (+2 live skipped), tsc clean. Live: gemini-3.5-flash-lite fixed js-calc inside the fs-contained sandbox with `--verify auto` (inferred gate `npm test --silent` passed first attempt; 8 calls, 15981 in / 287 out tokens). Pushed to `helix/m1-session5`.
 - Next session starts at **Next Actions** item 1 (F-UI-1 workbench).
 
+## Session 6 (M1) — live plan
+
+Branch: `helix/m1-session6` from `main` (session 5 merged by the user as PR #2).
+Order (tick when done; next session resumes at the first unticked item):
+- [x] S6-1..S6-3 DONE (engine 45/45 incl. ui.test 2/2, CLI 2/2, tsc clean; live gemini-3.5-flash-lite task started from the workbench fixed js-calc: 6 calls, 10874 in / 190 out, gate `npm test --silent` passed attempt 1; diff/gates/impact panels verified in browser). Browser check found + fixed: diff emitted `+` before `-` (LCS backtrack order), form handler used `ev.currentTarget` after await, `[hidden]` overridden by display:flex.
+- S6-1 F-UI-1 workbench v0 (as built): the Engine serves a no-build web UI (`packages/engine/ui/{index.html,app.js,app.css}`) over HTTP on the same port as the WS JSON-RPC (`serveWebSocket` → `serve({ui:true})`). Token in the URL fragment (`/#token=…`, never sent to the server); Host/Origin loopback check against DNS rebinding; `--host`/`--no-auth` dev flags for remote previews only. Panels: task list + create (workspace, goal, model, verify, plan mode), live event stream, transcript, gate results, diff per checkpoint + restore, approvals, impact explorer, ledger.
+- S6-2 RPC additions: `checkpoint.diff` (`runtime.diff`, `util/diff.ts` LCS unified diff, whole-file fallback above 4M cells), `agent.approvals.list`, `workspace.list`.
+- S6-3 Tests (`ui.test.ts`: HTTP serving, Host/Origin rejection, token-gated WS, checkpoint.diff) + browser check of the workbench; push.
+- [ ] S6-4 If time: F-MCP-1 stdio MCP client.
+
 ## Next Actions
 
-Resume here for **M1 — Core MVP** (session 6). Session 5 closed priorities 1-3 at v0 level (see Session 5 list). Next, in order:
-1. F-UI-1 workbench (priority 4): web workbench served by the Engine over the existing token-authenticated WS JSON-RPC (§22.2) — agent panel (task create/stream), task monitor (events), diff + checkpoint restore, gate results, impact explorer. Electron shell wraps it later.
-2. F-MCP-1 MCP client (stdio + streamable HTTP), F-MCP-3 per-server/tool permissions through `policy.ts`, F-MCP-2 tool search (priority 5).
+Resume here for **M1 — Core MVP** (session 7). Session 6 shipped F-UI-1 workbench v0 (see Session 6 list). Next, in order:
+1. F-MCP-1 MCP client (stdio + streamable HTTP), F-MCP-3 per-server/tool permissions through `policy.ts`, F-MCP-2 tool search (priority 5).
+2. Workbench follow-ups: F-UI-2 agent activity monitor (multi-task), Monaco/CodeMirror file view, PTY terminal panel (F-TRM-1), Electron shell + OS keychain (IMPL-ADR-010).
 3. Polish of priorities 2-3: baseline gate run (pre-existing failures), F-TST-1 change-based test selection from `impact().tests`, graph evidence in Plan Mode `affectedFiles`, tree-sitter extractor swap.
 4. F-CTX-2 compaction, F-MDL-4 role-based models, F-SBX-3 egress proxy, F-PRV-1/2 preview.
 Fix ISSUE-006 when touching the CLI.
 
-How to run: `pnpm --filter @helix/engine test` (43 tests), `pnpm --filter @helix/cli test`, `pnpm --filter @helix/provider-conformance test`, `npx tsc -p tsconfig.helix.json`.
+Workbench: `node --disable-warning=ExperimentalWarning packages/engine/src/main.ts --ui` prints `http://127.0.0.1:<port>/#token=…`. In the v0 sandbox the registered service `helix-workbench` runs it on port 4100 with `--host 0.0.0.0 --allow-host '*' --no-auth` (dev preview only; sources `.env.development.local` for `GEMINI_API`).
+How to run: `pnpm --filter @helix/engine test` (45 tests), `pnpm --filter @helix/cli test`, `pnpm --filter @helix/provider-conformance test`, `npx tsc -p tsconfig.helix.json`.
 Live: `set -a; . ./.env.development.local; set +a; node --disable-warning=ExperimentalWarning evals/m0-exit.ts --model gemini-3.5-flash-lite` (key env var: `GEMINI_API`).
 CLI: `apps/cli/bin/helix -p "fix the failing test" -C <repo> --verify "<test cmd>" -m gemini-3.5-flash-lite`; `--plan` for Plan Mode; `helix search "<q>" -C <repo>`; `helix symbols <name> -C <repo>`; `helix impact <symbol|file> -C <repo>`; `--verify auto` or `.helix/verify.json` for gates; `helix checkpoints|restore <task>`.
