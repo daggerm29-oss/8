@@ -1,4 +1,5 @@
-import { existsSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import type { JsonSchema } from '@helix/protocol';
 import type { ToolRegistry } from '../tools/registry.ts';
@@ -32,6 +33,10 @@ export interface McpServerConfig {
   allowTools?: string[];
   denyTools?: string[];
   alwaysAllow?: string[];
+  /** TTL for caching read-only tool results (F-MCP-4); 0 disables. Default 60000. */
+  cacheTtlMs?: number;
+  /** Results longer than this are truncated and stored out of band. Default 20000. */
+  maxResultChars?: number;
   args?: string[];
   env?: Record<string, string>;
   cwd?: string;
@@ -130,6 +135,9 @@ export class McpManager {
   private readonly status = new Map<string, McpServerStatus>();
   private readonly configs = new Map<string, McpServerConfig>();
   private toolSearchThreshold = DEFAULT_TOOL_SEARCH_THRESHOLD;
+  private readonly cache = new Map<string, { at: number; out: { content: string; summary: string; dataRef?: string; truncated?: boolean } }>();
+  /** Cache hit/miss counters (exposed for tests and `mcp.list` diagnostics). */
+  readonly cacheStats = { hits: 0, misses: 0 };
 
   private readonly o: { home: string; registry: ToolRegistry; logger?: { info: (m: string, d?: Record<string, unknown>) => void; warn: (m: string, d?: Record<string, unknown>) => void }; config?: Record<string, McpServerConfig>; toolSearchThreshold?: number };
 
@@ -232,13 +240,44 @@ export class McpManager {
     this.o.registry.register({
       spec: { name: exposedAs, description, inputSchema: sanitizeSchema(t.inputSchema ?? { type: 'object', properties: {} }) },
       run: async (args, ctx) => {
-        if (!client.running) return { content: `MCP server '${server}' is not running`, isError: true };
+        const trusted = c.trust === 'trusted';
+        const provenance = { source: 'mcp' as const, trust: trusted ? 'trusted' as const : 'untrusted' as const, taint: !trusted, origin: `mcp:${server}/${t.name}` };
+        const ttl = c.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
+        const key = actionClass === 'read' && ttl > 0 ? `${exposedAs}\u0000${stableJson(args)}` : null;
+        const hit = key ? this.cache.get(key) : undefined;
+        if (key && hit && Date.now() - hit.at < ttl) {
+          this.cacheStats.hits++;
+          return { ...hit.out, summary: `${hit.out.summary} (cached)`, provenance };
+        }
+        if (key) this.cacheStats.misses++;
+        if (!client.running) return { content: `MCP server '${server}' is not running`, isError: true, provenance };
         const r = await client.callTool(t.name, args, ctx.signal);
-        const content = formatResult(r);
-        return { content, isError: r.isError === true, summary: `${server}/${t.name}: ${content.split('\n')[0].slice(0, 120)}` };
+        const isError = r.isError === true;
+        const norm = this.normalize(formatResult(r), c.maxResultChars ?? DEFAULT_MAX_RESULT_CHARS, isError);
+        const content = trusted ? norm.content : wrapUntrusted(norm.content, provenance.origin);
+        const out = { content, summary: `${server}/${t.name}: ${isError ? 'error: ' : ''}${norm.firstLine}${norm.truncated ? ' (truncated)' : ''}`, ...(norm.dataRef ? { dataRef: norm.dataRef, truncated: true } : {}) };
+        if (key && !isError) {
+          this.cache.set(key, { at: Date.now(), out });
+          if (this.cache.size > 500) this.cache.delete(this.cache.keys().next().value!);
+        }
+        return { ...out, isError, provenance };
       },
     });
     return { name: t.name, exposedAs, actionClass, ...(alwaysAllow ? { alwaysAllow } : {}), description: t.description };
+  }
+
+  /** Truncate oversized results, keeping the full text in `$HELIX_HOME/mcp-results/` (F-MCP-4). */
+  private normalize(text: string, max: number, isError: boolean): { content: string; firstLine: string; truncated: boolean; dataRef?: string } {
+    const firstLine = (text.split('\n').find((l) => l.trim()) ?? '').slice(0, 160);
+    if (text.length <= max) return { content: text, firstLine, truncated: false };
+    const id = `mcpres_${createHash('sha256').update(text).digest('hex').slice(0, 16)}`;
+    const dir = join(this.o.home, 'mcp-results');
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    writeFileSync(join(dir, `${id}.txt`), text, { mode: 0o600 });
+    if (!this.o.registry.has(READ_RESULT)) this.o.registry.register(readResultTool(dir));
+    registerToolClass(READ_RESULT, 'read', 'stored MCP result page');
+    const head = text.slice(0, max);
+    return { content: `${head}\n[truncated${isError ? ' error' : ''}: showing ${max} of ${text.length} chars; call ${READ_RESULT} with {"id":"${id}","offset":${max}} for more]`, firstLine, truncated: true, dataRef: id };
   }
 
   list(): McpServerStatus[] {
@@ -252,6 +291,44 @@ export class McpManager {
 }
 
 export const TOOL_SEARCH = 'tool_search';
+export const READ_RESULT = 'mcp_read_result';
+export const DEFAULT_CACHE_TTL_MS = 60_000;
+export const DEFAULT_MAX_RESULT_CHARS = 20_000;
+const UNTRUSTED_TAG = 'untrusted-tool-output';
+
+/** Provenance-tagged block for untrusted output (F-MCP-5); a forged closing tag inside is neutralized. */
+export function wrapUntrusted(content: string, origin: string): string {
+  const safe = content.replace(new RegExp(`<(/?)${UNTRUSTED_TAG}`, 'gi'), `<$1${UNTRUSTED_TAG}-escaped`);
+  return `<${UNTRUSTED_TAG} source="${origin}">\n${safe}\n</${UNTRUSTED_TAG}>`;
+}
+
+export function stableJson(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(stableJson).join(',')}]`;
+  if (v && typeof v === 'object') return `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${stableJson((v as Record<string, unknown>)[k])}`).join(',')}}`;
+  return JSON.stringify(v) ?? 'null';
+}
+
+function readResultTool(dir: string) {
+  return {
+    spec: {
+      name: READ_RESULT,
+      description: 'Read more of a truncated MCP tool result by id (from a "[truncated ...]" note).',
+      inputSchema: { type: 'object', properties: { id: { type: 'string' }, offset: { type: 'integer', minimum: 0 }, length: { type: 'integer', minimum: 1, maximum: 50000 } }, required: ['id'] } as unknown as JsonSchema,
+    },
+    run: async (args: Record<string, unknown>) => {
+      const id = String(args.id);
+      if (!/^mcpres_[a-f0-9]{16}$/.test(id)) return { content: `invalid result id '${id}'`, isError: true };
+      const path = join(dir, `${id}.txt`);
+      if (!existsSync(path)) return { content: `no stored result '${id}'`, isError: true };
+      const text = readFileSync(path, 'utf8');
+      const offset = typeof args.offset === 'number' ? args.offset : 0;
+      const length = typeof args.length === 'number' ? args.length : DEFAULT_MAX_RESULT_CHARS;
+      const page = text.slice(offset, offset + length);
+      const end = offset + page.length;
+      return { content: `${page}${end < text.length ? `\n[${end} of ${text.length} chars; next offset ${end}]` : `\n[end of result, ${text.length} chars]`}`, summary: `${id} ${offset}-${end}/${text.length}` };
+    },
+  };
+}
 const ACTIVATED_RE = /^- (mcp__[A-Za-z0-9_-]+):/gm;
 
 /** Tool names a `tool_search` result activated (derived from the transcript, so it survives restarts). */

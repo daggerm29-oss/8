@@ -68,15 +68,35 @@ function render(e: HelixEvent): string | null {
   }
 }
 
-async function runAndWait(peer: RpcPeer, summary: TaskSummary, opts: { quiet: boolean; json: boolean }): Promise<number> {
+/**
+ * Events can arrive before `task.create` returns the id (ISSUE-006, e.g. `context.composed`), so the
+ * listener is installed right after connecting and buffers until `follow(id)` names the task.
+ */
+function eventFollower(peer: RpcPeer) {
+  let taskId: string | null = null;
+  let buffered: HelixEvent[] = [];
+  const print = (e: HelixEvent) => {
+    const line = render(e);
+    if (line) process.stderr.write(`${line}\n`);
+  };
+  peer.onNotification(Notifications.event, (params) => {
+    const e = params as HelixEvent;
+    if (taskId === null) { if (buffered.length < 1000) buffered.push(e); return; }
+    if (e.task === taskId) print(e);
+  });
+  return {
+    follow(id: string) {
+      taskId = id;
+      for (const e of buffered) if (e.task === id) print(e);
+      buffered = [];
+    },
+  };
+}
+
+async function runAndWait(peer: RpcPeer, summary: TaskSummary, opts: { quiet: boolean; json: boolean }, follower?: ReturnType<typeof eventFollower>): Promise<number> {
   if (!opts.quiet) {
-    peer.onNotification(Notifications.event, (params) => {
-      const e = params as HelixEvent;
-      if (e.task !== summary.id) return;
-      const line = render(e);
-      if (line) process.stderr.write(`${line}\n`);
-    });
     process.stderr.write(`helix task ${summary.id} · ${summary.provider}/${summary.model} · ${summary.workspacePath}\n`);
+    (follower ?? eventFollower(peer)).follow(summary.id);
   }
   const final = await peer.request<TaskSummary & { ledger: { calls: number; inputTokens: number; outputTokens: number; costUsd: number } }>(Methods.taskWait, { id: summary.id });
   if (opts.json) process.stdout.write(`${JSON.stringify(final, null, 2)}\n`);
@@ -121,6 +141,7 @@ export async function main(argv: string[]): Promise<number> {
   if (cmd === 'mcp' && (arg === 'add' || arg === 'remove')) return mcpEdit(arg, positionals.slice(2), values);
   const opts = { quiet: Boolean(values.quiet), json: Boolean(values.json) };
   const { peer, stop } = await connect(opts.quiet ? [] : ['task.*', 'agent.*', 'tool.*', 'verify.*', 'approval.*', 'context.*', 'artifact.*']);
+  const follower = opts.quiet ? undefined : eventFollower(peer);
   try {
     if (values.prompt) {
       const summary = await peer.request<TaskSummary>(Methods.taskCreate, {
@@ -128,7 +149,7 @@ export async function main(argv: string[]): Promise<number> {
         maxSteps: values['max-steps'] ? Number(values['max-steps']) : undefined, budgetUsd: values.budget ? Number(values.budget) : undefined,
         policyProfile: values.plan ? 'plan' : 'headless', preapprove: values.allow ?? [],
       });
-      const code = await runAndWait(peer, summary, opts);
+      const code = await runAndWait(peer, summary, opts, follower);
       if (values.plan && !opts.json) await printPlan(peer, summary.id);
       return code;
     }
@@ -140,7 +161,7 @@ export async function main(argv: string[]): Promise<number> {
     if (cmd === 'resume' && arg) {
       const summary = await peer.request<TaskSummary>(Methods.taskGet, { id: arg });
       if (!['done', 'failed', 'cancelled'].includes(summary.status)) await peer.request(Methods.taskResume, { id: arg });
-      return await runAndWait(peer, summary, opts);
+      return await runAndWait(peer, summary, opts, follower);
     }
     if (cmd === 'ledger' && arg) {
       process.stdout.write(`${JSON.stringify(await peer.request(Methods.ledgerQuery, { task: arg }), null, 2)}\n`);
@@ -221,6 +242,7 @@ async function mcpEdit(action: 'add' | 'remove', rest: string[], values: { url?:
 }
 
 if (import.meta.main) {
+  process.stdout.on('error', (e: NodeJS.ErrnoException) => { if (e.code === 'EPIPE') process.exit(0); throw e; });
   main(process.argv.slice(2)).then((code) => process.exit(code), (error: Error) => {
     process.stderr.write(`helix: ${error.message}\n`);
     process.exit(1);

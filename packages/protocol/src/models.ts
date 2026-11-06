@@ -10,6 +10,8 @@ export interface Provenance {
   source: 'builtin' | 'mcp' | 'web' | 'repo';
   trust: TrustTier;
   taint: boolean;
+  /** e.g. `mcp:github/get_issue` */
+  origin?: string;
 }
 
 /** Provider-specific state that may only be replayed to the same provider (§7.1 `reasoning.opaque`). */

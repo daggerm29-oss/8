@@ -1,3 +1,4 @@
+import type { Provenance } from '@helix/protocol';
 import type { JsonSchema, ToolSpec } from '@helix/protocol';
 import type { LocalSandbox } from '../sandbox/sandbox.ts';
 import type { WorkspaceIndex } from '../index/index.ts';
@@ -16,6 +17,11 @@ export interface ToolOutput {
   content: string;
   isError?: boolean;
   summary?: string;
+  /** Defaults to builtin/trusted; MCP tools mark untrusted output as tainted (F-MCP-5). */
+  provenance?: Provenance;
+  /** Full result stored out of band (F-MCP-4), e.g. `mcpres_…`. */
+  dataRef?: string;
+  truncated?: boolean;
 }
 
 export interface Tool {

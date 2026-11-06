@@ -63,12 +63,22 @@ const MATRIX: Record<PolicyProfile, Record<ActionClass, Verdict>> = {
   plan: { read: 'allow', write: 'deny', exec: 'deny', network: 'deny', destructive: 'deny' },
 };
 
-export function evaluate(input: { tool: string; args: unknown; profile: PolicyProfile; preapprove?: string[]; sandboxHasNetwork?: boolean }): PolicyDecision {
-  const { actionClass, reason } = classify(input.tool, input.args);
+/**
+ * `tainted` (F-MCP-5, Arch §25.6): the task has read untrusted tool output. High-risk follow-ups
+ * (network, destructive) then lose blanket auto-approval (class preapproval, `all`, MCP alwaysAllow) and
+ * need a confirmation; only an explicit per-tool preapproval (`tool:<name>`) still allows them.
+ */
+export function evaluate(input: { tool: string; args: unknown; profile: PolicyProfile; preapprove?: string[]; sandboxHasNetwork?: boolean; tainted?: boolean }): PolicyDecision {
+  const { actionClass } = classify(input.tool, input.args);
+  let { reason } = classify(input.tool, input.args);
   let verdict = MATRIX[input.profile][actionClass];
   const pre = new Set(input.preapprove ?? []);
-  if (verdict === 'ask' && DYNAMIC_CLASS.get(input.tool)?.autoAllow) verdict = 'allow';
-  if (verdict === 'ask' && (pre.has(actionClass) || pre.has(`tool:${input.tool}`) || pre.has('all'))) verdict = 'allow';
-  if (verdict === 'ask' && input.profile === 'headless') return { verdict: 'deny', actionClass, reason: `${reason}; headless mode denies '${actionClass}' unless preapproved (--allow ${actionClass})` };
+  const highRisk = actionClass === 'network' || actionClass === 'destructive';
+  const taintGate = input.tainted === true && highRisk;
+  if (verdict === 'ask' && pre.has(`tool:${input.tool}`)) verdict = 'allow';
+  if (verdict === 'ask' && !taintGate && DYNAMIC_CLASS.get(input.tool)?.autoAllow) verdict = 'allow';
+  if (verdict === 'ask' && !taintGate && (pre.has(actionClass) || pre.has('all'))) verdict = 'allow';
+  if (verdict === 'ask' && taintGate) reason = `${reason}; the task has read untrusted tool output, so '${actionClass}' actions need confirmation`;
+  if (verdict === 'ask' && input.profile === 'headless') return { verdict: 'deny', actionClass, reason: `${reason}; headless mode denies '${actionClass}' unless preapproved (--allow ${taintGate ? `tool:${input.tool}` : actionClass})` };
   return { verdict, actionClass, reason };
 }
