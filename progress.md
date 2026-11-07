@@ -9,7 +9,7 @@
 - Overall Completion: ~28% (M0 Verified; M1 ~81%: engine slice + test selection/baseline + web workbench v0 (files edit/save, terminal) + activity monitor + MCP stdio/HTTP + MCP safety + compaction + role-based models)
 - Current Status: M1 session 15 — workbench Steps tab (Agent→Step→ToolCall tree, RPC `task.steps`) Tested (browser + live Gemini)
 - Last Updated: 2026-11-07 (session 15)
-- Current Development Branch: `helix/m1-session15` (base: `main` of github.com/daggerm29-oss/8)
+- Current Development Branch: `helix/m1-session15-steps` (note: `origin/helix/m1-session15` holds an earlier parallel attempt, commit d1396d6 `task.tree` — pick one PR, do not merge both) (base: `main` of github.com/daggerm29-oss/8)
 
 ## Phase Overview
 
@@ -320,11 +320,11 @@ Order (tick when done; next session resumes at the first unticked item):
 
 ## Session 15 (M1) — live plan
 
-Branch: `helix/m1-session15` from `main` (session 14 merged as PR #11).
+Branch: `helix/m1-session15-steps` from `main` (session 14 merged as PR #11). A parallel unmerged attempt exists on `helix/m1-session15` (`task.tree` RPC); merge only one.
 Order (tick when done; next session resumes at the first unticked item):
 - [x] S15-1 (DONE, code) F-UI-2 step/tool-call tree: RPC `task.steps {task}` (runtime `steps(id)`): steps ordered by idx with status/timing, ledger (role/provider/model/tokens/cost), assistant text, and tool calls (joined via the call ids in the step's assistant message → `tool_calls.call_id`; works for existing DBs since `tool_calls.step` stores `'tools'`). Calls requested but not yet run are `pending`.
 - [x] S15-2 (DONE) Workbench "Steps" tab: collapsible Step → ToolCall tree (`<details>`), re-renders on step/tool/ledger events.
-- [x] S15-3 DONE: ui.test 2/2 (task.steps: 3 steps idx 0..2, model ref per step, every call linked, `task is required`); tsc clean. Live gemini-3.5-flash-lite via the running workbench (WS client) on a js-calc copy: done, 7 steps (find_symbol, read_file×2, run_shell error, edit_file, run_shell ok, final), all calls linked; browser Steps tab renders the tree with per-step model/tokens/cost/duration. Pushed to `helix/m1-session15`.
+- [x] S15-3 DONE: ui.test 2/2 (task.steps: 3 steps idx 0..2, model ref per step, every call linked, `task is required`); tsc clean. Live gemini-3.5-flash-lite via the running workbench (WS client) on a js-calc copy: done, 7 steps (find_symbol, read_file×2, run_shell error, edit_file, run_shell ok, final), all calls linked; browser Steps tab renders the tree with per-step model/tokens/cost/duration. Pushed to `helix/m1-session15-steps`.
 
 ## Next Actions
 
