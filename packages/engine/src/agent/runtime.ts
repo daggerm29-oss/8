@@ -15,8 +15,9 @@ import type { Db } from '../storage/db.ts';
 import { json, parseJson } from '../storage/db.ts';
 import type { BlobStore } from '../storage/blobs.ts';
 import type { EventBus } from '../events/bus.ts';
-import type { ModelGateway } from '../models/gateway.ts';
-import type { Ledger } from '../models/ledger.ts';
+import type { GatewayCall, GatewayResult, ModelGateway } from '../models/gateway.ts';
+import type { Ledger, ModelRole } from '../models/ledger.ts';
+import { assertUsable, loadRoleLayers, refString, resolveRoles, type ModelRef, type ResolvedRoles, type RolesInput } from '../models/roles.ts';
 import type { Tracer } from '../obs/tracing.ts';
 import type { Logger } from '../util/log.ts';
 import type { ToolRegistry } from '../tools/registry.ts';
@@ -67,6 +68,10 @@ export interface CheckpointInfo {
 
 const PLAN_TOOLS = ['read_file', 'list_dir', 'search', 'find_symbol', 'code_search', 'impact', 'submit_plan'];
 
+export function summarizeRoles(roles: ResolvedRoles): Record<string, string> {
+  return Object.fromEntries(Object.values(roles).map((b) => [b.role, b.chain.map(refString).join(' → ') || '(none)']));
+}
+
 function pidAlive(pid: number): boolean {
   if (pid === process.pid) return true;
   try {
@@ -104,6 +109,8 @@ export class TaskRuntime {
   private readonly o: RuntimeOptions;
   private readonly running = new Map<string, { controller: AbortController; done: Promise<void> }>();
   private readonly approvals = new Map<string, (approved: boolean) => void>();
+  /** Per task: `provider/model` refs that failed permanently (F-MDL-4 fallback), in memory only. */
+  private readonly demoted = new Map<string, Set<string>>();
 
   constructor(opts: RuntimeOptions) {
     this.o = opts;
@@ -180,8 +187,9 @@ export class TaskRuntime {
   create(p: TaskCreateParams): TaskSummary {
     if (!p.goal?.trim()) throw new Error('goal is required');
     const ws = this.workspace(p.workspacePath);
-    const provider = p.provider ?? this.o.gateway.defaultProvider();
-    const model = p.model ?? this.o.gateway.adapter(provider).defaultModel;
+    const roles = this.resolveTaskRoles(ws.path, p);
+    const main = roles[p.policyProfile === 'plan' ? 'planner' : 'coder'].chain[0];
+    const { provider, model } = main;
     const id = prefixedId('task');
     const now = new Date().toISOString();
     this.o.db.run(
@@ -190,8 +198,9 @@ export class TaskRuntime {
       id, ws.id, p.title ?? p.goal.slice(0, 80), p.goal, provider, model, p.policyProfile ?? 'headless', json(p.preapprove ?? []), p.verifyCommand ?? null, p.maxSteps ?? 40, now, now,
     );
     if (p.budgetUsd !== undefined) this.o.ledger.setBudget({ scope: 'task', scopeId: id, hardUsd: p.budgetUsd, softUsd: p.budgetUsd * 0.8 });
+    this.saveArtifact(id, 'roles', 'Model roles', roles);
     this.addMessage(id, null, { role: 'user', parts: [{ type: 'text', text: p.goal }] });
-    this.publish(id, ws.id, 'task.created', { title: p.title ?? p.goal.slice(0, 80), provider, model });
+    this.publish(id, ws.id, 'task.created', { title: p.title ?? p.goal.slice(0, 80), provider, model, roles: summarizeRoles(roles) });
     if (p.start !== false) this.start(id);
     return this.summary(id);
   }
@@ -376,6 +385,50 @@ export class TaskRuntime {
     return composed.text;
   }
 
+  /**
+   * F-MDL-4: resolve role bindings (user < workspace < task, org policy last). The task's explicit
+   * provider/model is the coder override; otherwise the provider default is the base.
+   */
+  resolveTaskRoles(workspacePath: string, p: { provider?: string; model?: string; roles?: RolesInput; policyProfile?: string }): ResolvedRoles {
+    const provider = p.provider ?? this.o.gateway.defaultProvider();
+    const base: ModelRef = { provider, model: p.model ?? this.o.gateway.adapter(provider).defaultModel };
+    const roles = resolveRoles(base, loadRoleLayers(this.o.helixHome, workspacePath), p.roles ?? {}, p.model !== undefined || p.provider !== undefined);
+    assertUsable(roles, [p.policyProfile === 'plan' ? 'planner' : 'coder']);
+    return roles;
+  }
+
+  /** Persisted bindings; tasks created before F-MDL-4 use their own provider/model for every role. */
+  roles(t: TaskRow): ResolvedRoles {
+    const art = this.artifacts(t.id, 'roles').at(-1)?.data as ResolvedRoles | undefined;
+    if (art?.coder) return art;
+    const ref = { provider: t.provider, model: t.model };
+    return resolveRoles(ref, { user: {}, workspace: {} });
+  }
+
+  /**
+   * Call a role's chain: the primary first, then each fallback when the gateway gives up with a
+   * non-cancel provider error (its own quick retries are exhausted or the breaker is open).
+   */
+  private async callRole(t: TaskRow, role: ModelRole, c: Omit<GatewayCall, 'provider' | 'model' | 'role'>): Promise<GatewayResult & { ref: ModelRef }> {
+    const chain = this.roles(t)[role]?.chain ?? [];
+    const all = chain.length ? chain : [{ provider: t.provider, model: t.model }];
+    const demoted = this.demoted.get(t.id) ?? new Set<string>();
+    // Refs that failed permanently are skipped for the rest of the task (the last one is always kept).
+    const refs = all.filter((r, i) => i === all.length - 1 || !demoted.has(refString(r)));
+    for (let i = 0; ; i++) {
+      const ref = refs[i];
+      try {
+        return { ...(await this.o.gateway.call({ ...c, provider: ref.provider, model: ref.model, role })), ref };
+      } catch (error) {
+        const next = refs[i + 1];
+        if (!next || !(error instanceof ProviderError) || error.kind === 'cancelled' || c.signal?.aborted) throw error;
+        const sticky = ['invalid_request', 'auth', 'plan_limit'].includes(error.kind);
+        if (sticky) this.demoted.set(t.id, demoted.add(refString(ref)));
+        this.publish(t.id, t.ws, 'model.fallback', { role, from: refString(ref), to: refString(next), kind: error.kind, sticky, error: error.message.slice(0, 300) }, 'audit');
+      }
+    }
+  }
+
   saveArtifact(task: string, kind: string, title: string, data: unknown): string {
     const id = prefixedId('art');
     this.o.db.run('INSERT INTO artifacts (id, task, kind, title, data_json, at) VALUES (?, ?, ?, ?, ?, ?)', id, task, kind, title, json(data), new Date().toISOString());
@@ -496,8 +549,8 @@ export class TaskRuntime {
     let summary: CompactionSummary | null = null;
     let error: string | undefined;
     try {
-      const res = await this.o.gateway.call({
-        provider: t.provider, model: t.model, role: 'summarizer', ws: t.ws, task: t.id, agent: 'primary', step: stepId, signal,
+      const res = await this.callRole(t, 'summarizer', {
+        ws: t.ws, task: t.id, agent: 'primary', step: stepId, signal,
         request: { system: SUMMARIZER_SYSTEM, messages: [{ role: 'user', parts: [{ type: 'text', text: summarizerPrompt(slice, current) }] }], toolChoice: 'none', maxOutputTokens: 2048 },
       });
       summary = parseSummary(res.message.parts.filter((p) => p.type === 'text').map((p) => (p as { text: string }).text).join(''));
@@ -530,8 +583,8 @@ export class TaskRuntime {
     const system = systemPrompt(root, this.gateSummary(root, t.verify_command), t.policy_profile, context);
     const compaction = await this.maybeCompact(t, messages, system, tools, stepId, signal);
     const view = this.requestMessages(compactedView(messages, compaction));
-    const call = () => this.o.gateway.call({
-      provider: t.provider, model: t.model, role: 'coder', ws: t.ws, task: t.id, agent: 'primary', step: stepId, signal,
+    const call = () => this.callRole(t, t.policy_profile === 'plan' ? 'planner' : 'coder', {
+      ws: t.ws, task: t.id, agent: 'primary', step: stepId, signal,
       request: { system, messages: view, tools, toolChoice: 'auto', maxOutputTokens: 8192 },
       onEvent: (e) => { if (e.type === 'text_delta') this.publish(t.id, t.ws, 'model.delta', { stepId, text: e.text }, 'none'); },
     });

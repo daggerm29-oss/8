@@ -27,6 +27,9 @@ Options:
   --verify <command>      verification command (or "auto" to infer gates; .helix/verify.json is used when omitted)
   --provider <id>         gemini | openai (default: first configured provider)
   -m, --model <id>        model id (default: provider default)
+  --role <r=p/m[,fb...]>  bind a model role, e.g. summarizer=gemini/gemini-3.5-flash-lite or coder=gemini/a,openai/b; repeatable
+                          (roles: planner coder explorer reviewer debugger summarizer embedder completion router;
+                          also $HELIX_HOME/models.json, .helix/models.json, org policy $HELIX_HOME/policy.json)
   --max-steps <n>         model turn limit (default 40)
   --budget <usd>          hard USD budget for the task
   --allow <class>         preapprove an action class in headless mode (network, destructive) or tool:<name>; repeatable
@@ -35,6 +38,19 @@ Options:
   --json                  print the final task summary as JSON
   -q, --quiet             do not stream progress to stderr
 `;
+
+/** `--role role=provider/model[,fallback...]` → task roles override (validated by the Engine). */
+function roleFlags(flags: string[]): Record<string, { primary: string; fallbacks: string[] }> | undefined {
+  if (!flags.length) return undefined;
+  const out: Record<string, { primary: string; fallbacks: string[] }> = {};
+  for (const f of flags) {
+    const eq = f.indexOf('=');
+    const [primary, ...fallbacks] = (eq > 0 ? f.slice(eq + 1) : '').split(',').map((s) => s.trim()).filter(Boolean);
+    if (!primary) throw new Error(`--role expects role=provider/model, got '${f}'`);
+    out[f.slice(0, eq).trim()] = { primary, fallbacks };
+  }
+  return out;
+}
 
 function enginePath(): string {
   return fileURLToPath(new URL('./main.ts', import.meta.resolve('@helix/engine')));
@@ -61,6 +77,7 @@ function render(e: HelixEvent): string | null {
     case 'tool.result': return `  ${d.verdict === 'deny' ? '✗ denied' : d.isError ? '!' : '✓'} ${d.summary ?? d.tool}`;
     case 'verify.gate': return `  gate ${d.gate} (${d.kind}${d.required ? '' : ', optional'}): ${d.passed ? 'passed' : `failed (exit ${d.exitCode})`} in ${d.durationMs} ms`;
     case 'verify.result': return `  verify #${d.attempt}: ${d.passed ? 'passed' : `failed (exit ${d.exitCode})${d.diagnostics?.length ? ` · ${d.diagnostics.length} diagnostics: ${d.diagnostics.slice(0, 3).map((x: any) => `${x.file ?? '?'}:${x.line ?? '?'} ${x.message}`.slice(0, 120)).join(' | ')}` : ''}`}`;
+    case 'model.fallback': return `  ⇢ ${d.role}: ${d.from} failed (${d.kind}), falling back to ${d.to}`;
     case 'context.compacted': return `  ⌁ compacted messages ${d.from}–${d.upTo - 1} (${d.source}): ${d.tokensBefore} → ${d.tokensAfter} tokens${d.error ? ` · ${d.error}` : ''}`;
     case 'context.composed': return `  ⌁ context: ${d.items?.length ?? 0} items, ${d.usedTokens}/${d.budgetTokens} tokens${d.index ? ` · index ${d.index.files} files/${d.index.symbols} symbols (${d.index.indexed} reindexed)` : ''}`;
     case 'artifact.created': return `  ▣ ${d.kind} artifact ${d.artifactId}`;
@@ -131,7 +148,7 @@ export async function main(argv: string[]): Promise<number> {
       prompt: { type: 'string', short: 'p' }, cwd: { type: 'string', short: 'C' }, verify: { type: 'string' }, provider: { type: 'string' },
       model: { type: 'string', short: 'm' }, 'max-steps': { type: 'string' }, budget: { type: 'string' }, allow: { type: 'string', multiple: true },
       json: { type: 'boolean' }, plan: { type: 'boolean' }, quiet: { type: 'boolean', short: 'q' }, help: { type: 'boolean', short: 'h' },
-      url: { type: 'string' }, header: { type: 'string', multiple: true }, trusted: { type: 'boolean' },
+      url: { type: 'string' }, header: { type: 'string', multiple: true }, trusted: { type: 'boolean' }, role: { type: 'string', multiple: true },
     },
   });
   const [cmd, arg] = positionals;
@@ -141,14 +158,14 @@ export async function main(argv: string[]): Promise<number> {
   }
   if (cmd === 'mcp' && (arg === 'add' || arg === 'remove')) return mcpEdit(arg, positionals.slice(2), values);
   const opts = { quiet: Boolean(values.quiet), json: Boolean(values.json) };
-  const { peer, stop } = await connect(opts.quiet ? [] : ['task.*', 'agent.*', 'tool.*', 'verify.*', 'approval.*', 'context.*', 'artifact.*']);
+  const { peer, stop } = await connect(opts.quiet ? [] : ['task.*', 'agent.*', 'tool.*', 'verify.*', 'approval.*', 'context.*', 'artifact.*', 'model.fallback']);
   const follower = opts.quiet ? undefined : eventFollower(peer);
   try {
     if (values.prompt) {
       const summary = await peer.request<TaskSummary>(Methods.taskCreate, {
         workspacePath: resolve(values.cwd ?? process.cwd()), goal: values.prompt, verifyCommand: values.verify, provider: values.provider, model: values.model,
         maxSteps: values['max-steps'] ? Number(values['max-steps']) : undefined, budgetUsd: values.budget ? Number(values.budget) : undefined,
-        policyProfile: values.plan ? 'plan' : 'headless', preapprove: values.allow ?? [],
+        policyProfile: values.plan ? 'plan' : 'headless', preapprove: values.allow ?? [], roles: roleFlags(values.role ?? []),
       });
       const code = await runAndWait(peer, summary, opts, follower);
       if (values.plan && !opts.json) await printPlan(peer, summary.id);

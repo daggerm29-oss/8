@@ -72,6 +72,8 @@ export interface TaskCreateParams {
   policyProfile?: 'headless' | 'interactive' | 'plan';
   preapprove?: string[];
   start?: boolean;
+  /** Task-level role overrides (F-MDL-4): role → `provider/model` or `{ primary, fallbacks }`. */
+  roles?: Record<string, string | { primary: string | { provider: string; model: string }; fallbacks?: Array<string | { provider: string; model: string }> }>;
 }
 
 export interface LedgerTotals {
@@ -122,6 +124,8 @@ export const Methods = {
   taskMonitor: 'task.monitor',
   /* M1 — MCP (F-MCP-1) */
   mcpList: 'mcp.list',
+  /* M1 — role-based models (F-MDL-4) */
+  modelsRoles: 'models.roles',
   /* M1 — workbench files + terminal (F-UI-1, F-TRM-1) */
   fsTree: 'fs.tree',
   fsRead: 'fs.read',

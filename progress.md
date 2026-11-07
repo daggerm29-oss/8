@@ -6,10 +6,10 @@
 
 - Project: Helix
 - Current Phase: M1 — Core MVP (engine-side slice in progress)
-- Overall Completion: ~27% (M0 Verified; M1 ~78%: engine slice + test selection/baseline + web workbench v0 (files edit/save, terminal) + activity monitor + MCP stdio/HTTP + MCP safety + compaction)
-- Current Status: M1 session 12 — F-CTX-2 compaction Tested (live Gemini verified) + workbench file edit/save Tested (browser verified)
-- Last Updated: 2026-11-07 (session 12)
-- Current Development Branch: `helix/m1-session12` (base: `main` of github.com/daggerm29-oss/8)
+- Overall Completion: ~28% (M0 Verified; M1 ~81%: engine slice + test selection/baseline + web workbench v0 (files edit/save, terminal) + activity monitor + MCP stdio/HTTP + MCP safety + compaction + role-based models)
+- Current Status: M1 session 13 — F-MDL-4 role-based models Tested (live Gemini verified: fallback + summarizer role + policy deny)
+- Last Updated: 2026-11-07 (session 13)
+- Current Development Branch: `helix/m1-session13` (base: `main` of github.com/daggerm29-oss/8)
 
 ## Phase Overview
 
@@ -46,7 +46,7 @@ Statuses: Not Started / In Progress / Implemented / Tested / Verified / Blocked 
 | F-MDL-1 | Provider adapter framework | Tested | conformance 12/12 (fake servers) | IR + `ProviderAdapter` in `@helix/protocol` (IMPL-ADR-006); gateway with retry/breaker/budget pre-check. Arch §7.1, §7.2, §31.3 |
 | F-MDL-2 | Gemini integration | Verified | conformance 6 Gemini cases; live M0 exit eval (3/3 fixtures, gemini-3.5-flash-lite) | `streamGenerateContent` SSE, function calling, thought-signature replay, usage normalization, error mapping, live model list + overlay. Context caching not yet. 429 per-day quota → `plan_limit` (non-retryable); per-minute → `rate_limit`. Arch §7.3 |
 | F-MDL-3 | OpenAI integration (API key + Sign in with ChatGPT) | In Progress | conformance 6 OpenAI cases; live test skipped (no key) | API-key mode Tested: Responses API SSE, function tools, encrypted reasoning items with `store:false`. SIWC not started (needs OpenAI approval, §7.4). Arch §7.4, §8.2 |
-| F-MDL-4 | Role-based model configuration | Not Started | — | Arch §7.5 |
+| F-MDL-4 | Role-based model configuration | Tested | roles.test (3); live gemini-3.5-flash-lite (session 13) | `models/roles.ts`: user `$HELIX_HOME/models.json` < workspace `.helix/models.json` < task (`roles` param / CLI `--role`, explicit `-m` = coder override); org policy `$HELIX_HOME/policy.json` `models.{allowProviders,denyProviders,allowModels,denyModels(globs),forced}` last (deny wins). Unset roles inherit coder. Bindings persisted as `roles` artifact. `runtime.callRole`: primary → fallbacks on non-cancel ProviderError, `model.fallback` audit event; invalid_request/auth/plan_limit demote the ref for the task (in memory). Coder=`coder` (Plan Mode `planner`), compaction=`summarizer`. Ledger role per entry. RPC `models.roles`. No workbench role UI; no OS user/org distinction beyond files. Arch §7.5 |
 | F-MDL-5 | Automatic model router + fallback | Not Started | — | Arch §7.6, §29.5 |
 | F-AUTH-1 | Secure credential vault | In Progress | engine models.test (vault case), sandbox.test (env scrub) | v0: env-only keys (`GEMINI_API_KEY`, `GOOGLE_API_KEY`, or `GEMINI_API`) held in memory, redactor-registered, never forwarded to sandboxes; host path denylist incl. `~/.codex`. OS keychain pending (IMPL-ADR-010). Arch §8.1, §8.3, §25.9 |
 | F-AUTH-2 | OAuth broker | Not Started | — | Arch §8.2 |
@@ -297,16 +297,27 @@ Order (tick when done; next session resumes at the first unticked item):
 - Limits: textarea editor (no syntax highlighting); CRLF files are saved with LF (browser textarea normalizes); user edits are not checkpointed (agent checkpoints only). Compaction eval (HTS ≤2 pp delta) not run — no HTS suite yet; token counts are the ~4 chars/token estimate.
 - `helix-workbench` service re-registered in this VM: `node packages/engine/src/main.ts --ws 4100 --ui --host 0.0.0.0 --allow-host '*' --no-auth` (sources `.env.development.local`).
 
+## Session 13 (M1) — live plan
+
+Branch: `helix/m1-session13` from `main` (session 12 merged as PR #9).
+Order (tick when done; next session resumes at the first unticked item):
+- [x] S13-1 (DONE, code; tsc clean) F-MDL-4 role-based models: `engine/src/models/roles.ts` — layers `$HELIX_HOME/models.json` (user) < `<ws>/.helix/models.json` (workspace) < task `roles` override; org policy `$HELIX_HOME/policy.json` `{models:{allowProviders,denyProviders,allowModels,denyModels,forced}}` applied last (deny wins, `forced` replaces the binding). Refs are `provider/model` strings. Roles: planner, coder, explorer, reviewer, debugger, summarizer, embedder, completion, router; unset roles fall back to coder; coder falls back to task provider/model. Resolved bindings persisted as `roles` artifact at task create (restart-safe). Task model denied by policy → create fails.
+- [x] S13-2 (DONE, code; `runtime.callRole`, `resolveTaskRoles`, `roles(t)`, RPC `models.roles {workspacePath|task}`, CLI `--role`) Runtime: `callRole()` tries primary then fallbacks on non-cancel ProviderError (after gateway retries) → `model.fallback` event; coder turns use role `coder` (`planner` in Plan Mode), compaction uses `summarizer`. Ledger already records role/provider/model per entry. RPC `models.roles {workspacePath, roles?}` (preview resolution); CLI `--role summarizer=gemini/<model>` (repeatable).
+- Live (session 13, gemini-3.5-flash-lite, js-calc copy, `--role coder=gemini/gemini-0-nonexistent,gemini/gemini-3.5-flash-lite --role summarizer=gemini/gemini-3.5-flash-lite`, low compaction trigger): coder fell back on every turn (invalid_request, then breaker transient), 2 model compactions, subtract fixed, gate passed attempt 1 (7 steps, 10 calls, 14,901 in / 793 out). Policy `denyModels: ["gemini/*-pro*"]` + `-m gemini-3.5-pro` → "no allowed model for role 'coder'". Follow-up fix: permanent errors now demote the ref for the rest of the task. Note: task summary `model` shows the configured primary, not the model actually used (ledger has the real one).
+- [x] S13-3 DONE: engine 69/69 (roles 3), CLI 2/2, tsc clean. Live re-check after demotion: one `⇢ coder ... invalid_request` fallback, then the fallback is used directly (5 steps, 5 calls, 9,782 in / 194 out, verify passed attempt 1). Pushed to `helix/m1-session13`.
+- (spec) S13-3 Tests `test/roles.test.ts` (resolution order, policy deny/forced, invalid refs; e2e fake Gemini: summarizer on a different model, coder fallback on 5xx, ledger role per entry, denied model rejected). Full suite + tsc, live Gemini check, push.
+
 ## Next Actions
 
-Resume here for **M1 — Core MVP** (session 13). Session 12 shipped F-CTX-2 compaction and workbench file edit/save. Suggested start: F-MDL-4 role-based models (lets compaction use a cheaper Tier-S summarizer instead of the task model), then F-UI-2 step/tool-call tree or PTY terminal, then F-SBX-3 egress proxy. Pricing for gemini-3.5-flash-lite stays `null` until a verified published price exists. Next, in order:
+Resume here for **M1 — Core MVP** (session 14). Session 13 shipped F-MDL-4 role-based models (summarizer can now be a cheaper model: `.helix/models.json` `{"roles":{"summarizer":"gemini/<cheap>"}}` or `--role summarizer=...`). Suggested start: workbench role picker + roles in the task detail / ledger view, then F-UI-2 step/tool-call tree or PTY terminal, then F-SBX-3 egress proxy. Pricing for gemini-3.5-flash-lite stays `null` until a verified published price exists. Next, in order:
 1. Remaining MCP (lower priority): MCP resources/prompts, OAuth for remote HTTP servers (F-AUTH-2), JSONPath projection of large results, workbench badge for tainted tasks.
 2. Workbench follow-ups: checkpoint user edits + syntax highlighting + CRLF preservation, PTY for the terminal (interactive programs, colors), Electron shell + OS keychain (IMPL-ADR-010); F-UI-2 extensions (step/tool-call tree, pause, fork from checkpoint, change model).
 3. Polish: `--verify auto` could emit `{{tests}}` gates for known runners (node --test, pytest, go test pkg selection); graph evidence in Plan Mode `affectedFiles`; tree-sitter extractor swap; gate result cache by (gate, inputs hash) (§9.6).
 4. F-CTX-2 HTS eval, F-MDL-4 role-based models, F-SBX-3 egress proxy, F-PRV-1/2 preview.
 
 Workbench: `node --disable-warning=ExperimentalWarning packages/engine/src/main.ts --ui` prints `http://127.0.0.1:<port>/#token=…`. In the v0 sandbox the registered service `helix-workbench` runs it on port 4100 with `--host 0.0.0.0 --allow-host '*' --no-auth` (dev preview only; sources `.env.development.local` for `GEMINI_API`).
-How to run: `pnpm --filter @helix/engine test` (66 tests), `pnpm --filter @helix/cli test`, `pnpm --filter @helix/provider-conformance test`, `npx tsc -p tsconfig.helix.json`.
+Roles: `--role coder=gemini/a,gemini/b --role summarizer=gemini/c`; files `$HELIX_HOME/models.json`, `<ws>/.helix/models.json` (`{"roles":{...}}`), org policy `$HELIX_HOME/policy.json` (`{"models":{"denyModels":["gemini/*-pro*"]}}`); RPC `models.roles {workspacePath}` previews resolution, `{task}` returns the persisted bindings.
+How to run: `pnpm --filter @helix/engine test` (69 tests), `pnpm --filter @helix/cli test`, `pnpm --filter @helix/provider-conformance test`, `npx tsc -p tsconfig.helix.json`.
 Live: `set -a; . ./.env.development.local; set +a; node --disable-warning=ExperimentalWarning evals/m0-exit.ts --model gemini-3.5-flash-lite` (key env var: `GEMINI_API`).
 Compaction env: `HELIX_COMPACT_TRIGGER_TOKENS`, `HELIX_COMPACT_KEEP_TURNS`, `HELIX_COMPACT_MIN_SLICE_TOKENS`, `HELIX_COMPACT=off` (Engine option `compaction`).
 MCP: `helix mcp add <name> [--trusted] -- <cmd...>` or `helix mcp add <name> --url <url> --header K=V`; `helix mcp list`; `helix mcp remove <name>`; mcp.json keys `allowTools`, `denyTools`, `alwaysAllow`, top-level `toolSearchThreshold`.
