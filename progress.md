@@ -7,9 +7,9 @@
 - Project: Helix
 - Current Phase: M1 — Core MVP (engine-side slice in progress)
 - Overall Completion: ~28% (M0 Verified; M1 ~81%: engine slice + test selection/baseline + web workbench v0 (files edit/save, terminal) + activity monitor + MCP stdio/HTTP + MCP safety + compaction + role-based models)
-- Current Status: M1 session 14 — workbench role picker + Roles tab (F-MDL-4 UI) Tested (browser + live Gemini fallback run)
-- Last Updated: 2026-11-07 (session 14)
-- Current Development Branch: `helix/m1-session14` (base: `main` of github.com/daggerm29-oss/8)
+- Current Status: M1 session 15 — workbench Steps tab (Agent→Step→ToolCall tree, RPC `task.steps`) Tested (browser + live Gemini)
+- Last Updated: 2026-11-07 (session 15)
+- Current Development Branch: `helix/m1-session15-steps` (note: `origin/helix/m1-session15` holds an earlier parallel attempt, commit d1396d6 `task.tree` — pick one PR, do not merge both) (base: `main` of github.com/daggerm29-oss/8)
 
 ## Phase Overview
 
@@ -109,7 +109,7 @@ Statuses: Not Started / In Progress / Implemented / Tested / Verified / Blocked 
 | F-REV-2 | Security analysis | Not Started | — | Arch §25.10 |
 | F-REV-3 | Dependency risk gate (X17) | Not Started | — | Arch §16.7 |
 | F-UI-1 | Workbench | Tested | ui.test (2); browser + live Gemini run (session 6) | v0 web workbench served by the Engine (`packages/engine/ui/`, no build): task create/list, live event stream, transcript, diff per checkpoint + restore, gates, approvals, impact explorer, artifacts, ledger stats, read-only Files view (`fs.tree`/`fs.read`, secrets filtered, confined) and Terminal tab (session 11). Fragment token, Host/Origin loopback check, CSP. Edit/save via `fs.write` (hash-checked, session 12). No Electron yet. Arch §5.1–5.3 |
-| F-UI-2 | Agent activity monitor | Tested | ui.test (task.monitor); browser + live Gemini run (session 10) | v0: RPC `task.monitor` (active first; status, running, elapsed, ledger, current step, last tool call, pending approvals, checkpoint count + last checkpoint files); workbench Monitor view (default with no task selected): summary stats, live table, per-task Cancel/Resume, batch approve/deny of pending approvals. Not yet: Agent→Step→ToolCall tree, pause, fork, change model, held leases (no multi-agent yet). Arch §5.4 |
+| F-UI-2 | Agent activity monitor | Tested | ui.test (task.monitor); browser + live Gemini run (session 10) | v0: RPC `task.monitor` (active first; status, running, elapsed, ledger, current step, last tool call, pending approvals, checkpoint count + last checkpoint files); workbench Monitor view (default with no task selected): summary stats, live table, per-task Cancel/Resume, batch approve/deny of pending approvals. Session 15: task Steps tab = Step→ToolCall tree via RPC `task.steps` (per-step model/tokens/cost/duration, assistant text, calls with status/duration/summary/args). Not yet: pause, fork, change model, held leases (no multi-agent yet). Arch §5.4 |
 | F-UI-3 | Intelligence Explorer | Not Started | — | Arch §5.5 |
 | F-UI-4 | Artifacts | Not Started | — | Arch §5.6 |
 | F-OBS-1 | Traces and logs | Tested | core.test | Spans for model.call and tool.call; JSON-lines logs in $HELIX_HOME/logs. Arch §26.1–26.3 |
@@ -318,9 +318,17 @@ Order (tick when done; next session resumes at the first unticked item):
 - [x] S14-3 DONE: ui.test extended (models.usage shape + coder binding source `task` + one usage row 3 calls; models.roles preview summarizer chain/inheritance; unknown role rejected); tsc clean. Browser + live gemini-3.5-flash-lite from the workbench on a js-calc copy with roles `coder=gemini/gemini-0-nonexistent,gemini/gemini-3.5-flash-lite` + `summarizer=gemini/gemini-3.5-flash-lite`: preview showed both overrides (source task) + "Inherit coder: …"; task done (7 steps, 7 calls, 16,255 in / 251 out, verify passed attempt 1); Roles tab: nonexistent 1 call / 1 failed, flash-lite 7 calls marked fallback, summarizer not used (no compaction at default trigger), 1 sticky fallback listed. Browser fix: `.sub` labels in the Roles table ran into the numbers ("1" + "1 failed" read as "11 failed").
 - Note: `pnpm --filter @helix/engine test` hung with no child process in this VM (pnpm 12.3.4); run `node --disable-warning=ExperimentalWarning --test --test-concurrency=1 "test/**/*.test.ts"` from `packages/engine` directly.
 
+## Session 15 (M1) — live plan
+
+Branch: `helix/m1-session15-steps` from `main` (session 14 merged as PR #11). A parallel unmerged attempt exists on `helix/m1-session15` (`task.tree` RPC); merge only one.
+Order (tick when done; next session resumes at the first unticked item):
+- [x] S15-1 (DONE, code) F-UI-2 step/tool-call tree: RPC `task.steps {task}` (runtime `steps(id)`): steps ordered by idx with status/timing, ledger (role/provider/model/tokens/cost), assistant text, and tool calls (joined via the call ids in the step's assistant message → `tool_calls.call_id`; works for existing DBs since `tool_calls.step` stores `'tools'`). Calls requested but not yet run are `pending`.
+- [x] S15-2 (DONE) Workbench "Steps" tab: collapsible Step → ToolCall tree (`<details>`), re-renders on step/tool/ledger events.
+- [x] S15-3 DONE: ui.test 2/2 (task.steps: 3 steps idx 0..2, model ref per step, every call linked, `task is required`); tsc clean. Live gemini-3.5-flash-lite via the running workbench (WS client) on a js-calc copy: done, 7 steps (find_symbol, read_file×2, run_shell error, edit_file, run_shell ok, final), all calls linked; browser Steps tab renders the tree with per-step model/tokens/cost/duration. Pushed to `helix/m1-session15-steps`.
+
 ## Next Actions
 
-Resume here for **M1 — Core MVP** (session 15). Session 14 shipped the workbench role picker (New Task → Model roles, live resolution preview) and the task Roles tab (configured vs actually-used models per role, fallbacks) via new RPC `models.usage`. Suggested start: F-UI-2 step/tool-call tree (Agent→Step→ToolCall in the task view), or PTY terminal (F-TRM-1), then F-SBX-3 egress proxy. Optional: persist demoted refs per task (survive Engine restart); task summary `model` could show the model actually used. Pricing for gemini-3.5-flash-lite stays `null` until a verified published price exists. Next, in order:
+Resume here for **M1 — Core MVP** (session 16). Session 15 shipped the workbench Steps tab (Step→ToolCall tree, RPC `task.steps`). Suggested start: PTY terminal (F-TRM-1), then F-SBX-3 egress proxy, then F-PRV-1/2 preview. Optional: persist demoted refs per task (survive Engine restart); task summary `model` could show the model actually used. Pricing for gemini-3.5-flash-lite stays `null` until a verified published price exists. Next, in order:
 1. Remaining MCP (lower priority): MCP resources/prompts, OAuth for remote HTTP servers (F-AUTH-2), JSONPath projection of large results, workbench badge for tainted tasks.
 2. Workbench follow-ups: checkpoint user edits + syntax highlighting + CRLF preservation, PTY for the terminal (interactive programs, colors), Electron shell + OS keychain (IMPL-ADR-010); F-UI-2 extensions (step/tool-call tree, pause, fork from checkpoint, change model).
 3. Polish: `--verify auto` could emit `{{tests}}` gates for known runners (node --test, pytest, go test pkg selection); graph evidence in Plan Mode `affectedFiles`; tree-sitter extractor swap; gate result cache by (gate, inputs hash) (§9.6).

@@ -340,6 +340,33 @@ async function renderRoles() {
   );
 }
 
+/* ---------------- step / tool-call tree (F-UI-2) ---------------- */
+const openSteps = new Set();
+
+async function renderSteps() {
+  const box = $('steps');
+  const steps = await rpc.call('task.steps', { task: state.selected });
+  const dur = (a, b) => (b ? fmtElapsed(Date.parse(b) - Date.parse(a)) : 'running');
+  const callCls = (s) => (s === 'ok' ? 'ok' : s === 'pending' ? '' : 'err');
+  box.replaceChildren(...steps.map((s) => {
+    const d = h('details', { class: 'step', open: openSteps.has(s.id) || s.status === 'running' },
+      h('summary', {},
+        h('span', { class: 'mono' }, `#${s.index + 1}`),
+        h('span', { class: `badge ${s.status === 'done' ? 'done' : s.status === 'error' ? 'failed' : 'running'}` }, s.status),
+        h('span', { class: 'grow' }, s.toolCalls.length ? s.toolCalls.map((c) => c.tool).join(', ') : short(s.text, 80) || '(no output)'),
+        s.model ? h('span', { class: 'sub mono' }, `${s.model.ref} · ${fmtNum(s.model.inputTokens)} / ${fmtNum(s.model.outputTokens)} · ${fmtUsd(s.model.costUsd)}`) : null,
+        h('span', { class: 'sub mono' }, dur(s.startedAt, s.endedAt))),
+      s.text ? h('div', { class: 'part' }, s.text) : null,
+      s.toolCalls.length ? h('ul', { class: 'calls' }, s.toolCalls.map((c) => h('li', {},
+        h('details', {},
+          h('summary', {}, h('strong', { class: callCls(c.status) }, c.tool), ` · ${c.status}`, c.durationMs !== null ? ` · ${c.durationMs}ms` : '', c.summary ? h('span', { class: 'sub' }, ` — ${short(c.summary, 120)}`) : null),
+          h('pre', { class: 'mono' }, JSON.stringify(c.args, null, 2)))))) : null);
+    d.addEventListener('toggle', () => (d.open ? openSteps.add(s.id) : openSteps.delete(s.id)));
+    return d;
+  }));
+  if (!steps.length) box.append(h('p', { class: 'note' }, 'No steps yet.'));
+}
+
 /* ---------------- files (F-UI-1) ---------------- */
 const files = { ws: null, tree: null, open: null, loaded: null, editing: false };
 const selectedWorkspace = () => state.tasks.find((x) => x.id === state.selected)?.workspacePath ?? null;
@@ -485,6 +512,7 @@ async function renderTab() {
   if (!state.selected) return;
   try {
     if (state.tab === 'activity') renderActivity();
+    else if (state.tab === 'steps') await renderSteps();
     else if (state.tab === 'transcript') await renderTranscript();
     else if (state.tab === 'diff') await renderDiff();
     else if (state.tab === 'gates') renderGates();
@@ -636,6 +664,7 @@ function onEvent(e) {
   if (e.task === state.selected) {
     if (state.tab === 'activity') renderActivity();
     if (state.tab === 'gates' && e.topic.startsWith('verify.')) renderGates();
+    if (state.tab === 'steps' && ['task.step', 'agent.message', 'tool.result'].includes(e.topic)) renderSteps().catch((err) => console.error('[helix] steps render failed', err));
     if (e.topic.startsWith('approval.') || e.topic === 'task.status') renderApprovals();
   }
   if (['task.created', 'task.status', 'task.step', 'ledger.entry', 'checkpoint.restored', 'tool.result', 'approval.requested', 'approval.resolved'].includes(e.topic)) scheduleRefresh();
