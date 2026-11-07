@@ -1,5 +1,5 @@
-import { mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdirSync, writeFileSync, rmSync, readFileSync, realpathSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { timingSafeEqual } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
@@ -22,7 +22,8 @@ import { ModelGateway } from './models/gateway.ts';
 import { builtinTools } from './tools/builtin.ts';
 import { McpManager, type McpServerConfig, type McpServerStatus } from './mcp/manager.ts';
 import { TaskRuntime } from './agent/runtime.ts';
-import { unshareAvailable } from './sandbox/sandbox.ts';
+import { LocalSandbox, unshareAvailable } from './sandbox/sandbox.ts';
+import { listWorkspaceFiles, readWorkspaceFile } from './workspace/files.ts';
 import { WorkspaceIndex } from './index/index.ts';
 import { parseDiagnostics } from './diagnostics/parsers.ts';
 
@@ -76,9 +77,12 @@ export class Engine {
   private wss?: WebSocketServer;
   private http?: Server;
   private closed = false;
+  private readonly terminals = new Map<string, LocalSandbox>();
+  private readonly forceProcessSandbox: boolean;
 
   constructor(opts: EngineOptions = {}) {
     this.home = opts.home ?? helixHome();
+    this.forceProcessSandbox = opts.forceProcessSandbox ?? false;
     mkdirSync(this.home, { recursive: true, mode: 0o700 });
     const env = opts.env ?? process.env;
     this.logger = new Logger({ dir: join(this.home, 'logs'), stderr: false, bindings: { engine: this.id } });
@@ -187,6 +191,50 @@ export class Engine {
     peer.handle(Methods.workspaceList, guard(() => this.runtime.workspaces()));
     peer.handle(Methods.taskMonitor, guard<{ limit?: number }>((p) => this.runtime.monitor(Math.min(Math.max(Number(p?.limit) || 50, 1), 200))));
     peer.handle(Methods.mcpList, guard(async () => { await this.mcpReady; return this.mcp.list(); }));
+    peer.handle(Methods.fsTree, guard<{ workspacePath: string }>((p) => listWorkspaceFiles(this.knownWorkspace(p.workspacePath))));
+    peer.handle(Methods.fsRead, guard<{ workspacePath: string; path: string }>((p) => readWorkspaceFile(this.knownWorkspace(p.workspacePath), p.path)));
+    const runs = new Map<string, AbortController>();
+    peer.onClose(() => runs.forEach((c) => c.abort()));
+    peer.handle(Methods.terminalRun, guard<{ workspacePath: string; command: string; cwd?: string; timeoutMs?: number; runId?: string }>(async (p) => {
+      if (typeof p.command !== 'string' || !p.command.trim()) throw new Error('command is required');
+      const sbx = this.terminalSandbox(this.knownWorkspace(p.workspacePath));
+      const runId = typeof p.runId === 'string' && p.runId ? p.runId.slice(0, 64) : prefixedId('run');
+      const ctrl = new AbortController();
+      runs.set(runId, ctrl);
+      this.logger.info('terminal.run', { runId, cwd: p.cwd ?? '.', command: p.command.slice(0, 200) });
+      try {
+        const r = await sbx.exec(p.command, {
+          cwd: p.cwd, timeoutMs: Math.min(Math.max(Number(p.timeoutMs) || 120_000, 1000), 600_000), maxOutputBytes: 1024 * 1024, signal: ctrl.signal,
+          onOutput: (stream, text) => peer.notify(Notifications.terminalOutput, { runId, stream, text }),
+        });
+        return { runId, exitCode: r.exitCode, signal: r.signal, timedOut: r.timedOut, truncated: r.truncated, durationMs: r.durationMs, killed: ctrl.signal.aborted, sandbox: sbx.info() };
+      } finally { runs.delete(runId); }
+    }));
+    peer.handle(Methods.terminalKill, guard<{ runId: string }>((p) => {
+      const c = runs.get(p.runId);
+      c?.abort();
+      return { killed: !!c };
+    }));
+  }
+
+  /** Workbench file/terminal access is limited to workspaces the Engine already knows (created via a task or index call). */
+  private knownWorkspace(path: string): string {
+    if (typeof path !== 'string' || !path) throw new Error('workspacePath is required');
+    let real: string;
+    try { real = realpathSync(resolve(path)); } catch { throw new Error(`no such workspace: ${path}`); }
+    const ws = this.runtime.workspaces().find((w) => { try { return realpathSync(w.path) === real; } catch { return false; } });
+    if (!ws) throw new Error(`unknown workspace '${path}': create a task in it first`);
+    return real;
+  }
+
+  /** One contained sandbox per workspace for terminal commands (F-TRM-1 v0, non-PTY). Same isolation as agent shell. */
+  private terminalSandbox(root: string): LocalSandbox {
+    let s = this.terminals.get(root);
+    if (!s) {
+      s = new LocalSandbox(prefixedId('term'), root, { forceProcess: this.forceProcessSandbox });
+      this.terminals.set(root, s);
+    }
+    return s;
   }
 
   /** Index for a workspace path (registers the workspace on first use). */
@@ -262,6 +310,8 @@ export class Engine {
     await this.runtime.shutdown();
     await this.mcpReady.catch(() => []);
     await this.mcp.close();
+    for (const s of this.terminals.values()) s.destroy();
+    this.terminals.clear();
     for (const c of this.wss?.clients ?? []) c.terminate();
     this.wss?.close();
     this.http?.closeAllConnections();

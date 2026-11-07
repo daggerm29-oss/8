@@ -101,6 +101,8 @@
           <button role="tab" aria-selected="false" data-tab="gates">Gates</button>
           <button role="tab" aria-selected="false" data-tab="impact">Impact</button>
           <button role="tab" aria-selected="false" data-tab="artifacts">Artifacts</button>
+          <button role="tab" aria-selected="false" data-tab="files">Files</button>
+          <button role="tab" aria-selected="false" data-tab="terminal">Terminal</button>
         </div>
 
         <div class="panel" role="tabpanel" data-panel="activity"><ol id="activity" class="activity"></ol></div>
@@ -121,6 +123,34 @@
           <div id="impact"></div>
         </div>
         <div class="panel" role="tabpanel" data-panel="artifacts" hidden><div id="artifacts"></div></div>
+        <div class="panel" role="tabpanel" data-panel="files" hidden>
+          <div class="files">
+            <nav class="file-tree" aria-label="Workspace files">
+              <label class="sr-only" for="file-filter">Filter files</label>
+              <input id="file-filter" type="search" placeholder="Filter files…" autocomplete="off">
+              <ul id="file-list" class="mono"></ul>
+              <p class="note" id="file-count"></p>
+            </nav>
+            <div class="file-view">
+              <div class="file-head"><span id="file-name" class="mono">Select a file</span><span id="file-info" class="muted"></span></div>
+              <pre id="file-content" class="code mono" tabindex="0" aria-label="File content"></pre>
+            </div>
+          </div>
+        </div>
+        <div class="panel" role="tabpanel" data-panel="terminal" hidden>
+          <div class="terminal">
+            <pre id="term-output" class="term-output mono" tabindex="0" aria-live="polite" aria-label="Terminal output"></pre>
+            <form id="term-form" class="term-form" autocomplete="off">
+              <span class="prompt mono" aria-hidden="true">$</span>
+              <label class="sr-only" for="term-input">Command</label>
+              <input id="term-input" name="command" class="mono" placeholder="npm test" spellcheck="false">
+              <button type="submit" class="primary" id="term-run">Run</button>
+              <button type="button" class="danger" id="term-kill" disabled>Kill</button>
+              <button type="button" class="ghost" id="term-clear">Clear</button>
+            </form>
+            <p class="note">Runs in the workspace sandbox (no network, scrubbed env, 2 min timeout). Up/Down arrows recall history.</p>
+          </div>
+        </div>
       </section>
     </main>
   </div>

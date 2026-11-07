@@ -12,6 +12,8 @@ export interface ExecOptions {
   maxOutputBytes?: number;
   env?: Record<string, string>;
   signal?: AbortSignal;
+  /** Live, redacted output chunks (terminal panel). Called only for bytes within `maxOutputBytes`. */
+  onOutput?: (stream: 'stdout' | 'stderr', text: string) => void;
 }
 
 export interface ExecResult {
@@ -186,11 +188,13 @@ export class LocalSandbox {
           truncated = true;
           return;
         }
-        const s = chunk.subarray(0, max - bytes).toString('utf8');
+        const room = max - bytes;
+        const s = chunk.subarray(0, room).toString('utf8');
+        if (chunk.length > room) truncated = true;
         bytes += chunk.length;
-        if (chunk.length > s.length) truncated = true;
         if (which === 'out') stdout += s;
         else stderr += s;
+        if (opts.onOutput && s) opts.onOutput(which === 'out' ? 'stdout' : 'stderr', globalRedactor.redact(s));
       };
       child.stdout.on('data', collect('out'));
       child.stderr.on('data', collect('err'));

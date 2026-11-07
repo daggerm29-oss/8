@@ -163,3 +163,29 @@ dialog { background: var(--panel); color: var(--text); border: 1px solid var(--b
 dialog::backdrop { background: rgb(0 0 0 / .6); }
 dialog form { display: flex; flex-direction: column; gap: 12px; }
 dialog label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+
+/* files view (F-UI-1) */
+.files { display: flex; gap: 12px; min-height: 480px; }
+.file-tree { width: 280px; flex-shrink: 0; display: flex; flex-direction: column; gap: 8px; }
+.file-tree input { background: var(--raised); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; }
+.file-tree ul { list-style: none; margin: 0; padding: 0; overflow-y: auto; max-height: 60vh; border: 1px solid var(--border); border-radius: 6px; }
+.file-tree li button { display: block; width: 100%; text-align: left; background: none; border: 0; padding: 3px 8px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+.file-tree li button:hover { background: var(--raised); }
+.file-tree li button[aria-current="true"] { background: var(--raised); color: var(--accent); }
+.file-tree .dir { color: var(--muted); }
+.file-view { flex: 1; min-width: 0; display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.code { margin: 0; padding: 8px 0; overflow: auto; max-height: 64vh; background: var(--panel); counter-reset: ln; flex: 1; }
+.code .ln { display: block; padding-right: 12px; white-space: pre; }
+.code .ln::before { counter-increment: ln; content: counter(ln); display: inline-block; width: 4em; padding-right: 12px; text-align: right; color: var(--muted); user-select: none; }
+@media (max-width: 860px) { .files { flex-direction: column; } .file-tree { width: auto; } }
+
+/* terminal (F-TRM-1 v0) */
+.terminal { display: flex; flex-direction: column; gap: 8px; }
+.term-output { margin: 0; min-height: 360px; max-height: 60vh; overflow: auto; padding: 10px 12px; background: #07090b; border: 1px solid var(--border); border-radius: 6px; white-space: pre-wrap; word-break: break-word; }
+.term-output .cmd { color: var(--accent); }
+.term-output .stderr { color: var(--warn); }
+.term-output .exit-ok { color: var(--muted); }
+.term-output .exit-bad { color: var(--danger); }
+.term-form { display: flex; align-items: center; gap: 8px; }
+.term-form .prompt { color: var(--accent); }
+.term-form input { flex: 1; min-width: 0; background: var(--raised); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; }

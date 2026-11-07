@@ -122,8 +122,15 @@ export const Methods = {
   taskMonitor: 'task.monitor',
   /* M1 — MCP (F-MCP-1) */
   mcpList: 'mcp.list',
+  /* M1 — workbench files + terminal (F-UI-1, F-TRM-1) */
+  fsTree: 'fs.tree',
+  fsRead: 'fs.read',
+  terminalRun: 'terminal.run',
+  terminalKill: 'terminal.kill',
 } as const;
 
 export const Notifications = {
   event: 'event',
+  /** Per-connection live output of `terminal.run` ({ runId, stream, text }); not persisted. */
+  terminalOutput: 'terminal.output',
 } as const;
