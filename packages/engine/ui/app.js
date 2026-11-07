@@ -88,6 +88,7 @@ function describeEvent(e) {
     case 'task.created': return [`Task created · ${d.provider}/${d.model}`];
     case 'task.status': return [`Status → ${d.status}${d.error ? ` · ${d.error}` : ''}`, TERMINAL.includes(d.status) ? (d.status === 'done' ? 'ok' : 'err') : ''];
     case 'task.step': return [`Step ${d.index + 1} · ${d.kind}`];
+    case 'model.fallback': return [`Model fallback (${d.role}): ${d.from} → ${d.to} · ${d.kind}`, 'err'];
     case 'task.backoff': return [`Backoff ${Math.round(d.delayMs / 1000)}s after ${d.kind}`, 'err'];
     case 'task.resumed': return ['Resumed after engine restart'];
     case 'agent.message': return [`${d.text ? short(d.text, 400) : '(no text)'}${d.toolCalls?.length ? `  → ${d.toolCalls.join(', ')}` : ''}`];
@@ -243,6 +244,137 @@ async function renderArtifacts() {
   if (!arts.length) $('artifacts').append(h('p', { class: 'note' }, 'No artifacts.'));
 }
 
+/* ---------------- step tree (F-UI-2) ---------------- */
+const stepsUi = { open: new Set(), task: null, allOpen: false, count: 0 };
+const fmtMs = (ms) => (ms == null ? '' : ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`);
+
+function modelNode(c) {
+  const tokens = `${fmtNum(c.inputTokens)} in${c.cachedInputTokens ? ` (${fmtNum(c.cachedInputTokens)} cached)` : ''} / ${fmtNum(c.outputTokens)} out`;
+  return h('li', { class: `node model${c.status === 'ok' ? '' : ' err'}` },
+    h('span', { class: 'badge' }, c.role),
+    h('span', { class: 'label' }, c.model),
+    h('span', { class: 'meta' }, `${tokens} · ${fmtMs(c.latencyMs)}${c.costUsd != null ? ` · ${fmtUsd(c.costUsd)}` : ''}`),
+    c.status !== 'ok' ? h('span', { class: 'detail' }, `${c.status}${c.error ? `: ${c.error}` : ''}`) : null);
+}
+
+function toolNode(c) {
+  const bad = c.status !== 'ok' && c.status !== 'success';
+  return h('li', { class: `node tool${bad ? ' err' : ''}` },
+    h('span', { class: 'badge' }, 'tool'),
+    h('span', { class: 'label' }, c.tool),
+    h('span', { class: 'muted' }, c.status),
+    h('span', { class: 'meta' }, `${c.cacheHit ? 'cached · ' : ''}${c.resultTokens != null ? `${fmtNum(c.resultTokens)} tok · ` : ''}${fmtMs(c.durationMs)}`),
+    h('span', { class: 'detail mono' }, short(c.args, 240)),
+    c.summary ? h('span', { class: 'detail' }, short(c.summary, 300)) : null);
+}
+
+async function renderSteps() {
+  const task = state.selected;
+  const steps = await rpc.call('task.tree', { task });
+  if (task !== state.selected) return;
+  if (stepsUi.task !== task) { stepsUi.task = task; stepsUi.open = new Set(); stepsUi.allOpen = false; }
+  // Newest step starts open while the task runs, unless the user collapsed it.
+  const last = steps.at(-1);
+  if (last && steps.length !== stepsUi.count && last.status === 'running') stepsUi.open.add(last.id);
+  stepsUi.count = steps.length;
+  const tools = steps.reduce((n, s) => n + s.toolCalls.length, 0);
+  const calls = steps.reduce((n, s) => n + s.modelCalls.length, 0);
+  $('steps-summary').textContent = `${steps.length} steps · ${calls} model calls · ${tools} tool calls`;
+  const list = steps.map((s) => {
+    const det = h('details', { class: 'step', 'data-step': s.id },
+      h('summary', {},
+        h('span', { class: 'idx' }, `#${s.idx + 1}`),
+        h('span', { class: 'kind' }, s.kind),
+        h('span', { class: `badge ${s.status === 'done' || s.status === 'ok' ? 'done' : s.status}` }, s.status),
+        s.checkpoint ? h('span', { class: 'src', title: `checkpoint ${s.checkpoint}` }, 'checkpoint') : null,
+        h('span', { class: 'meta' }, `${s.modelCalls.length} model · ${s.toolCalls.length} tool · ${s.durationMs != null ? fmtMs(s.durationMs) : fmtTime(s.startedAt)}`)),
+      h('ol', { class: 'children' }, ...s.modelCalls.map(modelNode), ...s.toolCalls.map(toolNode),
+        !s.modelCalls.length && !s.toolCalls.length ? h('li', { class: 'note' }, 'No model or tool calls in this step.') : null));
+    det.open = stepsUi.allOpen || stepsUi.open.has(s.id);
+    det.addEventListener('toggle', () => { if (det.open) stepsUi.open.add(s.id); else stepsUi.open.delete(s.id); });
+    return h('li', {}, det);
+  });
+  $('steps').replaceChildren(...list);
+  if (!steps.length) $('steps').append(h('li', { class: 'note' }, 'No steps yet.'));
+}
+
+function setAllSteps(open) {
+  stepsUi.allOpen = open;
+  for (const d of document.querySelectorAll('#steps details.step')) {
+    d.open = open;
+    if (open) stepsUi.open.add(d.dataset.step); else stepsUi.open.delete(d.dataset.step);
+  }
+}
+
+/* ---------------- model roles (F-MDL-4) ---------------- */
+const ROLE_ORDER = ['coder', 'planner', 'summarizer', 'explorer', 'reviewer', 'debugger', 'embedder', 'completion', 'router'];
+const CORE_ROLES = ['coder', 'planner', 'summarizer'];
+const refStr = (r) => `${r.provider}/${r.model}`;
+
+function chainView(b) {
+  const items = [];
+  b.chain.forEach((r, i) => { if (i) items.push(h('span', { class: 'arrow', 'aria-hidden': 'true' }, '→')); items.push(h('span', { class: 'ref' }, refStr(r))); });
+  for (const d of b.dropped ?? []) items.push(h('span', { class: 'ref dropped', title: d.reason }, d.ref));
+  if (!b.chain.length) items.push(h('span', { class: 'note err' }, 'no allowed model'));
+  return h('span', { class: 'chain' }, ...items);
+}
+
+async function renderModels() {
+  const task = state.selected;
+  const m = await rpc.call('task.models', { task });
+  if (task !== state.selected) return;
+  const shown = ROLE_ORDER.filter((r) => m.roles[r] && (CORE_ROLES.includes(r) || m.roles[r].source !== 'default'));
+  const inherited = ROLE_ORDER.filter((r) => m.roles[r] && !shown.includes(r));
+  const roleRows = shown.map((r) => {
+    const b = m.roles[r];
+    return h('tr', {}, h('td', {}, r), h('td', {}, chainView(b)), h('td', {}, h('span', { class: `src ${b.source}` }, b.source)),
+      h('td', { class: 'note' }, (b.dropped ?? []).map((d) => d.reason).join('; ')));
+  });
+  const usageRows = m.usage.map((u) => h('tr', {},
+    h('td', {}, u.role), h('td', { class: 'mono' }, u.model), h('td', { class: 'mono' }, `${u.calls}${u.errors ? ` (${u.errors} err)` : ''}`),
+    h('td', { class: 'mono' }, `${fmtNum(u.inputTokens)}${u.cachedInputTokens ? ` / ${fmtNum(u.cachedInputTokens)} cached` : ''}`),
+    h('td', { class: 'mono' }, fmtNum(u.outputTokens)), h('td', { class: 'mono' }, u.costUsd != null ? fmtUsd(u.costUsd) : 'n/a'),
+    h('td', { class: 'mono' }, fmtMs(u.avgLatencyMs))));
+  const table = (head, rows, empty) => rows.length
+    ? h('div', { class: 'table-wrap' }, h('table', { class: 'table' }, h('thead', {}, h('tr', {}, ...head.map((x) => h('th', { scope: 'col' }, x)))), h('tbody', {}, ...rows)))
+    : h('p', { class: 'note' }, empty);
+  $('models').replaceChildren(
+    h('section', {}, h('h3', {}, 'Role bindings'), table(['Role', 'Chain (primary → fallbacks)', 'Source', 'Policy'], roleRows, 'No bindings.'),
+      inherited.length ? h('p', { class: 'note' }, `${inherited.join(', ')} inherit the coder chain.`) : null),
+    h('section', {}, h('h3', {}, 'Usage by role and model'), table(['Role', 'Model', 'Calls', 'Input', 'Output', 'Cost', 'Avg latency'], usageRows, 'No model calls yet.')),
+    h('section', {}, h('h3', {}, 'Fallbacks'), m.fallbacks.length
+      ? h('ol', { class: 'activity' }, ...m.fallbacks.map((f) => h('li', { class: 'err' }, h('span', { class: 'time' }, fmtTime(f.at)),
+        h('span', {}, `${f.role}: ${f.from} → ${f.to} (${f.kind}${f.sticky ? ', skipped for rest of task' : ''})`))))
+      : h('p', { class: 'note' }, 'No fallbacks.')));
+}
+
+function formRoles(f) {
+  const roles = {};
+  for (const r of ['coder', 'planner', 'summarizer']) {
+    const [primary, ...fallbacks] = String(f.get(`role-${r}`) ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+    if (primary) roles[r] = { primary, fallbacks };
+  }
+  return Object.keys(roles).length ? roles : undefined;
+}
+
+let previewTimer = null;
+function scheduleRolePreview() {
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(async () => {
+    const form = $('new-task');
+    const f = new FormData(form);
+    const out = $('role-preview');
+    const workspacePath = String(f.get('workspacePath') ?? '').trim();
+    if (!$('roles-form').open || !workspacePath) { out.replaceChildren(); return; }
+    const params = { workspacePath, roles: formRoles(f), policyProfile: f.get('policyProfile') };
+    if (f.get('model')) params.model = String(f.get('model')).trim();
+    try {
+      const roles = await rpc.call('models.roles', params);
+      out.replaceChildren(...['coder', 'planner', 'summarizer'].map((r) => h('div', {}, `${r.padEnd(10)} ${roles[r].chain.map(refStr).join(' → ') || '(none)'}  [${roles[r].source}]`)));
+    } catch (err) { out.replaceChildren(h('span', { class: 'err' }, err.message)); }
+  }, 300);
+}
+
 /* ---------------- files (F-UI-1) ---------------- */
 const files = { ws: null, tree: null, open: null, loaded: null, editing: false };
 const selectedWorkspace = () => state.tasks.find((x) => x.id === state.selected)?.workspacePath ?? null;
@@ -388,6 +520,8 @@ async function renderTab() {
   if (!state.selected) return;
   try {
     if (state.tab === 'activity') renderActivity();
+    else if (state.tab === 'steps') await renderSteps();
+    else if (state.tab === 'models') await renderModels();
     else if (state.tab === 'transcript') await renderTranscript();
     else if (state.tab === 'diff') await renderDiff();
     else if (state.tab === 'gates') renderGates();
@@ -540,7 +674,7 @@ function onEvent(e) {
     if (state.tab === 'gates' && e.topic.startsWith('verify.')) renderGates();
     if (e.topic.startsWith('approval.') || e.topic === 'task.status') renderApprovals();
   }
-  if (['task.created', 'task.status', 'task.step', 'ledger.entry', 'checkpoint.restored', 'tool.result', 'approval.requested', 'approval.resolved'].includes(e.topic)) scheduleRefresh();
+  if (['task.created', 'task.status', 'task.step', 'ledger.entry', 'checkpoint.restored', 'tool.result', 'approval.requested', 'approval.resolved', 'model.fallback', 'context.compacted'].includes(e.topic)) scheduleRefresh();
 }
 
 function setStatus(text, ok) {
@@ -570,6 +704,8 @@ function bindUi() {
     if (f.get('model')) params.model = String(f.get('model')).trim();
     if (f.get('verifyCommand')) params.verifyCommand = String(f.get('verifyCommand')).trim();
     if (f.get('budgetUsd')) params.budgetUsd = Number(f.get('budgetUsd'));
+    const roles = formRoles(f);
+    if (roles) params.roles = roles;
     $('form-error').textContent = '';
     const btn = form.querySelector('button[type="submit"]');
     btn.disabled = true;
@@ -582,6 +718,10 @@ function bindUi() {
     } catch (err) { $('form-error').textContent = err.message; }
     finally { btn.disabled = false; }
   });
+  $('new-task').addEventListener('input', scheduleRolePreview);
+  $('roles-form').addEventListener('toggle', scheduleRolePreview);
+  $('steps-expand').addEventListener('click', () => setAllSteps(true));
+  $('steps-collapse').addEventListener('click', () => setAllSteps(false));
   $('cancel').addEventListener('click', () => rpc.call('task.cancel', { id: state.selected }).then(refreshTasks));
   $('resume').addEventListener('click', () => rpc.call('task.resume', { id: state.selected }).then(refreshTasks).catch((e) => alert(e.message)));
   $('checkpoint-select').addEventListener('change', () => renderDiff());

@@ -38,6 +38,14 @@
           </label>
           <label>Budget USD<input name="budgetUsd" type="number" min="0" step="0.01" placeholder="0.50"></label>
         </div>
+        <details class="roles-form" id="roles-form">
+          <summary>Model roles <span class="muted">(optional)</span></summary>
+          <p class="note">Use <code>provider/model</code>; add fallbacks after commas. Empty fields use the workspace / user settings.</p>
+          <label>Coder<input name="role-coder" placeholder="gemini/gemini-3.5-flash-lite, gemini/backup"></label>
+          <label>Planner<input name="role-planner" placeholder="inherits coder"></label>
+          <label>Summarizer<input name="role-summarizer" placeholder="inherits coder"></label>
+          <div class="role-preview mono" id="role-preview" aria-live="polite"></div>
+        </details>
         <button type="submit" class="primary">Start task</button>
         <p class="form-error" id="form-error" role="alert"></p>
       </form>
@@ -96,6 +104,8 @@
 
         <div class="tabs" role="tablist" aria-label="Task panels">
           <button role="tab" aria-selected="true" data-tab="activity">Activity</button>
+          <button role="tab" aria-selected="false" data-tab="steps">Steps</button>
+          <button role="tab" aria-selected="false" data-tab="models">Models</button>
           <button role="tab" aria-selected="false" data-tab="transcript">Transcript</button>
           <button role="tab" aria-selected="false" data-tab="diff">Diff</button>
           <button role="tab" aria-selected="false" data-tab="gates">Gates</button>
@@ -106,6 +116,11 @@
         </div>
 
         <div class="panel" role="tabpanel" data-panel="activity"><ol id="activity" class="activity"></ol></div>
+        <div class="panel" role="tabpanel" data-panel="steps" hidden>
+          <div class="panel-bar"><span class="muted" id="steps-summary"></span><span class="row"><button type="button" class="ghost" id="steps-expand">Expand all</button><button type="button" class="ghost" id="steps-collapse">Collapse all</button></span></div>
+          <ol id="steps" class="step-tree" aria-label="Steps, model calls, and tool calls"></ol>
+        </div>
+        <div class="panel" role="tabpanel" data-panel="models" hidden><div id="models" class="models"></div></div>
         <div class="panel" role="tabpanel" data-panel="transcript" hidden><div id="transcript" class="transcript"></div></div>
         <div class="panel" role="tabpanel" data-panel="diff" hidden>
           <div class="diff-bar">

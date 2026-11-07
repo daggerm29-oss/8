@@ -150,6 +150,56 @@ export class TaskRuntime {
   }
 
   /** Agent activity monitor snapshot (F-UI-2, §5.4): active tasks first, then the most recent finished ones. */
+  /** F-UI-2 tree: steps in order, each with its model calls (ledger) and tool calls. */
+  tree(task: string) {
+    this.row(task);
+    const steps = this.o.db.all<{ id: string; idx: number; agent: string; kind: string; status: string; checkpoint: string | null; started_at: string; ended_at: string | null }>(
+      'SELECT id, idx, agent, kind, status, checkpoint, started_at, ended_at FROM steps WHERE task = ? ORDER BY idx', task,
+    );
+    const calls = this.o.db.all<Record<string, any>>(
+      'SELECT step, role, provider, model, input_tokens, cached_input_tokens, output_tokens, reasoning_tokens, cost_usd, latency_ms, status, error FROM ledger_entries WHERE task = ? ORDER BY at, id', task,
+    );
+    const tools = this.o.db.all<Record<string, any>>(
+      'SELECT id, step, call_id, tool, args_json, status, summary, result_tokens, duration_ms, cache_hit, at FROM tool_calls WHERE task = ? ORDER BY at, id', task,
+    );
+    // Rows written before tool calls carried their step id (step = 'tools') attach to the step running at that time.
+    const ids = new Set(steps.map((s) => s.id));
+    for (const c of tools) {
+      if (ids.has(c.step)) continue;
+      c.step = steps.filter((s) => s.started_at <= c.at).at(-1)?.id ?? c.step;
+    }
+    const by = <T extends { step: string }>(rows: T[]) => rows.reduce((m, r) => m.set(r.step, [...(m.get(r.step) ?? []), r]), new Map<string, T[]>());
+    const callsBy = by(calls as Array<Record<string, any> & { step: string }>);
+    const toolsBy = by(tools as Array<Record<string, any> & { step: string }>);
+    return steps.map((s) => ({
+      id: s.id, idx: s.idx, agent: s.agent, kind: s.kind, status: s.status, checkpoint: s.checkpoint,
+      startedAt: s.started_at, endedAt: s.ended_at,
+      durationMs: s.ended_at ? Date.parse(s.ended_at) - Date.parse(s.started_at) : null,
+      modelCalls: (callsBy.get(s.id) ?? []).map((c) => ({
+        role: c.role, model: `${c.provider}/${c.model}`, status: c.status, inputTokens: c.input_tokens, cachedInputTokens: c.cached_input_tokens,
+        outputTokens: c.output_tokens, reasoningTokens: c.reasoning_tokens, costUsd: c.cost_usd, latencyMs: c.latency_ms, error: c.error ? String(c.error).slice(0, 300) : null,
+      })),
+      toolCalls: (toolsBy.get(s.id) ?? []).map((c) => ({
+        id: c.id, callId: c.call_id, tool: c.tool, status: c.status, summary: c.summary ? String(c.summary).slice(0, 300) : null,
+        args: String(c.args_json).slice(0, 400), resultTokens: c.result_tokens, durationMs: c.duration_ms, cacheHit: !!c.cache_hit,
+      })),
+    }));
+  }
+
+  /** F-MDL-4 view: resolved bindings, usage grouped by role + model, and fallback events. */
+  models(task: string) {
+    const t = this.row(task);
+    const usage = this.o.db.all<Record<string, any>>(
+      `SELECT role, provider || '/' || model AS model, COUNT(*) AS calls, SUM(CASE WHEN status = 'ok' THEN 0 ELSE 1 END) AS errors,
+        SUM(input_tokens) AS inputTokens, SUM(cached_input_tokens) AS cachedInputTokens, SUM(output_tokens) AS outputTokens,
+        SUM(cost_usd) AS costUsd, CAST(AVG(latency_ms) AS INTEGER) AS avgLatencyMs
+       FROM ledger_entries WHERE task = ? GROUP BY role, provider, model ORDER BY role, calls DESC`, task,
+    );
+    const fallbacks = this.o.db.all<{ at: string; data_json: string }>(`SELECT at, data_json FROM events WHERE task = ? AND topic = 'model.fallback' ORDER BY seq`, task)
+      .map((e) => ({ at: e.at, ...JSON.parse(e.data_json) }));
+    return { roles: this.roles(t), usage, fallbacks };
+  }
+
   monitor(limit = 50) {
     const rows = this.o.db.all<{ id: string }>(
       `SELECT id FROM tasks ORDER BY CASE WHEN status IN ('done', 'failed', 'cancelled') THEN 1 ELSE 0 END, updated_at DESC LIMIT ?`, limit,
@@ -637,7 +687,7 @@ export class TaskRuntime {
       const durationMs = Math.round(performance.now() - started);
       this.o.db.transaction(() => {
         this.o.db.run('INSERT INTO tool_calls (id, task, step, call_id, tool, args_json, status, summary, result_tokens, duration_ms, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-          prefixedId('tc'), t.id, 'tools', call.id, call.name, json(call.args), allowed ? (out.isError ? 'error' : 'ok') : 'denied', out.summary ?? null, Math.ceil(out.content.length / 4), durationMs, new Date().toISOString());
+          prefixedId('tc'), t.id, this.o.db.get<{ id: string }>('SELECT id FROM steps WHERE task = ? ORDER BY idx DESC, started_at DESC LIMIT 1', t.id)?.id ?? 'tools', call.id, call.name, json(call.args), allowed ? (out.isError ? 'error' : 'ok') : 'denied', out.summary ?? null, Math.ceil(out.content.length / 4), durationMs, new Date().toISOString());
         this.addMessage(t.id, null, { role: 'tool', parts: [{ type: 'tool_result', callId: call.id, name: call.name, content: out.content, isError: out.isError, provenance: out.provenance ?? { source: 'builtin', trust: 'trusted', taint: false }, ...(out.dataRef ? { dataRef: out.dataRef } : {}) }] });
         if (out.provenance?.taint) tainted = true;
       });

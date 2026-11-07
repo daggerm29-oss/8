@@ -106,6 +106,22 @@ test('e2e: summarizer uses its own model, coder falls back on 5xx, ledger record
     const roles = engine.runtime.artifacts(t.id, 'roles')[0].data as any;
     assert.equal(roles.summarizer.source, 'workspace');
 
+    const tree = engine.runtime.tree(t.id);
+    assert.ok(tree.length >= 4, 'one node per step');
+    assert.deepEqual(tree.map((s) => s.idx), [...tree.keys()], 'steps in order');
+    const allTools = tree.flatMap((s) => s.toolCalls.map((c) => c.tool));
+    for (const name of ['read_file', 'edit_file', 'run_shell']) assert.ok(allTools.includes(name), `tree has ${name}`);
+    const allCalls = tree.flatMap((s) => s.modelCalls);
+    assert.equal(allCalls.length, entries.length, 'every ledger entry is attached to a step');
+    assert.ok(allCalls.some((c) => c.model === 'gemini/gemini-broken' && c.status !== 'ok' && c.error));
+
+    const models = engine.runtime.models(t.id);
+    assert.equal(models.roles.coder.chain.length, 2);
+    const coderBroken = models.usage.find((u) => u.role === 'coder' && u.model === 'gemini/gemini-broken');
+    assert.ok(coderBroken && coderBroken.errors === coderBroken.calls && coderBroken.calls >= 1);
+    assert.ok(models.usage.some((u) => u.role === 'summarizer' && u.model === 'gemini/gemini-sum'));
+    assert.ok(models.fallbacks.length >= 1 && models.fallbacks[0].from === 'gemini/gemini-broken');
+
     assert.throws(() => engine.runtime.create({ workspacePath: dir, goal: 'x', model: 'gemini-forbidden', start: false }), /no allowed model for role 'coder'.*denied by org policy/);
   } finally {
     await engine.close();

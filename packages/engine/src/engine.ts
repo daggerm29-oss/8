@@ -204,6 +204,8 @@ export class Engine {
     peer.handle(Methods.approvalList, guard<{ task?: string }>((p) => this.runtime.approvalList(p.task)));
     peer.handle(Methods.workspaceList, guard(() => this.runtime.workspaces()));
     peer.handle(Methods.taskMonitor, guard<{ limit?: number }>((p) => this.runtime.monitor(Math.min(Math.max(Number(p?.limit) || 50, 1), 200))));
+    peer.handle(Methods.taskTree, guard<{ task: string }>((p) => this.runtime.tree(p.task)));
+    peer.handle(Methods.taskModels, guard<{ task: string }>((p) => { this.bus.flush(); return this.runtime.models(p.task); }));
     peer.handle(Methods.modelsRoles, guard<{ workspacePath?: string; task?: string; provider?: string; model?: string; roles?: TaskCreateParams['roles']; policyProfile?: string }>((p) => {
       if (p.task) return this.runtime.artifacts(p.task, 'roles').at(-1)?.data ?? null;
       return this.runtime.resolveTaskRoles(this.runtime.workspaceFor(p.workspacePath ?? process.cwd()).path, p as never);
