@@ -139,6 +139,32 @@ export class TaskRuntime {
     };
   }
 
+  /** Agent activity monitor snapshot (F-UI-2, §5.4): active tasks first, then the most recent finished ones. */
+  monitor(limit = 50) {
+    const rows = this.o.db.all<{ id: string }>(
+      `SELECT id FROM tasks ORDER BY CASE WHEN status IN ('done', 'failed', 'cancelled') THEN 1 ELSE 0 END, updated_at DESC LIMIT ?`, limit,
+    );
+    const now = Date.now();
+    return rows.map(({ id }) => {
+      const s = this.summary(id);
+      const step = this.o.db.get<{ idx: number; kind: string; status: string; started_at: string }>('SELECT idx, kind, status, started_at FROM steps WHERE task = ? ORDER BY idx DESC LIMIT 1', id);
+      const tool = this.o.db.get<{ tool: string; status: string; duration_ms: number | null; at: string }>('SELECT tool, status, duration_ms, at FROM tool_calls WHERE task = ? ORDER BY at DESC, rowid DESC LIMIT 1', id);
+      const cps = this.o.db.all<{ id: string; at: string; files_json: string }>('SELECT id, at, files_json FROM checkpoints WHERE task = ? ORDER BY at, id', id);
+      const last = cps.at(-1);
+      const terminal = TERMINAL.includes(s.status);
+      return {
+        ...s,
+        running: this.running.has(id),
+        elapsedMs: Math.max(0, (terminal ? Date.parse(s.updatedAt) : now) - Date.parse(s.createdAt)),
+        currentStep: step ? { index: step.idx, kind: step.kind, status: step.status, startedAt: step.started_at } : null,
+        lastTool: tool ? { tool: tool.tool, status: tool.status, durationMs: tool.duration_ms, at: tool.at } : null,
+        pendingApprovals: this.approvalList(id).filter((a) => a.status === 'pending'),
+        checkpointCount: cps.length,
+        lastCheckpoint: last ? { id: last.id, at: last.at, files: parseJson<Array<{ path: string }>>(last.files_json, []).map((f) => f.path) } : null,
+      };
+    });
+  }
+
   list(limit = 50): TaskSummary[] {
     return this.o.db.all<{ id: string }>('SELECT id FROM tasks ORDER BY created_at DESC LIMIT ?', limit).map((r) => this.summary(r.id));
   }

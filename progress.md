@@ -6,10 +6,10 @@
 
 - Project: Helix
 - Current Phase: M1 — Core MVP (engine-side slice in progress)
-- Overall Completion: ~24% (M0 Verified; M1 ~70%: engine slice + test selection/baseline + web workbench v0 + MCP stdio/HTTP + MCP safety)
-- Current Status: M1 session 9 — F-TST-1 change-based test selection + baseline gate run Tested (live Gemini verified)
-- Last Updated: 2026-11-07 (session 9)
-- Current Development Branch: `helix/m1-session9` (base: `main` of github.com/daggerm29-oss/8)
+- Overall Completion: ~25% (M0 Verified; M1 ~73%: engine slice + test selection/baseline + web workbench v0 + activity monitor + MCP stdio/HTTP + MCP safety)
+- Current Status: M1 session 10 — F-UI-2 activity monitor v0 + gate panel selection/baseline details Tested (browser + live Gemini verified)
+- Last Updated: 2026-11-07 (session 10)
+- Current Development Branch: `helix/m1-session10` (base: `main` of github.com/daggerm29-oss/8)
 
 ## Phase Overview
 
@@ -109,7 +109,7 @@ Statuses: Not Started / In Progress / Implemented / Tested / Verified / Blocked 
 | F-REV-2 | Security analysis | Not Started | — | Arch §25.10 |
 | F-REV-3 | Dependency risk gate (X17) | Not Started | — | Arch §16.7 |
 | F-UI-1 | Workbench | Tested | ui.test (2); browser + live Gemini run (session 6) | v0 web workbench served by the Engine (`packages/engine/ui/`, no build): task create/list, live event stream, transcript, diff per checkpoint + restore, gates, approvals, impact explorer, artifacts, ledger stats. Fragment token, Host/Origin loopback check, CSP. No editor/terminal/Electron yet. Arch §5.1–5.3 |
-| F-UI-2 | Agent activity monitor | Not Started | — | Arch §5.4 |
+| F-UI-2 | Agent activity monitor | Tested | ui.test (task.monitor); browser + live Gemini run (session 10) | v0: RPC `task.monitor` (active first; status, running, elapsed, ledger, current step, last tool call, pending approvals, checkpoint count + last checkpoint files); workbench Monitor view (default with no task selected): summary stats, live table, per-task Cancel/Resume, batch approve/deny of pending approvals. Not yet: Agent→Step→ToolCall tree, pause, fork, change model, held leases (no multi-agent yet). Arch §5.4 |
 | F-UI-3 | Intelligence Explorer | Not Started | — | Arch §5.5 |
 | F-UI-4 | Artifacts | Not Started | — | Arch §5.6 |
 | F-OBS-1 | Traces and logs | Tested | core.test | Spans for model.call and tool.call; JSON-lines logs in $HELIX_HOME/logs. Arch §26.1–26.3 |
@@ -264,11 +264,18 @@ Order (tick when done; next session resumes at the first unticked item):
 - Config example: `{"baseline": true, "gates": [{"name":"unit","kind":"test","command":"node --test {{tests}}","fallback":"npm test"}, {"name":"lint","kind":"lint","command":"npm run -s lint","allowPreexisting":true}]}`.
 - Runtime API added: `runtime.changeset(task)`, `runtime.selectTests(task, root, index)`; events `verify.baseline`, `verify.gate.{selectedTests, changedFiles, preexisting, new}`, `verify.result.gates[].preexistingOnly`.
 
+## Session 10 (M1) — live plan
+
+Branch: `helix/m1-session10` from `main` (session 9 merged as PR #6).
+- [x] S10-1 (DONE, code + ui.test) F-UI-2 activity monitor v0: RPC `task.monitor` → per task {status, elapsedMs, ledger, stepCount, currentStep, lastTool, pendingApprovals[], lastCheckpoint}; workbench "Monitor" view (default when nothing selected, topbar button) with live table, batch approve/deny of pending approvals, cancel/resume, open task. Code: engine RPC server + `ui/app.js` / `index.html` / `app.css`.
+- [x] S10-2 (DONE, code) Gate panel shows `selectedTests`, changed files, pre-existing/new counts, `preexistingOnly`, and the `verify.baseline` run.
+- [x] S10-3 DONE: engine 59/59, CLI 2/2, ui.test 2/2 incl. task.monitor assertions; tsc clean. Live: gemini-3.5-flash-lite task started from the workbench on a js-calc copy with an always-red unrelated test + `.helix/verify.json` (`baseline:true`, `node --test {{tests}}`): 7 calls, 16,458 in / 221 out, monitor showed running → done live; Gates tab showed baseline (unit failed, 2 diagnostics), selected tests `test/calc.test.js` only, changed `src/calc.js`, 0 new / 0 pre-existing, overall passed attempt 1. Browser fix: monitor relative times froze after tasks finished (tick now re-renders whenever visible). Note: ledger cost shows $0.0000 for gemini-3.5-flash-lite (no price entry) — pre-existing.
+
 ## Next Actions
 
-Resume here for **M1 — Core MVP** (session 10). Session 9 shipped F-TST-1 v0 + baseline gate run. Suggested start: item 2 (F-UI-2 activity monitor / PTY terminal). Next, in order:
+Resume here for **M1 — Core MVP** (session 11). Session 10 shipped the F-UI-2 activity monitor v0 and gate panel details. Suggested start: item 2 (PTY terminal panel F-TRM-1, file view), or add a price entry for gemini-3.5-flash-lite. Next, in order:
 1. Remaining MCP (lower priority): MCP resources/prompts, OAuth for remote HTTP servers (F-AUTH-2), JSONPath projection of large results, workbench badge for tainted tasks.
-2. Workbench follow-ups: F-UI-2 agent activity monitor (multi-task), Monaco/CodeMirror file view, PTY terminal panel (F-TRM-1), Electron shell + OS keychain (IMPL-ADR-010). Also show `selectedTests` / pre-existing counts in the workbench gate panel.
+2. Workbench follow-ups: Monaco/CodeMirror file view, PTY terminal panel (F-TRM-1), Electron shell + OS keychain (IMPL-ADR-010); F-UI-2 extensions (step/tool-call tree, pause, fork from checkpoint, change model).
 3. Polish: `--verify auto` could emit `{{tests}}` gates for known runners (node --test, pytest, go test pkg selection); graph evidence in Plan Mode `affectedFiles`; tree-sitter extractor swap; gate result cache by (gate, inputs hash) (§9.6).
 4. F-CTX-2 compaction, F-MDL-4 role-based models, F-SBX-3 egress proxy, F-PRV-1/2 preview.
 

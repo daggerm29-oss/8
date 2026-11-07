@@ -11,7 +11,10 @@
 <body>
   <header class="topbar">
     <div class="brand"><span class="logo" aria-hidden="true"></span><span>Helix</span><span class="muted">Workbench</span></div>
-    <div class="engine" id="engine-status" role="status" aria-live="polite">connecting…</div>
+    <div class="topbar-right">
+      <button type="button" id="show-monitor" class="ghost" aria-pressed="true">Monitor</button>
+      <div class="engine" id="engine-status" role="status" aria-live="polite">connecting…</div>
+    </div>
   </header>
 
   <div class="layout">
@@ -47,10 +50,32 @@
     </aside>
 
     <main class="main" id="main">
-      <div id="empty" class="empty">
-        <h1>No task selected</h1>
-        <p>Start a task on the left or pick one from the list to stream its activity, review diffs, and restore checkpoints.</p>
-      </div>
+      <section id="monitor-view" class="monitor" aria-labelledby="monitor-title">
+        <div class="task-head">
+          <div>
+            <h1 id="monitor-title">Activity monitor</h1>
+            <p class="muted">Every task with its live step, last tool call, spend, and checkpoints. Pick a task to see its full activity.</p>
+          </div>
+        </div>
+        <div class="stats" id="monitor-stats"></div>
+        <section id="monitor-approvals" class="card monitor-approvals" aria-labelledby="monitor-approvals-title" hidden>
+          <div class="list-head">
+            <h2 id="monitor-approvals-title">Pending approvals</h2>
+            <div class="row">
+              <button type="button" id="batch-deny" class="danger">Deny selected</button>
+              <button type="button" id="batch-approve" class="primary">Approve selected</button>
+            </div>
+          </div>
+          <ul id="monitor-approval-list" class="approval-list"></ul>
+        </section>
+        <div class="table-wrap">
+          <table class="table monitor-table">
+            <caption class="sr-only">Tasks</caption>
+            <thead><tr><th scope="col">Task</th><th scope="col">Status</th><th scope="col">Current step</th><th scope="col">Last tool</th><th scope="col">Tokens in / out</th><th scope="col">Cost</th><th scope="col">Elapsed</th><th scope="col">Checkpoints</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead>
+            <tbody id="monitor-rows"></tbody>
+          </table>
+        </div>
+      </section>
 
       <section id="task-view" class="task-view" hidden>
         <div class="task-head">
