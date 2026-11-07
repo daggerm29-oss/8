@@ -128,6 +128,23 @@ test('workbench server: serves UI, rejects foreign Host/Origin, token-gates WS, 
     assert.deepEqual(usage.fallbacks, []);
     await assert.rejects(peer.request(Methods.modelsUsage, {}), /task is required/);
 
+    type Tree = { agents: Array<{ id: string; role: string; steps: Array<{ index: number; status: string; modelCalls: Array<{ model: string; inputTokens: number }>; toolCalls: Array<{ tool: string; status: string; args: string }>; checkpoints: unknown[] }> }>; unattributedToolCalls: unknown[] };
+    const tree = await peer.request<Tree>(Methods.taskTree, { task: t.id });
+    assert.equal(tree.agents.length, 1);
+    assert.equal(tree.agents[0].id, 'primary');
+    assert.equal(tree.agents[0].role, 'coder');
+    const steps = tree.agents[0].steps;
+    assert.deepEqual(steps.map((s) => s.index), [0, 1, 2]);
+    assert.ok(steps.every((s) => s.status === 'done' && s.modelCalls.length === 1 && s.modelCalls[0].model === 'gemini-3.8-flash'));
+    assert.equal(steps.reduce((a, s) => a + s.modelCalls[0].inputTokens, 0), 30, 'per-step ledger rows sum to the task total');
+    const allTools = steps.flatMap((s) => s.toolCalls);
+    assert.ok(allTools.length > 0, 'tool calls are attributed to the step that issued them');
+    assert.equal(steps.at(-1)!.toolCalls.length, 0, 'final answer step issues no tools');
+    assert.ok(allTools.every((tc) => tc.status === 'ok' && JSON.parse(tc.args)));
+    assert.deepEqual(tree.unattributedToolCalls, []);
+    assert.ok(steps.some((s) => s.checkpoints.length > 0), 'write checkpoint attached to a step');
+    await assert.rejects(peer.request(Methods.taskTree, {}), /task is required/);
+
     const preview = await peer.request<Record<string, Binding>>(Methods.modelsRoles, { workspacePath: repo, model: 'gemini-3.8-flash', roles: { summarizer: { primary: 'gemini/cheap', fallbacks: ['gemini/cheaper'] } } });
     assert.deepEqual(preview.summarizer.chain.map((r) => r.model), ['cheap', 'cheaper']);
     assert.equal(preview.summarizer.source, 'task');

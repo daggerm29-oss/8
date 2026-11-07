@@ -23,6 +23,7 @@ import { ModelGateway } from './models/gateway.ts';
 import { builtinTools } from './tools/builtin.ts';
 import { McpManager, type McpServerConfig, type McpServerStatus } from './mcp/manager.ts';
 import { TaskRuntime } from './agent/runtime.ts';
+import { buildTaskTree } from './agent/tree.ts';
 import { LocalSandbox, unshareAvailable } from './sandbox/sandbox.ts';
 import { listWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile } from './workspace/files.ts';
 import { WorkspaceIndex } from './index/index.ts';
@@ -219,6 +220,11 @@ export class Engine {
       const fallbacks = this.db.all<{ at: string; data_json: string }>(`SELECT at, data_json FROM events WHERE task = ? AND topic = 'model.fallback' ORDER BY seq`, p.task)
         .map((e) => ({ at: e.at, ...(JSON.parse(e.data_json) as Record<string, unknown>) }));
       return { bindings: this.runtime.artifacts(p.task, 'roles').at(-1)?.data ?? null, usage, fallbacks };
+    }));
+    peer.handle(Methods.taskTree, guard<{ task: string }>((p) => {
+      if (typeof p.task !== 'string' || !p.task) throw new Error('task is required');
+      this.bus.flush();
+      return buildTaskTree(this.db, p.task);
     }));
     peer.handle(Methods.mcpList, guard(async () => { await this.mcpReady; return this.mcp.list(); }));
     peer.handle(Methods.fsTree, guard<{ workspacePath: string }>((p) => listWorkspaceFiles(this.knownWorkspace(p.workspacePath))));

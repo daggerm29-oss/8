@@ -318,6 +318,13 @@ Order (tick when done; next session resumes at the first unticked item):
 - [x] S14-3 DONE: ui.test extended (models.usage shape + coder binding source `task` + one usage row 3 calls; models.roles preview summarizer chain/inheritance; unknown role rejected); tsc clean. Browser + live gemini-3.5-flash-lite from the workbench on a js-calc copy with roles `coder=gemini/gemini-0-nonexistent,gemini/gemini-3.5-flash-lite` + `summarizer=gemini/gemini-3.5-flash-lite`: preview showed both overrides (source task) + "Inherit coder: …"; task done (7 steps, 7 calls, 16,255 in / 251 out, verify passed attempt 1); Roles tab: nonexistent 1 call / 1 failed, flash-lite 7 calls marked fallback, summarizer not used (no compaction at default trigger), 1 sticky fallback listed. Browser fix: `.sub` labels in the Roles table ran into the numbers ("1" + "1 failed" read as "11 failed").
 - Note: `pnpm --filter @helix/engine test` hung with no child process in this VM (pnpm 12.3.4); run `node --disable-warning=ExperimentalWarning --test --test-concurrency=1 "test/**/*.test.ts"` from `packages/engine` directly.
 
+## Session 15 (M1) — live plan
+
+Branch: `helix/m1-session15` from `main` (session 14 merged as PR #11; the parallel `helix/m1-session14` Steps-tree branch was NOT merged, so the tree is rebuilt here).
+- [x] S15-1 (DONE, src/agent/tree.ts buildTaskTree) RPC `task.tree {task}` (engine.ts): agents → steps (idx, kind, status, timing, checkpoint) → model call (ledger by step: model, tokens, cost, latency, status) + tool calls (tool, args preview, status, summary, duration, result tokens, cache hit).
+- [x] S15-2 (DONE, ui/app.js renderSteps; open state kept across refreshes in treeOpen) Workbench "Steps" tab: collapsible Agent → Step → ToolCall tree, live refresh on step/tool/ledger events, expand-all/collapse-all, failed items highlighted.
+- [ ] S15-3 Tests (ui.test asserts tree shape on fake-Gemini task) + browser + live Gemini; push.
+
 ## Next Actions
 
 Resume here for **M1 — Core MVP** (session 15). Session 14 shipped the workbench role picker (New Task → Model roles, live resolution preview) and the task Roles tab (configured vs actually-used models per role, fallbacks) via new RPC `models.usage`. Suggested start: F-UI-2 step/tool-call tree (Agent→Step→ToolCall in the task view), or PTY terminal (F-TRM-1), then F-SBX-3 egress proxy. Optional: persist demoted refs per task (survive Engine restart); task summary `model` could show the model actually used. Pricing for gemini-3.5-flash-lite stays `null` until a verified published price exists. Next, in order:

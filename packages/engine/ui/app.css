@@ -168,6 +168,30 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 .roles-preview .src { color: var(--muted); }
 .roles-preview .drop { color: var(--danger); }
 #roles .table .sub.err { color: var(--danger); }
+.tree { display: flex; flex-direction: column; gap: 8px; font-size: 13px; }
+.tree-toolbar { display: flex; align-items: center; gap: 8px; }
+.tree-toolbar .note { margin-right: auto; }
+.tree-list { list-style: none; margin: 4px 0 0; padding-left: 16px; border-left: 1px solid var(--border); display: flex; flex-direction: column; gap: 4px; }
+.tree-node > summary { cursor: pointer; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; padding: 4px 6px; border-radius: 6px; list-style: none; }
+.tree-node > summary::-webkit-details-marker { display: none; }
+.tree-node > summary::before { content: "▸"; color: var(--muted); width: 10px; flex: none; }
+.tree-node[open] > summary::before { content: "▾"; }
+.tree-node > summary:hover { background: var(--raised); }
+.tree-node > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.tree-step.failed > .tree-node > summary { box-shadow: inset 2px 0 0 var(--danger); }
+.tree-step.running > .tree-node > summary { box-shadow: inset 2px 0 0 var(--warn); }
+.tree .t-idx { color: var(--muted); min-width: 28px; }
+.tree .t-name { font-weight: 600; }
+.tree .t-args { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 52ch; }
+.tree .t-meta { color: var(--muted); font-size: 12px; }
+.tree .t-text { margin: 4px 0 4px 22px; white-space: pre-wrap; color: var(--text); }
+.tree .t-raw { margin: 4px 0 4px 22px; padding: 8px; background: var(--raised); border-radius: 6px; font-size: 12px; overflow-x: auto; max-height: 240px; }
+.tree .model-calls li { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; padding: 2px 6px; }
+.tree .sub.err { display: block; width: 100%; color: var(--danger); }
+.tree .badge { font-size: 11px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--border); }
+.tree .badge.ok { color: var(--accent); }
+.tree .badge.err { color: var(--danger); border-color: var(--danger); }
+.tree .badge.run { color: var(--warn); }
 #roles .fallbacks { font-size: 12px; color: var(--muted); padding-left: 18px; }
 
 dialog { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 12px; padding: 20px; max-width: 420px; width: calc(100% - 32px); }

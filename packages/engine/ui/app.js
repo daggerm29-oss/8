@@ -340,6 +340,75 @@ async function renderRoles() {
   );
 }
 
+/* ---------------- step / tool-call tree (F-UI-2) ---------------- */
+const treeOpen = new Map();
+const fmtMs = (ms) => (ms === null || ms === undefined ? '—' : ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`);
+
+function treeNode(id, defaultOpen, summary, ...body) {
+  const open = treeOpen.has(id) ? treeOpen.get(id) : defaultOpen;
+  return h('details', { class: 'tree-node', open, 'data-node': id, ontoggle: (e) => treeOpen.set(id, e.currentTarget.open) }, h('summary', {}, ...summary), ...body);
+}
+
+function argsPreview(args) {
+  try { const o = JSON.parse(args); return Object.entries(o).map(([k, v]) => `${k}=${typeof v === 'string' ? JSON.stringify(v.length > 60 ? `${v.slice(0, 60)}…` : v) : JSON.stringify(v)}`).join(' '); }
+  catch { return args.slice(0, 120); }
+}
+
+function renderToolCall(tc) {
+  const bad = tc.status !== 'ok';
+  return treeNode(tc.id, false, [
+    h('span', { class: `badge ${bad ? 'err' : 'ok'}` }, tc.status),
+    h('span', { class: 'mono t-name' }, tc.tool),
+    h('span', { class: 'mono t-args' }, argsPreview(tc.args)),
+    h('span', { class: 't-meta' }, `${fmtMs(tc.durationMs)} · ${fmtNum(tc.resultTokens)} tok${tc.cacheHit ? ' · cached' : ''}`),
+  ],
+  tc.summary ? h('p', { class: 'note' }, tc.summary) : null,
+  h('pre', { class: 'mono t-raw' }, (() => { try { return JSON.stringify(JSON.parse(tc.args), null, 2); } catch { return tc.args; } })(), tc.argsTruncated ? '\n…(truncated)' : ''));
+}
+
+function renderStep(s, isLast) {
+  const tools = s.toolCalls;
+  const failed = s.status === 'error' || s.modelCalls.some((m) => m.status !== 'ok') || tools.some((t) => t.status !== 'ok');
+  const tokensIn = s.modelCalls.reduce((a, m) => a + m.inputTokens, 0);
+  const tokensOut = s.modelCalls.reduce((a, m) => a + m.outputTokens, 0);
+  const cost = s.modelCalls.reduce((a, m) => a + (m.costUsd ?? 0), 0);
+  const models = [...new Set(s.modelCalls.filter((m) => m.status === 'ok').map((m) => m.model))].join(', ') || s.modelCalls.at(-1)?.model || '—';
+  return h('li', { class: `tree-step${failed ? ' failed' : ''}${s.status === 'running' ? ' running' : ''}` }, treeNode(s.id, isLast || failed, [
+    h('span', { class: 'mono t-idx' }, `#${s.index + 1}`),
+    h('span', { class: `badge ${s.status === 'error' ? 'err' : s.status === 'running' ? 'run' : 'ok'}` }, s.status),
+    h('span', { class: 'mono' }, models),
+    h('span', { class: 't-meta' }, `${tools.length} tool call${tools.length === 1 ? '' : 's'} · ${fmtNum(tokensIn)} in / ${fmtNum(tokensOut)} out · ${fmtUsd(cost)} · ${fmtMs(s.durationMs)}`),
+  ],
+  s.text ? h('p', { class: 't-text' }, s.text) : null,
+  s.modelCalls.length ? h('ul', { class: 'tree-list model-calls', 'aria-label': 'Model calls' }, s.modelCalls.map((m) => h('li', { class: m.status === 'ok' ? '' : 'failed' },
+    h('span', { class: `badge ${m.status === 'ok' ? 'ok' : 'err'}` }, m.status),
+    h('span', { class: 'mono' }, `${m.role} · ${m.provider}/${m.model}`),
+    h('span', { class: 't-meta' }, `${fmtNum(m.inputTokens)} in (${fmtNum(m.cachedInputTokens)} cached) / ${fmtNum(m.outputTokens)} out · ${fmtUsd(m.costUsd)} · ${fmtMs(m.latencyMs)}`),
+    m.error ? h('span', { class: 'sub err mono' }, m.error.slice(0, 200)) : null))) : null,
+  tools.length ? h('ul', { class: 'tree-list', 'aria-label': 'Tool calls' }, tools.map((t) => h('li', {}, renderToolCall(t)))) : null,
+  s.checkpoints.length ? h('p', { class: 't-meta' }, `Checkpoint: ${s.checkpoints.flatMap((c) => c.files).join(', ')}`) : null));
+}
+
+async function renderSteps() {
+  const box = $('steps');
+  const tree = await rpc.call('task.tree', { task: state.selected });
+  const totalSteps = tree.agents.reduce((a, g) => a + g.steps.length, 0);
+  if (!totalSteps) { box.replaceChildren(h('p', { class: 'note' }, 'No steps yet.')); return; }
+  const setAll = (open) => { for (const el of box.querySelectorAll('details.tree-node')) { el.open = open; treeOpen.set(el.dataset.node, open); } };
+  box.replaceChildren(
+    h('div', { class: 'tree-toolbar' },
+      h('span', { class: 'note' }, `${totalSteps} step${totalSteps === 1 ? '' : 's'}`),
+      h('button', { type: 'button', class: 'ghost', onclick: () => setAll(true) }, 'Expand all'),
+      h('button', { type: 'button', class: 'ghost', onclick: () => setAll(false) }, 'Collapse all')),
+    ...tree.agents.map((a) => {
+      const last = a.steps.at(-1);
+      return treeNode(`agent:${a.id}`, true, [h('span', { class: 'mono t-name' }, `agent ${a.id}`), h('span', { class: 't-meta' }, `${a.role} · ${a.steps.length} steps`)],
+        h('ol', { class: 'tree-list steps' }, a.steps.map((s) => renderStep(s, s === last))));
+    }),
+    tree.unattributedToolCalls.length ? h('div', {}, h('h2', { class: 'section-title' }, 'Unattributed tool calls'), h('ul', { class: 'tree-list' }, tree.unattributedToolCalls.map((t) => h('li', {}, renderToolCall(t))))) : null,
+  );
+}
+
 /* ---------------- files (F-UI-1) ---------------- */
 const files = { ws: null, tree: null, open: null, loaded: null, editing: false };
 const selectedWorkspace = () => state.tasks.find((x) => x.id === state.selected)?.workspacePath ?? null;
@@ -488,6 +557,7 @@ async function renderTab() {
     else if (state.tab === 'transcript') await renderTranscript();
     else if (state.tab === 'diff') await renderDiff();
     else if (state.tab === 'gates') renderGates();
+    else if (state.tab === 'steps') await renderSteps();
     else if (state.tab === 'roles') await renderRoles();
     else if (state.tab === 'artifacts') await renderArtifacts();
     else if (state.tab === 'files') await renderFiles();
@@ -638,7 +708,7 @@ function onEvent(e) {
     if (state.tab === 'gates' && e.topic.startsWith('verify.')) renderGates();
     if (e.topic.startsWith('approval.') || e.topic === 'task.status') renderApprovals();
   }
-  if (['task.created', 'task.status', 'task.step', 'ledger.entry', 'checkpoint.restored', 'tool.result', 'approval.requested', 'approval.resolved'].includes(e.topic)) scheduleRefresh();
+  if (['task.created', 'task.status', 'task.step', 'agent.message', 'ledger.entry', 'checkpoint.restored', 'tool.result', 'approval.requested', 'approval.resolved'].includes(e.topic)) scheduleRefresh();
 }
 
 function setStatus(text, ok) {
