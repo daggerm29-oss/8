@@ -98,6 +98,7 @@
           </div>
         </div>
 
+        <div id="egress-prompts" class="approvals" aria-live="assertive"></div>
         <div id="approvals" class="approvals" aria-live="assertive"></div>
 
         <div class="stats" id="stats"></div>
@@ -168,7 +169,7 @@
               <button type="button" class="danger" id="pty-close" hidden>Close shell</button>
             </div>
             <div id="pty-host" hidden></div>
-            <p class="note">Real PTY (colors, prompts, Ctrl-C, vim/less) in the workspace sandbox: no network, scrubbed env. Separate from the agent's shell. Size is fitted to the panel when opened (no live resize).</p>
+            <p class="note">Real PTY (colors, prompts, Ctrl-C, vim/less) in the workspace sandbox: network only to allowlisted hosts via the egress proxy, scrubbed env. Separate from the agent's shell. Size is fitted to the panel when opened (no live resize).</p>
           </section>
           <div class="terminal">
             <pre id="term-output" class="term-output mono" tabindex="0" aria-live="polite" aria-label="Terminal output"></pre>
@@ -180,7 +181,7 @@
               <button type="button" class="danger" id="term-kill" disabled>Kill</button>
               <button type="button" class="ghost" id="term-clear">Clear</button>
             </form>
-            <p class="note">Runs in the workspace sandbox (no network, scrubbed env, 2 min timeout). Up/Down arrows recall history.</p>
+            <p class="note">Runs in the workspace sandbox (allowlisted network only, scrubbed env, 2 min timeout). Up/Down arrows recall history.</p>
           </div>
         </div>
       </section>

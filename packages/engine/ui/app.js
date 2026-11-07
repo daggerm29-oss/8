@@ -1,7 +1,7 @@
 // Helix Workbench v0 (F-UI-1). Plain ES module, no build step: talks JSON-RPC 2.0 to the Engine over the
 // same-origin WebSocket (§22.2). All engine data is rendered with textContent — never innerHTML.
 
-const TOPICS = ['task.*', 'agent.*', 'tool.*', 'model.*', 'verify.*', 'approval.*', 'ledger.*', 'budget.*', 'context.*', 'artifact.*', 'checkpoint.*'];
+const TOPICS = ['task.*', 'agent.*', 'tool.*', 'model.*', 'verify.*', 'approval.*', 'ledger.*', 'budget.*', 'context.*', 'artifact.*', 'checkpoint.*', 'egress.*'];
 const TERMINAL = ['done', 'failed', 'cancelled'];
 const $ = (id) => document.getElementById(id);
 
@@ -102,6 +102,8 @@ function describeEvent(e) {
     case 'artifact.created': return [`Artifact: ${d.kind} — ${d.title}`];
     case 'checkpoint.restored': return [`Restored ${d.restored?.length ?? 0} file(s), deleted ${d.deleted?.length ?? 0}`, 'ok'];
     case 'model.fallback': return [`Model fallback (${d.role}) ${d.from} → ${d.to} · ${d.kind}${d.sticky ? ' · skipped for rest of task' : ''}`, 'err'];
+    case 'egress.denied': return [`Network blocked: ${d.host}:${d.port} (${d.reason})`, 'deny'];
+    case 'egress.allowed': return [`Network allowed: ${d.host}`, 'ok'];
     case 'ledger.entry': return [`Model call · ${fmtNum(d.inputTokens)} in / ${fmtNum(d.outputTokens)} out · ${fmtUsd(d.costUsd)}`];
     default: return [short(d)];
   }
@@ -158,6 +160,34 @@ async function renderApprovals() {
       h('button', { type: 'button', class: 'danger', onclick: () => respond(a.id, false) }, 'Deny'),
       h('button', { type: 'button', class: 'primary', onclick: () => respond(a.id, true) }, 'Approve'),
       a.tool.startsWith('mcp__') ? h('button', { type: 'button', title: 'Approve and stop asking for this MCP tool (saved to mcp.json)', onclick: () => respond(a.id, true, true) }, 'Always allow') : null))));
+}
+
+/* F-SBX-3: blocked egress → "Allow host" prompt (persisted per workspace via egress.allow). */
+const egressPrompts = new Map();
+function onEgressEvent(e) {
+  const d = e.data ?? {};
+  const key = `${d.workspacePath ?? e.ws}|${d.host}`;
+  if (e.topic === 'egress.denied') {
+    if (d.reason !== 'host not on allowlist' || !d.workspacePath) return;
+    egressPrompts.set(key, { host: d.host, port: d.port, workspacePath: d.workspacePath });
+  } else if (e.topic === 'egress.allowed') {
+    for (const [k, p] of egressPrompts) if (p.host === d.host) egressPrompts.delete(k);
+  } else {
+    return;
+  }
+  renderEgressPrompts();
+}
+function renderEgressPrompts() {
+  const box = $('egress-prompts');
+  box.replaceChildren(...[...egressPrompts.entries()].map(([key, p]) => h('div', { class: 'approval', role: 'alert' },
+    h('strong', {}, `Sandbox network request blocked: ${p.host}`),
+    h('span', { class: 'sub' }, `${p.workspacePath} · port ${p.port}. Allowing adds this host to the workspace allowlist; the command can then be retried.`),
+    h('div', { class: 'row' },
+      h('button', { type: 'button', onclick: () => { egressPrompts.delete(key); renderEgressPrompts(); } }, 'Dismiss'),
+      h('button', { type: 'button', class: 'primary', onclick: async () => {
+        try { await rpc.call('egress.allow', { workspacePath: p.workspacePath, host: p.host }); egressPrompts.delete(key); renderEgressPrompts(); }
+        catch (err) { alert(`Could not allow ${p.host}: ${err.message}`); }
+      } }, 'Allow host')))));
 }
 
 async function respond(approvalId, approved, always = false) {
@@ -862,5 +892,6 @@ async function start() {
 }
 
 rpc.listeners.add(onEvent);
+rpc.listeners.add((e) => { if (e.topic?.startsWith('egress.')) onEgressEvent(e); });
 bindUi();
 start();

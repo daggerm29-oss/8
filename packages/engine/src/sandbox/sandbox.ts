@@ -1,10 +1,12 @@
 import { spawn, spawnSync } from 'node:child_process';
+import { connect as netConnect, type Socket } from 'node:net';
 import { StringDecoder } from 'node:string_decoder';
-import { existsSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isDeniedHostPath, Vault } from '../vault/vault.ts';
 import { globalRedactor } from '../util/redact.ts';
+import { EgressProxy, FORWARDER_SOURCE, egressPrelude, proxyEnv, type EgressHooks } from './egress.ts';
 
 export interface ExecOptions {
   /** Working directory relative to the sandbox root. */
@@ -34,6 +36,8 @@ export interface SandboxInfo {
   network: boolean;
   /** True when shell commands see only the toolchain (ro), the workspace and a private /tmp (F-SBX-2). */
   fsIsolation: boolean;
+  /** F-SBX-3: `proxy` = allowlisted HTTP(S) via the Engine egress proxy only; `none` = fully offline; `open` = unrestricted host network. */
+  egress: 'proxy' | 'none' | 'open';
 }
 
 export class SandboxPathError extends Error {
@@ -103,6 +107,24 @@ export function mountNsAvailable(): boolean {
   return mountProbe;
 }
 
+export interface ServiceHandle {
+  pid: number | undefined;
+  port: number;
+  readonly exited: boolean;
+  /** Raw stream to the service port (through the in-sandbox bridge when namespaced). */
+  connect(): Socket;
+  /** True once something accepts TCP connections on the port inside the sandbox. */
+  probe(): Promise<boolean>;
+  stop(): void;
+}
+
+/** In-sandbox inbound bridge: `<sock>` → 127.0.0.1:<port> (falls back to [::1]); `<sock>.probe` answers 1/0. */
+const BRIDGE_SOURCE = `const net=require('net');const fs=require('fs');const port=Number(process.argv[2]);const sock=process.argv[3];
+function dial(cb){const a=net.connect(port,'127.0.0.1');a.once('connect',()=>cb(null,a));a.once('error',()=>{const b=net.connect(port,'::1');b.once('connect',()=>cb(null,b));b.once('error',e=>cb(e));});}
+for(const p of [sock,sock+'.probe'])try{fs.unlinkSync(p)}catch{}
+net.createServer(c=>{c.pause();dial((e,u)=>{if(e){c.destroy();return}c.pipe(u);u.pipe(c);c.resume();c.on('error',()=>u.destroy());u.on('error',()=>c.destroy());c.on('close',()=>u.destroy());u.on('close',()=>c.destroy());});}).listen(sock);
+net.createServer(c=>{dial((e,u)=>{if(u)u.destroy();c.end(e?'0':'1')});c.on('error',()=>{});}).listen(sock+'.probe');`;
+
 const PASSTHROUGH_ENV = ['PATH', 'LANG', 'LC_ALL', 'TZ', 'NODE_OPTIONS_SAFE'];
 
 /**
@@ -122,9 +144,10 @@ export class LocalSandbox {
   private readonly scratch: string;
   private readonly newRoot: string | null;
   private readonly roPaths: string[];
+  private readonly proxy: EgressProxy | null;
   private destroyed = false;
 
-  constructor(id: string, root: string, opts: { forceProcess?: boolean; noMountNs?: boolean; roPaths?: string[] } = {}) {
+  constructor(id: string, root: string, opts: { forceProcess?: boolean; noMountNs?: boolean; roPaths?: string[]; egress?: EgressHooks } = {}) {
     this.id = id;
     this.root = realpathSync(resolve(root));
     this.provider = !opts.forceProcess && unshareAvailable() ? 'local-unshare' : 'local-process';
@@ -132,10 +155,27 @@ export class LocalSandbox {
     this.scratch = mkdtempSync(join(tmpdir(), 'helix-sbx-'));
     this.newRoot = this.fsIsolation ? mkdtempSync(join(tmpdir(), 'helix-root-')) : null;
     this.roPaths = [...new Set([...DEFAULT_RO_PATHS, ...(opts.roPaths ?? [])])].filter((p) => isAbsolute(p) && !isDeniedHostPath(p));
+    this.proxy = null;
+    if (opts.egress && this.provider === 'local-unshare') {
+      writeFileSync(join(this.scratch, '.helix-egress-fwd.cjs'), FORWARDER_SOURCE);
+      this.proxy = new EgressProxy(join(this.scratch, '.helix-egress.sock'), opts.egress);
+      this.proxy.ready.catch(() => { /* surfaced by exec */ });
+    }
+  }
+
+  /** Path of the sandbox's private /tmp as seen from inside the sandbox. */
+  private get innerTmp(): string {
+    return this.fsIsolation ? '/tmp' : this.scratch;
+  }
+
+  /** Command prefixed with the egress forwarder prelude when this sandbox has a proxy. */
+  private wrap(command: string): string {
+    return this.proxy ? egressPrelude(this.innerTmp) + command : command;
   }
 
   info(): SandboxInfo {
-    return { id: this.id, provider: this.provider, root: this.root, network: this.provider === 'local-process', fsIsolation: this.fsIsolation };
+    const egress = this.provider === 'local-process' ? 'open' : this.proxy ? 'proxy' : 'none';
+    return { id: this.id, provider: this.provider, root: this.root, network: this.provider === 'local-process', fsIsolation: this.fsIsolation, egress };
   }
 
   /** Resolve a tool-supplied path inside the root; rejects escapes (incl. via symlinks), the host denylist, and `.git` writes. */
@@ -160,22 +200,21 @@ export class LocalSandbox {
     const secrets = new Set(Vault.secretEnvNames());
     const env: Record<string, string> = {};
     for (const k of PASSTHROUGH_ENV) if (process.env[k] && !secrets.has(k)) env[k] = process.env[k]!;
-    const tmp = this.fsIsolation ? '/tmp' : this.scratch;
+    const tmp = this.innerTmp;
     Object.assign(env, { HOME: tmp, TMPDIR: tmp, TERM: 'dumb', CI: '1', NO_COLOR: '1', HELIX_SANDBOX: this.id });
+    if (this.proxy) Object.assign(env, proxyEnv());
     for (const [k, v] of Object.entries(extra)) if (!secrets.has(k)) env[k] = v;
     return env;
   }
 
-  exec(command: string, opts: ExecOptions = {}): Promise<ExecResult> {
-    if (this.destroyed) return Promise.reject(new Error(`sandbox ${this.id} is destroyed`));
+  async exec(rawCommand: string, opts: ExecOptions = {}): Promise<ExecResult> {
+    if (this.destroyed) throw new Error(`sandbox ${this.id} is destroyed`);
+    if (this.proxy) await this.proxy.ready;
+    const command = this.wrap(rawCommand);
     const cwd = this.resolvePath(opts.cwd ?? '.', 'read');
     const timeoutMs = opts.timeoutMs ?? 120_000;
     const max = opts.maxOutputBytes ?? 256 * 1024;
-    const [cmd, args] = this.fsIsolation
-      ? ['unshare', ['--user', '--map-root-user', '--net', '--mount', '--pid', '--fork', '--', 'bash', '-c', CONTAIN_SCRIPT, 'helix', this.newRoot!, this.root, this.scratch, cwd, command, ...this.roPaths]]
-      : this.provider === 'local-unshare'
-        ? ['unshare', ['--user', '--map-root-user', '--net', '--', 'bash', '-c', command]]
-        : ['bash', ['-c', command]];
+    const [cmd, args] = this.argv(command, cwd);
     const started = performance.now();
     return new Promise((resolveExec) => {
       const child = spawn(cmd, args, { cwd, env: this.env(opts.env), detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -227,6 +266,63 @@ export class LocalSandbox {
     });
   }
 
+  /** Contained argv for a non-interactive command (user+net+mount+pid namespaces when available). */
+  private argv(command: string, cwd: string): [string, string[]] {
+    return this.fsIsolation
+      ? ['unshare', ['--user', '--map-root-user', '--net', '--mount', '--pid', '--fork', '--', 'bash', '-c', CONTAIN_SCRIPT, 'helix', this.newRoot!, this.root, this.scratch, cwd, command, ...this.roPaths]]
+      : this.provider === 'local-unshare'
+        ? ['unshare', ['--user', '--map-root-user', '--net', '--', 'bash', '-c', command]]
+        : ['bash', ['-c', command]];
+  }
+
+  /**
+   * Long-running managed process (dev servers, F-PRV-1). Same containment as `exec` but no timeout. When the
+   * sandbox has its own network namespace, an in-sandbox bridge exposes `127.0.0.1:<port>` (or `[::1]`) on a
+   * Unix socket in the scratch dir so the Engine can forward to it; `probe()` reports whether anything is
+   * listening on the port yet (TCP only — the preview opens before compilation finishes, §17.2 step 4).
+   */
+  service(command: string, opts: { port: number; cwd?: string; env?: Record<string, string>; onOutput?: (stream: 'stdout' | 'stderr', text: string) => void; onExit?: (code: number | null, signal: string | null) => void }): ServiceHandle {
+    if (this.destroyed) throw new Error(`sandbox ${this.id} is destroyed`);
+    const port = Math.floor(Number(opts.port));
+    if (!(port > 0 && port < 65536)) throw new Error(`invalid port ${opts.port}`);
+    const cwd = this.resolvePath(opts.cwd ?? '.', 'read');
+    const bridged = this.provider === 'local-unshare';
+    const hostSock = join(this.scratch, `.helix-port-${port}.sock`);
+    let full = command;
+    if (bridged) {
+      writeFileSync(join(this.scratch, '.helix-bridge.cjs'), BRIDGE_SOURCE);
+      const inner = this.innerTmp;
+      full = `ip link set lo up 2>/dev/null; NODE_USE_ENV_PROXY= node ${inner}/.helix-bridge.cjs ${port} ${inner}/.helix-port-${port}.sock </dev/null >/dev/null 2>&1 & disown
+${command}`;
+    }
+    const [cmd, args] = this.argv(this.wrap(full), cwd);
+    const child = spawn(cmd, args, { cwd, env: this.env(opts.env), detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    const decoders = { stdout: new StringDecoder('utf8'), stderr: new StringDecoder('utf8') };
+    for (const stream of ['stdout', 'stderr'] as const) {
+      child[stream].on('data', (chunk: Buffer) => { const t = decoders[stream].write(chunk); if (t && opts.onOutput) opts.onOutput(stream, globalRedactor.redact(t)); });
+    }
+    let exited = false;
+    child.on('close', (code, signal) => { exited = true; opts.onExit?.(code, signal); });
+    child.on('error', (err) => { opts.onOutput?.('stderr', `spawn failed: ${err.message}\n`); });
+    const connect = (): Socket => (bridged ? netConnect(hostSock) : netConnect({ host: '127.0.0.1', port }));
+    return {
+      pid: child.pid,
+      port,
+      get exited() { return exited; },
+      connect,
+      probe: () => new Promise<boolean>((resolve) => {
+        if (exited) return resolve(false);
+        const s = bridged ? netConnect(`${hostSock}.probe`) : netConnect({ host: '127.0.0.1', port });
+        const done = (ok: boolean) => { s.destroy(); resolve(ok); };
+        s.setTimeout(2000, () => done(false));
+        s.once('error', () => done(false));
+        if (bridged) s.once('data', (d) => done(d.toString().startsWith('1')));
+        else s.once('connect', () => done(true));
+      }),
+      stop: () => { try { if (child.pid) process.kill(-child.pid, 'SIGKILL'); } catch { /* already exited */ } },
+    };
+  }
+
   /**
    * Interactive shell on a real PTY (F-TRM-1). util-linux `script` allocates the PTY on the host and runs the
    * same contained `bash -i` as `exec` (same namespaces, scrubbed env), so no native module is needed.
@@ -237,7 +333,7 @@ export class LocalSandbox {
     const cwd = this.resolvePath(opts.cwd ?? '.', 'read');
     const cols = Math.min(Math.max(Math.floor(Number(opts.cols) || 100), 20), 500);
     const rows = Math.min(Math.max(Math.floor(Number(opts.rows) || 30), 5), 200);
-    const shell = `stty rows ${rows} cols ${cols} 2>/dev/null; export PS1='helix:\\W\\$ '; exec bash --noprofile --norc -i`;
+    const shell = this.wrap(`stty rows ${rows} cols ${cols} 2>/dev/null; export PS1='helix:\\W\\$ '; exec bash --noprofile --norc -i`);
     // No --pid here: as PID-namespace init the shell never owns the PTY's foreground group, so Ctrl-C is lost.
     // /proc stays unmounted, so host processes remain invisible.
     const argv = this.fsIsolation
@@ -270,6 +366,7 @@ export class LocalSandbox {
   destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
+    void this.proxy?.close();
     rmSync(this.scratch, { recursive: true, force: true });
     if (this.newRoot) rmSync(this.newRoot, { recursive: true, force: true });
   }

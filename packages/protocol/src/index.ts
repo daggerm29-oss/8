@@ -138,6 +138,10 @@ export const Methods = {
   ptyOpen: 'pty.open',
   ptyWrite: 'pty.write',
   ptyKill: 'pty.kill',
+  /* F-SBX-3 egress allowlist */
+  egressList: 'egress.list',
+  egressAllow: 'egress.allow',
+  egressRevoke: 'egress.revoke',
 } as const;
 
 export const Notifications = {

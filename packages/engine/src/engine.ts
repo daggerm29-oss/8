@@ -24,6 +24,7 @@ import { builtinTools } from './tools/builtin.ts';
 import { McpManager, type McpServerConfig, type McpServerStatus } from './mcp/manager.ts';
 import { TaskRuntime } from './agent/runtime.ts';
 import { LocalSandbox, unshareAvailable } from './sandbox/sandbox.ts';
+import { EgressPolicy } from './sandbox/egress.ts';
 import { listWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile } from './workspace/files.ts';
 import { WorkspaceIndex } from './index/index.ts';
 import { parseDiagnostics } from './diagnostics/parsers.ts';
@@ -72,7 +73,7 @@ function compactionFrom(env: NodeJS.ProcessEnv, opts?: CompactionOptions): Compa
   };
 }
 
-const TOPICS = ['task.*', 'agent.*', 'tool.*', 'model.*', 'verify.*', 'approval.*', 'ledger.*', 'budget.*', 'context.*', 'artifact.*', 'checkpoint.*', 'workspace.*'];
+const TOPICS = ['task.*', 'agent.*', 'tool.*', 'model.*', 'verify.*', 'approval.*', 'ledger.*', 'budget.*', 'context.*', 'artifact.*', 'checkpoint.*', 'workspace.*', 'egress.*'];
 
 /** Helix Engine (§6.2): composition root for storage, bus, gateway, tools, sandbox, and the task runtime. */
 export class Engine {
@@ -88,6 +89,7 @@ export class Engine {
   readonly runtime: TaskRuntime;
   readonly blobs: BlobStore;
   readonly mcp: McpManager;
+  readonly egress: EgressPolicy;
   /** Resolves once configured MCP servers are connected (or failed) and their tools are registered. */
   readonly mcpReady: Promise<McpServerStatus[]>;
   private heartbeat?: NodeJS.Timeout;
@@ -110,10 +112,11 @@ export class Engine {
     this.vault = new Vault(env);
     this.ledger = new Ledger(this.db, this.bus);
     this.gateway = new ModelGateway({ adapters: opts.adapters ?? [new GeminiAdapter(), new OpenAIAdapter()], vault: this.vault, ledger: this.ledger, tracer: this.tracer, logger: this.logger, retry: opts.retry });
+    this.egress = new EgressPolicy(this.db, this.bus, env);
     const tools = builtinTools();
     this.mcp = new McpManager({ home: this.home, registry: tools, logger: this.logger, config: opts.mcpServers, toolSearchThreshold: opts.mcpToolSearchThreshold });
     this.mcpReady = opts.mcp === false ? Promise.resolve([]) : this.mcp.start();
-    this.runtime = new TaskRuntime({ db: this.db, bus: this.bus, gateway: this.gateway, ledger: this.ledger, tools, tracer: this.tracer, engineId: this.id, blobs: this.blobs, logger: this.logger, forceProcessSandbox: opts.forceProcessSandbox, taskRetryScale: opts.taskRetryScale, helixHome: this.home, indexing: opts.indexing, compaction: compactionFrom(env, opts.compaction) });
+    this.runtime = new TaskRuntime({ db: this.db, bus: this.bus, gateway: this.gateway, ledger: this.ledger, tools, tracer: this.tracer, engineId: this.id, blobs: this.blobs, logger: this.logger, forceProcessSandbox: opts.forceProcessSandbox, taskRetryScale: opts.taskRetryScale, helixHome: this.home, egress: this.egress, indexing: opts.indexing, compaction: compactionFrom(env, opts.compaction) });
 
     const now = new Date().toISOString();
     this.db.run('INSERT INTO engine_instances (id, pid, started_at, heartbeat_at) VALUES (?, ?, ?, ?)', this.id, process.pid, now, now);
@@ -285,6 +288,20 @@ export class Engine {
       h.write(p.data);
       return { ok: true };
     }));
+    peer.handle(Methods.egressList, guard<{ workspacePath: string }>((p) => {
+      const ws = this.runtime.workspaceFor(this.knownWorkspace(p.workspacePath));
+      return { enabled: this.egress.enabled, ...this.egress.list(ws.id) };
+    }));
+    peer.handle(Methods.egressAllow, guard<{ workspacePath: string; host: string }>((p) => {
+      const ws = this.runtime.workspaceFor(this.knownWorkspace(p.workspacePath));
+      const r = this.egress.allow(ws.id, p.host);
+      this.logger.info('egress.allow', { ws: ws.id, host: r.host });
+      return r;
+    }));
+    peer.handle(Methods.egressRevoke, guard<{ workspacePath: string; host: string }>((p) => {
+      const ws = this.runtime.workspaceFor(this.knownWorkspace(p.workspacePath));
+      return this.egress.revoke(ws.id, p.host);
+    }));
     peer.handle(Methods.ptyKill, guard<{ ptyId: string }>((p) => {
       const h = ptys.get(p.ptyId);
       h?.kill();
@@ -306,7 +323,9 @@ export class Engine {
   private terminalSandbox(root: string): LocalSandbox {
     let s = this.terminals.get(root);
     if (!s) {
-      s = new LocalSandbox(prefixedId('term'), root, { forceProcess: this.forceProcessSandbox });
+      const id = prefixedId('term');
+      const ws = this.runtime.workspaceFor(root);
+      s = new LocalSandbox(id, root, { forceProcess: this.forceProcessSandbox, egress: this.egress.enabled ? this.egress.hooks(ws.id, { sandbox: id, workspacePath: root }) : undefined });
       this.terminals.set(root, s);
     }
     return s;

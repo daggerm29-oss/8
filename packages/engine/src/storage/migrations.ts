@@ -81,4 +81,7 @@ export const MIGRATIONS: string[] = [
   CREATE INDEX idx_refs_path ON idx_refs(ws, path);
   DELETE FROM idx_files; DELETE FROM idx_symbols; DELETE FROM idx_imports; DELETE FROM idx_chunks;
   `,
+  /* v4: F-SBX-3 per-workspace egress allowlist (§16.5) */ `
+  CREATE TABLE egress_allow (ws TEXT NOT NULL, host TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (ws, host));
+  `,
 ];
