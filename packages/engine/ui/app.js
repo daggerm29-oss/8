@@ -99,6 +99,7 @@ function describeEvent(e) {
     case 'context.composed': return [`Context composed${d.tokens ? ` · ${fmtNum(d.tokens)} tokens` : ''}`];
     case 'artifact.created': return [`Artifact: ${d.kind} — ${d.title}`];
     case 'checkpoint.restored': return [`Restored ${d.restored?.length ?? 0} file(s), deleted ${d.deleted?.length ?? 0}`, 'ok'];
+    case 'model.fallback': return [`Model fallback (${d.role}) ${d.from} → ${d.to} · ${d.kind}${d.sticky ? ' · skipped for rest of task' : ''}`, 'err'];
     case 'ledger.entry': return [`Model call · ${fmtNum(d.inputTokens)} in / ${fmtNum(d.outputTokens)} out · ${fmtUsd(d.costUsd)}`];
     default: return [short(d)];
   }
@@ -241,6 +242,102 @@ async function renderArtifacts() {
   const arts = await rpc.call('artifact.list', { task: state.selected });
   $('artifacts').replaceChildren(...arts.map((a) => h('div', { class: 'msg' }, h('div', { class: 'role' }, `${a.kind} · ${a.title}`), h('div', { class: 'part' }, h('pre', { class: 'mono' }, typeof a.data === 'string' ? a.data : JSON.stringify(a.data, null, 2))))));
   if (!arts.length) $('artifacts').append(h('p', { class: 'note' }, 'No artifacts.'));
+}
+
+/* ---------------- model roles (F-MDL-4) ---------------- */
+const ROLE_NAMES = ['planner', 'coder', 'explorer', 'reviewer', 'debugger', 'summarizer', 'embedder', 'completion', 'router'];
+const refStr = (r) => `${r.provider}/${r.model}`;
+
+/** Same syntax as CLI `--role`: one `role=provider/model[,fallback…]` per line. */
+function parseRolesText(text) {
+  const roles = {};
+  for (const [i, raw] of text.split('\n').entries()) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const eq = line.indexOf('=');
+    if (eq <= 0) throw new Error(`line ${i + 1}: expected role=provider/model`);
+    const role = line.slice(0, eq).trim();
+    if (!ROLE_NAMES.includes(role)) throw new Error(`line ${i + 1}: unknown role '${role}' (known: ${ROLE_NAMES.join(', ')})`);
+    if (roles[role]) throw new Error(`line ${i + 1}: role '${role}' given twice`);
+    const [primary, ...fallbacks] = line.slice(eq + 1).split(',').map((s) => s.trim()).filter(Boolean);
+    if (!primary) throw new Error(`line ${i + 1}: ${role}= needs a model`);
+    roles[role] = { primary, fallbacks };
+  }
+  return roles;
+}
+
+function formParams(form) {
+  const f = new FormData(form);
+  const params = { workspacePath: String(f.get('workspacePath')).trim(), goal: String(f.get('goal')).trim(), policyProfile: f.get('policyProfile'), start: true };
+  if (f.get('model')) params.model = String(f.get('model')).trim();
+  if (f.get('verifyCommand')) params.verifyCommand = String(f.get('verifyCommand')).trim();
+  if (f.get('budgetUsd')) params.budgetUsd = Number(f.get('budgetUsd'));
+  const roles = parseRolesText(String(f.get('roles') ?? ''));
+  if (Object.keys(roles).length) params.roles = roles;
+  return params;
+}
+
+const rolePreview = { timer: null, seq: 0, error: '' };
+function schedulePreview() {
+  clearTimeout(rolePreview.timer);
+  rolePreview.timer = setTimeout(() => previewRoles().catch(() => {}), 300);
+}
+
+async function previewRoles() {
+  const form = $('new-task');
+  const box = $('roles-preview');
+  const seq = ++rolePreview.seq;
+  let params;
+  try { params = formParams(form); }
+  catch (err) { rolePreview.error = err.message; box.replaceChildren(h('p', { class: 'form-error' }, err.message)); $('roles-summary').textContent = '(invalid)'; return; }
+  const n = Object.keys(params.roles ?? {}).length;
+  $('roles-summary').textContent = n ? `(${n} override${n > 1 ? 's' : ''})` : '(defaults)';
+  if (!$('roles-picker').open || !params.workspacePath) { rolePreview.error = ''; box.replaceChildren(); return; }
+  try {
+    const roles = await rpc.call('models.roles', { workspacePath: params.workspacePath, model: params.model, roles: params.roles, policyProfile: params.policyProfile });
+    if (seq !== rolePreview.seq) return;
+    rolePreview.error = '';
+    const all = ROLE_NAMES.map((r) => roles[r]).filter(Boolean);
+    const inherits = (b) => b.role !== 'coder' && b.source === 'default' && !b.dropped.length;
+    const shown = all.filter((b) => !inherits(b));
+    const rest = all.filter(inherits).map((b) => b.role);
+    box.replaceChildren(h('div', { class: 'note' }, 'Resolved (task > workspace > user; org policy last):'), ...shown.map((b) => h('div', { class: `r${b.source === 'default' ? '' : ' changed'}` },
+      h('span', { class: 'k mono' }, b.role),
+      h('span', { class: 'mono' }, b.chain.length ? b.chain.map(refStr).join(' → ') : 'none allowed'),
+      h('span', { class: 'src' }, b.source),
+      ...b.dropped.map((d) => h('span', { class: 'drop', title: d.reason }, `dropped ${d.ref}`)))),
+      rest.length ? h('div', { class: 'src' }, `Inherit coder: ${rest.join(', ')}`) : null);
+  } catch (err) {
+    if (seq !== rolePreview.seq) return;
+    rolePreview.error = err.message;
+    box.replaceChildren(h('p', { class: 'form-error' }, err.message));
+  }
+}
+
+async function renderRoles() {
+  const box = $('roles');
+  const r = await rpc.call('models.usage', { task: state.selected });
+  const used = new Map();
+  for (const u of r.usage) { if (!used.has(u.role)) used.set(u.role, []); used.get(u.role).push(u); }
+  const rows = ROLE_NAMES.map((role) => ({ role, b: r.bindings?.[role], u: used.get(role) ?? [] })).filter((x) => x.u.length || (x.b && x.b.source !== 'default') || x.role === 'coder');
+  const table = h('table', { class: 'table' },
+    h('thead', {}, h('tr', {}, h('th', { scope: 'col' }, 'Role'), h('th', { scope: 'col' }, 'Configured chain'), h('th', { scope: 'col' }, 'Source'), h('th', { scope: 'col' }, 'Actually used'), h('th', { scope: 'col' }, 'Calls'), h('th', { scope: 'col' }, 'Tokens in / out'), h('th', { scope: 'col' }, 'Cost'))),
+    h('tbody', {}, rows.flatMap(({ role, b, u }) => {
+      const cfg = b ? (b.chain.length ? b.chain.map(refStr).join(' → ') : 'none allowed') : '—';
+      const src = b ? (b.source === 'default' && role !== 'coder' ? 'inherits coder' : b.source) : '—';
+      if (!u.length) return [h('tr', {}, h('td', { class: 'mono' }, role), h('td', { class: 'mono' }, cfg), h('td', {}, src), h('td', { class: 'note' }, 'not used yet'), h('td', {}, '0'), h('td', {}, '—'), h('td', {}, '—'))];
+      return u.map((x, i) => h('tr', {},
+        h('td', { class: 'mono' }, i ? '' : role), h('td', { class: 'mono' }, i ? '' : cfg), h('td', {}, i ? '' : src),
+        h('td', { class: 'mono' }, `${x.provider}/${x.model}`, b && b.chain[0] && refStr(b.chain[0]) !== `${x.provider}/${x.model}` ? h('span', { class: 'sub' }, 'fallback') : null),
+        h('td', { class: 'mono' }, String(x.calls), x.failed ? h('span', { class: 'sub err' }, `${x.failed} failed`) : null),
+        h('td', { class: 'mono' }, `${fmtNum(x.inputTokens)} / ${fmtNum(x.outputTokens)}`), h('td', { class: 'mono' }, fmtUsd(x.costUsd))));
+    })));
+  box.replaceChildren(
+    h('p', { class: 'note' }, 'Configured bindings were fixed when the task was created. "Actually used" comes from the token ledger.'),
+    table,
+    h('h2', { class: 'section-title' }, `Fallbacks (${r.fallbacks.length})`),
+    r.fallbacks.length ? h('ul', { class: 'mono fallbacks' }, r.fallbacks.map((f) => h('li', {}, `${fmtTime(f.at)} · ${f.role}: ${f.from} → ${f.to} · ${f.kind}${f.sticky ? ' (skipped for rest of task)' : ''}`))) : h('p', { class: 'note' }, 'No model fallbacks.'),
+  );
 }
 
 /* ---------------- files (F-UI-1) ---------------- */
@@ -391,6 +488,7 @@ async function renderTab() {
     else if (state.tab === 'transcript') await renderTranscript();
     else if (state.tab === 'diff') await renderDiff();
     else if (state.tab === 'gates') renderGates();
+    else if (state.tab === 'roles') await renderRoles();
     else if (state.tab === 'artifacts') await renderArtifacts();
     else if (state.tab === 'files') await renderFiles();
     else if (state.tab === 'terminal') renderTerminal();
@@ -565,12 +663,10 @@ function bindUi() {
   $('new-task').addEventListener('submit', async (ev) => {
     ev.preventDefault();
     const form = ev.currentTarget;
-    const f = new FormData(form);
-    const params = { workspacePath: String(f.get('workspacePath')).trim(), goal: String(f.get('goal')).trim(), policyProfile: f.get('policyProfile'), start: true };
-    if (f.get('model')) params.model = String(f.get('model')).trim();
-    if (f.get('verifyCommand')) params.verifyCommand = String(f.get('verifyCommand')).trim();
-    if (f.get('budgetUsd')) params.budgetUsd = Number(f.get('budgetUsd'));
     $('form-error').textContent = '';
+    let params;
+    try { params = formParams(form); }
+    catch (err) { $('roles-picker').open = true; $('form-error').textContent = `Roles: ${err.message}`; return; }
     const btn = form.querySelector('button[type="submit"]');
     btn.disabled = true;
     try {
@@ -582,6 +678,12 @@ function bindUi() {
     } catch (err) { $('form-error').textContent = err.message; }
     finally { btn.disabled = false; }
   });
+  for (const name of ['workspacePath', 'model', 'roles', 'policyProfile']) {
+    const el = $('new-task').elements.namedItem(name);
+    el.addEventListener('input', schedulePreview);
+    el.addEventListener('change', schedulePreview);
+  }
+  $('roles-picker').addEventListener('toggle', schedulePreview);
   $('cancel').addEventListener('click', () => rpc.call('task.cancel', { id: state.selected }).then(refreshTasks));
   $('resume').addEventListener('click', () => rpc.call('task.resume', { id: state.selected }).then(refreshTasks).catch((e) => alert(e.message)));
   $('checkpoint-select').addEventListener('change', () => renderDiff());

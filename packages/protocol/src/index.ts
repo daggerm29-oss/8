@@ -126,6 +126,7 @@ export const Methods = {
   mcpList: 'mcp.list',
   /* M1 — role-based models (F-MDL-4) */
   modelsRoles: 'models.roles',
+  modelsUsage: 'models.usage',
   /* M1 — workbench files + terminal (F-UI-1, F-TRM-1) */
   fsTree: 'fs.tree',
   fsRead: 'fs.read',

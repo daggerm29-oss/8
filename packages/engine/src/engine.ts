@@ -208,6 +208,18 @@ export class Engine {
       if (p.task) return this.runtime.artifacts(p.task, 'roles').at(-1)?.data ?? null;
       return this.runtime.resolveTaskRoles(this.runtime.workspaceFor(p.workspacePath ?? process.cwd()).path, p as never);
     }));
+    peer.handle(Methods.modelsUsage, guard<{ task: string }>((p) => {
+      if (typeof p.task !== 'string' || !p.task) throw new Error('task is required');
+      this.bus.flush();
+      const usage = this.db.all<Record<string, unknown>>(
+        `SELECT role, provider, model, COUNT(*) AS calls, SUM(CASE WHEN status = 'ok' THEN 0 ELSE 1 END) AS failed,
+                SUM(input_tokens) AS inputTokens, SUM(cached_input_tokens) AS cachedInputTokens, SUM(output_tokens) AS outputTokens,
+                SUM(COALESCE(cost_usd, 0)) AS costUsd, MIN(at) AS firstAt, MAX(at) AS lastAt
+         FROM ledger_entries WHERE task = ? GROUP BY role, provider, model ORDER BY MIN(at)`, p.task);
+      const fallbacks = this.db.all<{ at: string; data_json: string }>(`SELECT at, data_json FROM events WHERE task = ? AND topic = 'model.fallback' ORDER BY seq`, p.task)
+        .map((e) => ({ at: e.at, ...(JSON.parse(e.data_json) as Record<string, unknown>) }));
+      return { bindings: this.runtime.artifacts(p.task, 'roles').at(-1)?.data ?? null, usage, fallbacks };
+    }));
     peer.handle(Methods.mcpList, guard(async () => { await this.mcpReady; return this.mcp.list(); }));
     peer.handle(Methods.fsTree, guard<{ workspacePath: string }>((p) => listWorkspaceFiles(this.knownWorkspace(p.workspacePath))));
     peer.handle(Methods.fsRead, guard<{ workspacePath: string; path: string }>((p) => readWorkspaceFile(this.knownWorkspace(p.workspacePath), p.path)));

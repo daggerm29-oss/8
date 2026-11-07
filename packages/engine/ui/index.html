@@ -38,6 +38,13 @@
           </label>
           <label>Budget USD<input name="budgetUsd" type="number" min="0" step="0.01" placeholder="0.50"></label>
         </div>
+        <details class="roles-picker" id="roles-picker">
+          <summary>Model roles <span class="muted" id="roles-summary">(defaults)</span></summary>
+          <label>One per line: <span class="mono">role=provider/model[,fallback…]</span>
+            <textarea name="roles" rows="3" class="mono" spellcheck="false" placeholder="summarizer=gemini/gemini-3.5-flash-lite&#10;coder=gemini/gemini-3.5-flash,gemini/gemini-3.5-flash-lite"></textarea>
+          </label>
+          <div id="roles-preview" class="roles-preview" aria-live="polite"></div>
+        </details>
         <button type="submit" class="primary">Start task</button>
         <p class="form-error" id="form-error" role="alert"></p>
       </form>
@@ -99,6 +106,7 @@
           <button role="tab" aria-selected="false" data-tab="transcript">Transcript</button>
           <button role="tab" aria-selected="false" data-tab="diff">Diff</button>
           <button role="tab" aria-selected="false" data-tab="gates">Gates</button>
+          <button role="tab" aria-selected="false" data-tab="roles">Roles</button>
           <button role="tab" aria-selected="false" data-tab="impact">Impact</button>
           <button role="tab" aria-selected="false" data-tab="artifacts">Artifacts</button>
           <button role="tab" aria-selected="false" data-tab="files">Files</button>
@@ -115,6 +123,7 @@
           <div id="diff"></div>
         </div>
         <div class="panel" role="tabpanel" data-panel="gates" hidden><div id="gates"></div></div>
+        <div class="panel" role="tabpanel" data-panel="roles" hidden><div id="roles"></div></div>
         <div class="panel" role="tabpanel" data-panel="impact" hidden>
           <form id="impact-form" class="diff-bar">
             <label class="grow">Symbol or file <input name="target" required placeholder="subtract or src/calc.js"></label>
