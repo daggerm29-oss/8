@@ -119,6 +119,20 @@ test('workbench server: serves UI, rejects foreign Host/Origin, token-gates WS, 
     assert.deepEqual(row.pendingApprovals, []);
     assert.ok(row.checkpointCount >= 2);
     assert.ok(row.lastCheckpoint && row.lastCheckpoint.files.length > 0);
+
+    type Binding = { role: string; chain: Array<{ provider: string; model: string }>; source: string; dropped: unknown[] };
+    const usage = await peer.request<{ bindings: Record<string, Binding>; usage: Array<{ role: string; provider: string; model: string; calls: number; failed: number; inputTokens: number }>; fallbacks: unknown[] }>(Methods.modelsUsage, { task: t.id });
+    assert.equal(usage.bindings.coder.source, 'task', 'explicit -m is a task-level coder binding');
+    assert.deepEqual(usage.usage.map((u) => [u.role, `${u.provider}/${u.model}`, u.calls, u.failed]), [['coder', 'gemini/gemini-3.8-flash', 3, 0]]);
+    assert.equal(usage.usage[0].inputTokens, 30);
+    assert.deepEqual(usage.fallbacks, []);
+    await assert.rejects(peer.request(Methods.modelsUsage, {}), /task is required/);
+
+    const preview = await peer.request<Record<string, Binding>>(Methods.modelsRoles, { workspacePath: repo, model: 'gemini-3.8-flash', roles: { summarizer: { primary: 'gemini/cheap', fallbacks: ['gemini/cheaper'] } } });
+    assert.deepEqual(preview.summarizer.chain.map((r) => r.model), ['cheap', 'cheaper']);
+    assert.equal(preview.summarizer.source, 'task');
+    assert.equal(preview.reviewer.chain[0].model, 'gemini-3.8-flash', 'unset roles inherit coder');
+    await assert.rejects(peer.request(Methods.modelsRoles, { workspacePath: repo, roles: { bogus: 'gemini/x' } }), /unknown role 'bogus'/);
     peer.close();
   } finally {
     await engine.close();
