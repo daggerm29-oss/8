@@ -125,6 +125,7 @@ export const Methods = {
   /* M1 — workbench files + terminal (F-UI-1, F-TRM-1) */
   fsTree: 'fs.tree',
   fsRead: 'fs.read',
+  fsWrite: 'fs.write',
   terminalRun: 'terminal.run',
   terminalKill: 'terminal.kill',
 } as const;

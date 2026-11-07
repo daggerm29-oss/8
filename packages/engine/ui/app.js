@@ -244,7 +244,7 @@ async function renderArtifacts() {
 }
 
 /* ---------------- files (F-UI-1) ---------------- */
-const files = { ws: null, tree: null, open: null };
+const files = { ws: null, tree: null, open: null, loaded: null, editing: false };
 const selectedWorkspace = () => state.tasks.find((x) => x.id === state.selected)?.workspacePath ?? null;
 
 async function renderFiles(force = false) {
@@ -253,6 +253,8 @@ async function renderFiles(force = false) {
   if (force || files.ws !== ws || !files.tree) {
     files.ws = ws;
     files.open = null;
+    files.loaded = null;
+    setEditing(false);
     $('file-name').textContent = 'Select a file';
     $('file-info').textContent = '';
     $('file-content').replaceChildren();
@@ -277,17 +279,59 @@ function renderFileList() {
   $('file-count').textContent = `${fmtNum(matches.length)} file(s)${matches.length > shown.length ? `, showing ${shown.length}` : ''}${files.tree?.truncated ? ' · list truncated' : ''}`;
 }
 
+const isDirty = () => files.editing && files.loaded && $('file-editor').value !== files.loaded.content;
+const confirmDiscard = () => !isDirty() || confirm(`Discard unsaved changes to ${files.loaded.path}?`);
+
+function setEditing(on) {
+  files.editing = on;
+  const f = files.loaded;
+  const editable = !!f && !f.binary && !f.truncated && f.hash !== null;
+  $('file-edit').hidden = on || !editable;
+  $('file-save').hidden = !on;
+  $('file-cancel').hidden = !on;
+  $('file-content').hidden = on;
+  $('file-editor').hidden = !on;
+  if (on) {
+    $('file-editor').value = f.content;
+    $('file-editor').focus();
+  }
+}
+
+function showFile(f) {
+  files.loaded = f;
+  $('file-info').textContent = `${fmtNum(f.size)} bytes${f.truncated ? ' · truncated (read-only)' : ''}`;
+  $('file-content').replaceChildren(...(f.binary ? [h('span', { class: 'note' }, 'Binary file not shown.')] : f.content.replace(/\n$/, '').split('\n').map((l) => h('span', { class: 'ln' }, l || ' '))));
+  setEditing(false);
+}
+
 async function openFile(path) {
+  if (!confirmDiscard()) return;
   files.open = path;
+  files.loaded = null;
+  setEditing(false);
   renderFileList();
   $('file-name').textContent = path;
   $('file-info').textContent = 'loading…';
   try {
     const f = await rpc.call('fs.read', { workspacePath: files.ws, path });
     if (files.open !== path) return;
-    $('file-info').textContent = `${fmtNum(f.size)} bytes${f.truncated ? ' · truncated' : ''}`;
-    $('file-content').replaceChildren(...(f.binary ? [h('span', { class: 'note' }, 'Binary file not shown.')] : f.content.replace(/\n$/, '').split('\n').map((l) => h('span', { class: 'ln' }, l || ' '))));
+    showFile(f);
   } catch (err) { $('file-info').textContent = ''; $('file-content').replaceChildren(h('span', { class: 'form-error' }, err.message)); }
+}
+
+async function saveFile() {
+  const f = files.loaded;
+  if (!f || !files.editing) return;
+  const content = $('file-editor').value;
+  $('file-save').disabled = true;
+  $('file-info').textContent = 'saving…';
+  try {
+    const r = await rpc.call('fs.write', { workspacePath: files.ws, path: f.path, content, baseHash: f.hash });
+    showFile({ ...f, content, size: r.size, hash: r.hash });
+    $('file-info').textContent = `Saved · ${fmtNum(r.size)} bytes`;
+  } catch (err) {
+    $('file-info').textContent = err.message.includes('changed on disk') ? 'Conflict: file changed on disk. Copy your edits, then Cancel to reload.' : `Save failed: ${err.message}`;
+  } finally { $('file-save').disabled = false; }
 }
 
 /* ---------------- terminal (F-TRM-1 v0) ---------------- */
@@ -548,6 +592,17 @@ function bindUi() {
     catch (err) { alert(err.message); }
   });
   $('file-filter').addEventListener('input', () => renderFileList());
+  $('file-edit').addEventListener('click', () => setEditing(true));
+  $('file-save').addEventListener('click', () => saveFile());
+  $('file-cancel').addEventListener('click', () => { if (confirmDiscard() && files.open) { files.editing = false; openFile(files.open); } });
+  $('file-editor').addEventListener('keydown', (ev) => {
+    if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 's') { ev.preventDefault(); saveFile(); }
+    else if (ev.key === 'Tab' && !ev.shiftKey && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
+      ev.preventDefault();
+      ev.currentTarget.setRangeText('  ', ev.currentTarget.selectionStart, ev.currentTarget.selectionEnd, 'end');
+    }
+  });
+  window.addEventListener('beforeunload', (ev) => { if (isDirty()) ev.preventDefault(); });
   $('term-form').addEventListener('submit', (ev) => {
     ev.preventDefault();
     const input = $('term-input');

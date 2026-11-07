@@ -1,3 +1,4 @@
+import type { CompactionOptions } from './context/compaction.ts';
 import { mkdirSync, writeFileSync, rmSync, readFileSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,7 +24,7 @@ import { builtinTools } from './tools/builtin.ts';
 import { McpManager, type McpServerConfig, type McpServerStatus } from './mcp/manager.ts';
 import { TaskRuntime } from './agent/runtime.ts';
 import { LocalSandbox, unshareAvailable } from './sandbox/sandbox.ts';
-import { listWorkspaceFiles, readWorkspaceFile } from './workspace/files.ts';
+import { listWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile } from './workspace/files.ts';
 import { WorkspaceIndex } from './index/index.ts';
 import { parseDiagnostics } from './diagnostics/parsers.ts';
 
@@ -53,9 +54,22 @@ export interface EngineOptions {
   mcpServers?: Record<string, McpServerConfig>;
   /** Hide MCP tools behind tool_search above this many tools (default 30 or mcp.json `toolSearchThreshold`). */
   mcpToolSearchThreshold?: number;
+  /** Transcript compaction (F-CTX-2). Env overrides: `HELIX_COMPACT_TRIGGER_TOKENS`, `HELIX_COMPACT_KEEP_TURNS`, `HELIX_COMPACT=off`. */
+  compaction?: CompactionOptions;
 }
 
-const TOPICS = ['task.*', 'agent.*', 'tool.*', 'model.*', 'verify.*', 'approval.*', 'ledger.*', 'budget.*', 'context.*', 'artifact.*', 'checkpoint.*'];
+function compactionFrom(env: NodeJS.ProcessEnv, opts?: CompactionOptions): CompactionOptions {
+  const num = (v?: string) => (v && Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : undefined);
+  return {
+    ...opts,
+    ...(env.HELIX_COMPACT === 'off' ? { enabled: false } : {}),
+    ...(num(env.HELIX_COMPACT_TRIGGER_TOKENS) ? { triggerTokens: num(env.HELIX_COMPACT_TRIGGER_TOKENS) } : {}),
+    ...(num(env.HELIX_COMPACT_KEEP_TURNS) ? { keepRecentTurns: num(env.HELIX_COMPACT_KEEP_TURNS) } : {}),
+    ...(num(env.HELIX_COMPACT_MIN_SLICE_TOKENS) ? { minSliceTokens: num(env.HELIX_COMPACT_MIN_SLICE_TOKENS) } : {}),
+  };
+}
+
+const TOPICS = ['task.*', 'agent.*', 'tool.*', 'model.*', 'verify.*', 'approval.*', 'ledger.*', 'budget.*', 'context.*', 'artifact.*', 'checkpoint.*', 'workspace.*'];
 
 /** Helix Engine (§6.2): composition root for storage, bus, gateway, tools, sandbox, and the task runtime. */
 export class Engine {
@@ -96,7 +110,7 @@ export class Engine {
     const tools = builtinTools();
     this.mcp = new McpManager({ home: this.home, registry: tools, logger: this.logger, config: opts.mcpServers, toolSearchThreshold: opts.mcpToolSearchThreshold });
     this.mcpReady = opts.mcp === false ? Promise.resolve([]) : this.mcp.start();
-    this.runtime = new TaskRuntime({ db: this.db, bus: this.bus, gateway: this.gateway, ledger: this.ledger, tools, tracer: this.tracer, engineId: this.id, blobs: this.blobs, logger: this.logger, forceProcessSandbox: opts.forceProcessSandbox, taskRetryScale: opts.taskRetryScale, helixHome: this.home, indexing: opts.indexing });
+    this.runtime = new TaskRuntime({ db: this.db, bus: this.bus, gateway: this.gateway, ledger: this.ledger, tools, tracer: this.tracer, engineId: this.id, blobs: this.blobs, logger: this.logger, forceProcessSandbox: opts.forceProcessSandbox, taskRetryScale: opts.taskRetryScale, helixHome: this.home, indexing: opts.indexing, compaction: compactionFrom(env, opts.compaction) });
 
     const now = new Date().toISOString();
     this.db.run('INSERT INTO engine_instances (id, pid, started_at, heartbeat_at) VALUES (?, ?, ?, ?)', this.id, process.pid, now, now);
@@ -193,6 +207,16 @@ export class Engine {
     peer.handle(Methods.mcpList, guard(async () => { await this.mcpReady; return this.mcp.list(); }));
     peer.handle(Methods.fsTree, guard<{ workspacePath: string }>((p) => listWorkspaceFiles(this.knownWorkspace(p.workspacePath))));
     peer.handle(Methods.fsRead, guard<{ workspacePath: string; path: string }>((p) => readWorkspaceFile(this.knownWorkspace(p.workspacePath), p.path)));
+    peer.handle(Methods.fsWrite, guard<{ workspacePath: string; path: string; content: string; baseHash: string | null }>((p) => {
+      const root = this.knownWorkspace(p.workspacePath);
+      const ws = this.runtime.workspaceFor(root);
+      const busy = this.db.all<{ id: string }>('SELECT id FROM tasks WHERE ws = ?', ws.id).find((t) => this.runtime.isRunning(t.id));
+      if (busy) throw new Error(`task ${busy.id} is running in this workspace; wait for it or cancel it before editing`);
+      const r = writeWorkspaceFile(root, p.path, p.content, p.baseHash ?? null);
+      this.bus.publish({ topic: 'workspace.file_written', ws: ws.id, data: { path: r.path, size: r.size, hash: r.hash, created: r.created, by: 'user' }, persist: 'audit' });
+      this.logger.info('fs.write', { path: r.path, size: r.size });
+      return r;
+    }));
     const runs = new Map<string, AbortController>();
     peer.onClose(() => runs.forEach((c) => c.abort()));
     peer.handle(Methods.terminalRun, guard<{ workspacePath: string; command: string; cwd?: string; timeoutMs?: number; runId?: string }>(async (p) => {

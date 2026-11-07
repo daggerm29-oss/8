@@ -9,7 +9,8 @@ import { describeGates, diagnosticKey, expandGateCommand, resolveGates, TESTS_PL
 import { isTestPath } from '../index/extract.ts';
 
 interface BaselineArtifact { gates: Array<{ name: string; command: string; passed: boolean; keys: string[] }> }
-import { ProviderError, type Message, type Part, type TaskCreateParams, type TaskStatus, type TaskSummary } from '@helix/protocol';
+import { estimateTokens, ProviderError, type Message, type Part, type TaskCreateParams, type TaskStatus, type TaskSummary, type ToolSpec } from '@helix/protocol';
+import { compactedView, constraintsOf, DEFAULT_MIN_SLICE_TOKENS, deterministicSummary, parseSummary, selectCut, SUMMARIZER_SYSTEM, summarizerPrompt, type CompactionArtifact, type CompactionOptions, type CompactionSummary } from '../context/compaction.ts';
 import type { Db } from '../storage/db.ts';
 import { json, parseJson } from '../storage/db.ts';
 import type { BlobStore } from '../storage/blobs.ts';
@@ -53,6 +54,8 @@ export interface RuntimeOptions {
   /** Build the code index + composed context at task start (default true). */
   indexing?: boolean;
   contextBudgetTokens?: number;
+  /** Transcript compaction (F-CTX-2, §13.4). */
+  compaction?: CompactionOptions;
 }
 
 export interface CheckpointInfo {
@@ -468,6 +471,55 @@ export class TaskRuntime {
     return { restored, deleted, restoreId };
   }
 
+  latestCompaction(task: string): CompactionArtifact | undefined {
+    const row = this.o.db.get<{ data_json: string }>(`SELECT data_json FROM artifacts WHERE task = ? AND kind = 'compaction' ORDER BY at DESC, rowid DESC LIMIT 1`, task);
+    return row ? parseJson<CompactionArtifact | undefined>(row.data_json, undefined) : undefined;
+  }
+
+  /**
+   * F-CTX-2: when the estimated request exceeds the trigger, summarize the oldest turns (cut at an
+   * assistant boundary, last `keepRecentTurns` kept) and persist a `compaction` artifact. The request view
+   * is derived from the latest artifact, so it is identical after an Engine restart.
+   */
+  private async maybeCompact(t: TaskRow, messages: Message[], system: string, tools: ToolSpec[], stepId: string, signal: AbortSignal): Promise<CompactionArtifact | undefined> {
+    const cfg = this.o.compaction ?? {};
+    const current = this.latestCompaction(t.id);
+    if (cfg.enabled === false) return current;
+    const trigger = cfg.triggerTokens ?? Math.floor(0.8 * (this.o.gateway.manifest(t.provider, t.model)?.contextWindow ?? 128_000));
+    const before = estimateTokens({ system, messages: compactedView(messages, current), tools });
+    if (before <= trigger) return current;
+    const from = current?.upTo ?? 0;
+    const cut = selectCut(messages, from, cfg.keepRecentTurns);
+    if (cut === null) return current;
+    const slice = messages.slice(from, cut);
+    if (estimateTokens({ messages: slice }) < (cfg.minSliceTokens ?? DEFAULT_MIN_SLICE_TOKENS)) return current;
+    let summary: CompactionSummary | null = null;
+    let error: string | undefined;
+    try {
+      const res = await this.o.gateway.call({
+        provider: t.provider, model: t.model, role: 'summarizer', ws: t.ws, task: t.id, agent: 'primary', step: stepId, signal,
+        request: { system: SUMMARIZER_SYSTEM, messages: [{ role: 'user', parts: [{ type: 'text', text: summarizerPrompt(slice, current) }] }], toolChoice: 'none', maxOutputTokens: 2048 },
+      });
+      summary = parseSummary(res.message.parts.filter((p) => p.type === 'text').map((p) => (p as { text: string }).text).join(''));
+      if (!summary) error = 'summarizer output was not valid summary JSON';
+    } catch (e) {
+      if (signal.aborted) throw e;
+      error = `${(e as Error).name}: ${(e as Error).message}`;
+    }
+    const art: CompactionArtifact = {
+      upTo: cut, summary: summary ?? deterministicSummary(slice, current?.summary), constraints: constraintsOf(messages, cut),
+      source: summary ? 'model' : 'deterministic', tokensBefore: before, tokensAfter: 0, ref: { task: t.id, fromIndex: 0, toIndex: cut }, ...(error ? { error } : {}),
+    };
+    art.tokensAfter = estimateTokens({ system, messages: compactedView(messages, art), tools });
+    if (art.tokensAfter >= before) {
+      this.publish(t.id, t.ws, 'context.compaction_skipped', { from, upTo: cut, source: art.source, tokensBefore: before, tokensAfter: art.tokensAfter, reason: 'summary not smaller' });
+      return current;
+    }
+    this.saveArtifact(t.id, 'compaction', `Compacted messages 0–${cut - 1}`, art);
+    this.publish(t.id, t.ws, 'context.compacted', { upTo: cut, from, source: art.source, tokensBefore: before, tokensAfter: art.tokensAfter, triggerTokens: trigger, error }, 'audit');
+    return art;
+  }
+
   private async modelTurn(t: TaskRow, messages: Message[], root: string, signal: AbortSignal, context = ''): Promise<void> {
     const stepId = prefixedId('step');
     const now = new Date().toISOString();
@@ -475,9 +527,12 @@ export class TaskRuntime {
     this.publish(t.id, t.ws, 'task.step', { stepId, index: t.step_count, kind: 'model' });
     const activated = activatedTools(messages.flatMap((m) => m.parts.filter((p): p is Extract<Part, { type: 'tool_result' }> => p.type === 'tool_result' && p.name === TOOL_SEARCH).map((p) => p.content)));
     const tools = this.o.tools.specs((name) => (t.policy_profile === 'plan' ? PLAN_TOOLS.includes(name) : name !== 'submit_plan' && (!this.o.tools.isDeferred(name) || activated.has(name))));
+    const system = systemPrompt(root, this.gateSummary(root, t.verify_command), t.policy_profile, context);
+    const compaction = await this.maybeCompact(t, messages, system, tools, stepId, signal);
+    const view = this.requestMessages(compactedView(messages, compaction));
     const call = () => this.o.gateway.call({
       provider: t.provider, model: t.model, role: 'coder', ws: t.ws, task: t.id, agent: 'primary', step: stepId, signal,
-      request: { system: systemPrompt(root, this.gateSummary(root, t.verify_command), t.policy_profile, context), messages: this.requestMessages(messages), tools, toolChoice: 'auto', maxOutputTokens: 8192 },
+      request: { system, messages: view, tools, toolChoice: 'auto', maxOutputTokens: 8192 },
       onEvent: (e) => { if (e.type === 'text_delta') this.publish(t.id, t.ws, 'model.delta', { stepId, text: e.text }, 'none'); },
     });
     let result: Awaited<ReturnType<typeof call>>;

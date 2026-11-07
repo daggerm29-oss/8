@@ -1,12 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, mkdirSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync, mkdirSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WebSocket } from 'ws';
 import { Methods, PROTOCOL_VERSION, RpcPeer } from '@helix/protocol';
 import { Engine, wsTransport } from '../src/engine.ts';
-import { listWorkspaceFiles, readWorkspaceFile } from '../src/workspace/files.ts';
+import { FileConflictError, listWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile } from '../src/workspace/files.ts';
 
 function repo(): string {
   const root = mkdtempSync(join(tmpdir(), 'helix-fs-'));
@@ -41,6 +41,31 @@ test('files: tree filters secrets/deps; read confines to the workspace', () => {
   assert.equal(big.content, '# h');
 });
 
+test('files: write is confined, hash-checked (conflicts), atomic, and refuses secrets/.git', () => {
+  const root = repo();
+  const outside = mkdtempSync(join(tmpdir(), 'helix-out-'));
+  symlinkSync(outside, join(root, 'escape'));
+  mkdirSync(join(root, '.git'));
+  const f = readWorkspaceFile(root, 'src/a.js');
+  assert.match(f.hash ?? '', /^[0-9a-f]{64}$/);
+  const w = writeWorkspaceFile(root, 'src/a.js', 'export const a = 2;\n', f.hash);
+  assert.equal(readFileSync(join(root, 'src/a.js'), 'utf8'), 'export const a = 2;\n');
+  assert.equal(w.created, false);
+  assert.equal(readWorkspaceFile(root, 'src/a.js').hash, w.hash);
+  assert.throws(() => writeWorkspaceFile(root, 'src/a.js', 'stale', f.hash), FileConflictError, 'old hash must conflict');
+  assert.throws(() => writeWorkspaceFile(root, 'src/new.js', 'x', 'abc'), FileConflictError, 'non-null base for a missing file conflicts');
+  assert.equal(writeWorkspaceFile(root, 'src/new.js', 'x', null).created, true);
+  assert.throws(() => writeWorkspaceFile(root, 'src/new.js', 'y', null), FileConflictError, 'null base for an existing file conflicts');
+  assert.throws(() => writeWorkspaceFile(root, '.env', 'X=1', null), /not writable/);
+  assert.throws(() => writeWorkspaceFile(root, '.git/config', 'x', null), /not writable/);
+  assert.throws(() => writeWorkspaceFile(root, 'escape/pwn.txt', 'x', null), /outside the workspace/);
+  assert.throws(() => writeWorkspaceFile(root, '../pwn.txt', 'x', null), /outside the workspace/);
+  assert.throws(() => writeWorkspaceFile(root, '/etc/passwd', 'x', null), /relative path/);
+  assert.throws(() => writeWorkspaceFile(root, 'nope/dir/a.js', 'x', null), /directory does not exist/);
+  assert.equal(existsSync(join(outside, 'pwn.txt')), false);
+  assert.deepEqual(readdirSync(join(root, 'src')).filter((n) => n.includes('.tmp')), [], 'no temp files left');
+});
+
 test('engine: fs.tree/fs.read/terminal.run over WS for known workspaces only, with streamed output and kill', async () => {
   const home = mkdtempSync(join(tmpdir(), 'helix-home-'));
   const root = repo();
@@ -63,9 +88,16 @@ test('engine: fs.tree/fs.read/terminal.run over WS for known workspaces only, wi
 
     const tree = await peer.request(Methods.fsTree, { workspacePath: root }) as { files: string[] };
     assert.ok(tree.files.includes('src/a.js') && !tree.files.includes('.env'));
-    const file = await peer.request(Methods.fsRead, { workspacePath: root, path: 'src/a.js' }) as { content: string };
+    const file = await peer.request(Methods.fsRead, { workspacePath: root, path: 'src/a.js' }) as { content: string; hash: string };
     assert.match(file.content, /export const a/);
     await assert.rejects(peer.request(Methods.fsRead, { workspacePath: root, path: '/etc/passwd' }), /outside the workspace/);
+    const saved = await peer.request(Methods.fsWrite, { workspacePath: root, path: 'src/a.js', content: 'export const a = 3;\n', baseHash: file.hash }) as { hash: string };
+    assert.equal(readFileSync(join(root, 'src/a.js'), 'utf8'), 'export const a = 3;\n');
+    await assert.rejects(peer.request(Methods.fsWrite, { workspacePath: root, path: 'src/a.js', content: 'x', baseHash: file.hash }), /changed on disk/);
+    await assert.rejects(peer.request(Methods.fsWrite, { workspacePath: root, path: '.env', content: 'x', baseHash: null }), /not writable/);
+    assert.ok(saved.hash);
+    engine.bus.flush();
+    assert.ok(engine.db.all<{ topic: string }>(`SELECT topic FROM audit_log WHERE topic = 'workspace.file_written'`).length >= 1, 'user edits are audited');
 
     const r = await peer.request(Methods.terminalRun, { workspacePath: root, command: 'echo out-line; echo err-line 1>&2; cat src/a.js; exit 3', runId: 'run_t1' }, 30_000) as { exitCode: number; runId: string };
     assert.equal(r.runId, 'run_t1');
