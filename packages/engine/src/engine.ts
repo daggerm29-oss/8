@@ -31,10 +31,13 @@ import { parseDiagnostics } from './diagnostics/parsers.ts';
 export const ENGINE_VERSION = '0.1.0';
 
 const UI_DIR = fileURLToPath(new URL('../ui/', import.meta.url));
+const XTERM_DIR = fileURLToPath(new URL('../node_modules/@xterm/xterm/', import.meta.url));
 const UI_FILES: Record<string, { name: string; type: string }> = {
-  '/index.html': { name: 'index.html', type: 'text/html; charset=utf-8' },
-  '/app.js': { name: 'app.js', type: 'text/javascript; charset=utf-8' },
-  '/app.css': { name: 'app.css', type: 'text/css; charset=utf-8' },
+  '/index.html': { name: join(UI_DIR, 'index.html'), type: 'text/html; charset=utf-8' },
+  '/app.js': { name: join(UI_DIR, 'app.js'), type: 'text/javascript; charset=utf-8' },
+  '/app.css': { name: join(UI_DIR, 'app.css'), type: 'text/css; charset=utf-8' },
+  '/vendor/xterm.js': { name: join(XTERM_DIR, 'lib/xterm.js'), type: 'text/javascript; charset=utf-8' },
+  '/vendor/xterm.css': { name: join(XTERM_DIR, 'css/xterm.css'), type: 'text/css; charset=utf-8' },
 };
 
 export interface EngineOptions {
@@ -259,6 +262,34 @@ export class Engine {
       c?.abort();
       return { killed: !!c };
     }));
+
+    const ptys = new Map<string, ReturnType<LocalSandbox['pty']>>();
+    peer.onClose(() => { ptys.forEach((p) => p.kill()); ptys.clear(); });
+    peer.handle(Methods.ptyOpen, guard<{ workspacePath: string; cols?: number; rows?: number; cwd?: string }>((p) => {
+      if (ptys.size >= 4) throw new Error('too many open terminals (max 4 per connection)');
+      const sbx = this.terminalSandbox(this.knownWorkspace(p.workspacePath));
+      const ptyId = prefixedId('pty');
+      const handle = sbx.pty({
+        cols: p.cols, rows: p.rows, cwd: p.cwd,
+        onData: (data) => peer.notify(Notifications.ptyOutput, { ptyId, data }),
+        onExit: (exitCode) => { ptys.delete(ptyId); peer.notify(Notifications.ptyExit, { ptyId, exitCode }); this.logger.info('pty.exit', { ptyId, exitCode }); },
+      });
+      ptys.set(ptyId, handle);
+      this.logger.info('pty.open', { ptyId, workspace: p.workspacePath });
+      return { ptyId, sandbox: sbx.info() };
+    }));
+    peer.handle(Methods.ptyWrite, guard<{ ptyId: string; data: string }>((p) => {
+      const h = ptys.get(p.ptyId);
+      if (!h) throw new Error(`no such terminal: ${p.ptyId}`);
+      if (typeof p.data !== 'string' || p.data.length > 64 * 1024) throw new Error('data must be a string up to 64 KiB');
+      h.write(p.data);
+      return { ok: true };
+    }));
+    peer.handle(Methods.ptyKill, guard<{ ptyId: string }>((p) => {
+      const h = ptys.get(p.ptyId);
+      h?.kill();
+      return { killed: !!h };
+    }));
   }
 
   /** Workbench file/terminal access is limited to workspaces the Engine already knows (created via a task or index call). */
@@ -332,8 +363,8 @@ export class Engine {
       if (!file) { res.writeHead(404).end('not found'); return; }
       res.writeHead(200, {
         'content-type': file.type, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer',
-        'content-security-policy': "default-src 'self'; connect-src 'self' ws: wss:; style-src 'self'; script-src 'self'; img-src 'self' data:; frame-ancestors *",
-      }).end(readFileSync(join(UI_DIR, file.name)));
+        'content-security-policy': "default-src 'self'; connect-src 'self' ws: wss:; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; frame-ancestors *",
+      }).end(readFileSync(file.name));
     });
     this.wss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024 });
     this.http.on('upgrade', (req, socket, head) => {

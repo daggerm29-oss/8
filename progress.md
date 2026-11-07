@@ -326,6 +326,14 @@ Order (tick when done; next session resumes at the first unticked item):
 - [x] S15-2 (DONE) Workbench "Steps" tab: collapsible Step → ToolCall tree (`<details>`), re-renders on step/tool/ledger events.
 - [x] S15-3 DONE: ui.test 2/2 (task.steps: 3 steps idx 0..2, model ref per step, every call linked, `task is required`); tsc clean. Live gemini-3.5-flash-lite via the running workbench (WS client) on a js-calc copy: done, 7 steps (find_symbol, read_file×2, run_shell error, edit_file, run_shell ok, final), all calls linked; browser Steps tab renders the tree with per-step model/tokens/cost/duration. Pushed to `helix/m1-session15-steps`.
 
+## Session 16 (M1) — live plan
+
+Branch: `helix/m1-session16` (from `helix/m1-progress-fix`, which is pushed but not yet merged into `main`).
+- [x] S16-1 F-TRM-1 PTY backend: `LocalSandbox.pty()` — util-linux `script -qfec` allocates a real PTY on the host around the same contained `bash -i` (user+net+mount ns, chroot, scrubbed env, TERM=xterm-256color). RPCs `pty.open {workspacePath, cols, rows}` / `pty.write {ptyId, data}` / `pty.kill {ptyId}`; notifications `pty.output {ptyId, data}`, `pty.exit {ptyId, exitCode}`; max 4 per connection, killed on disconnect. No PID namespace for PTYs (as ns init the shell can't own the PTY foreground group → Ctrl-C lost; verified by experiment); /proc stays unmounted.
+- [x] S16-2 Workbench Terminal tab: "Interactive shell" (xterm.js 5.5 served from `/vendor/xterm.{js,css}` out of node_modules; CSP style-src now allows 'unsafe-inline' for xterm's injected styles, script-src still 'self'). Existing run-command panel kept.
+- [x] S16-3 workbench-fs.test PTY assertions: tty + TERM + `stty size` = 20 90, Ctrl-C interrupts `sleep 30`, `exit 5` → pty.exit 5, write after exit rejects. workbench-fs + ui: 5/5 pass; tsc clean.
+- [ ] S16-4 full engine suite, browser check, progress/feature table, push.
+
 ## Next Actions
 
 Resume here for **M1 — Core MVP** (session 16). Session 15 shipped the workbench Steps tab (Step→ToolCall tree, RPC `task.steps`). Suggested start: PTY terminal (F-TRM-1), then F-SBX-3 egress proxy, then F-PRV-1/2 preview. Optional: persist demoted refs per task (survive Engine restart); task summary `model` could show the model actually used. Pricing for gemini-3.5-flash-lite stays `null` until a verified published price exists. Next, in order:

@@ -17,6 +17,7 @@
     "@helix/protocol": "workspace:*",
     "@helix/provider-gemini": "workspace:*",
     "@helix/provider-openai": "workspace:*",
+    "@xterm/xterm": "^5.5.0",
     "ws": "^8.22.1"
   },
   "devDependencies": {

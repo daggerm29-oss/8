@@ -6,6 +6,7 @@
   <meta name="theme-color" content="#0b0d10">
   <meta name="referrer" content="no-referrer">
   <title>Helix Workbench</title>
+  <link rel="stylesheet" href="/vendor/xterm.css">
   <link rel="stylesheet" href="/app.css">
 </head>
 <body>
@@ -159,6 +160,16 @@
           </div>
         </div>
         <div class="panel" role="tabpanel" data-panel="terminal" hidden>
+          <section class="pty" aria-label="Interactive shell">
+            <div class="pty-bar">
+              <strong>Interactive shell</strong>
+              <span id="pty-status" class="sub">No shell open.</span>
+              <button type="button" class="primary" id="pty-open">Open shell</button>
+              <button type="button" class="danger" id="pty-close" hidden>Close shell</button>
+            </div>
+            <div id="pty-host" hidden></div>
+            <p class="note">Real PTY (colors, prompts, Ctrl-C, vim/less) in the workspace sandbox: no network, scrubbed env. Separate from the agent's shell. Fixed 110×24.</p>
+          </section>
           <div class="terminal">
             <pre id="term-output" class="term-output mono" tabindex="0" aria-live="polite" aria-label="Terminal output"></pre>
             <form id="term-form" class="term-form" autocomplete="off">
@@ -185,6 +196,7 @@
     </form>
   </dialog>
 
+  <script src="/vendor/xterm.js"></script>
   <script type="module" src="/app.js"></script>
 </body>
 </html>
