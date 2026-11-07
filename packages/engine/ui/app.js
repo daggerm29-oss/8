@@ -377,7 +377,7 @@ function scheduleRefresh() {
 }
 
 setInterval(() => {
-  if (!state.selected && monitor.rows.some((r) => !TERMINAL.includes(r.status))) renderMonitor();
+  if (!state.selected && monitor.rows.length && !document.hidden) renderMonitor();
 }, 1000);
 
 function onEvent(e) {
