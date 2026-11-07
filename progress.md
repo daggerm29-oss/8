@@ -286,6 +286,15 @@ Order (tick when done; next session resumes at the first unticked item):
 - [ ] S11-3 Tests (ui.test: fs.tree/fs.read confinement, terminal.run output + exit) + browser check; push.
 - Decision: gemini-3.5-flash-lite pricing stays `null` (no verified published price; do not invent one).
 
+## Session 12 (M1) — live plan
+
+Branch: `helix/m1-session12` from `main` (session 11 merged as PR #8).
+Order (tick when done; next session resumes at the first unticked item):
+- [x] S12-1 (DONE, code; tsc clean; extra guards: skip when the slice is < `minSliceTokens` (default 1024) and discard a compaction whose view is not smaller → `context.compaction_skipped`) F-CTX-2 compaction (`engine/src/context/compaction.ts` + `agent/runtime.ts#modelTurn`): trigger when the estimated request (system + transcript view + tools) exceeds `triggerTokens` (default 80% of the model contextWindow; Engine option `compaction` / env `HELIX_COMPACT_TRIGGER_TOKENS`); cut only at an assistant-turn boundary, keep the last `keepRecentTurns` (default 4) turns (so tool call/result pairs never split, current step never compacted); summarizer call (role `summarizer`, same model, no tools) returns `{decisions, factsLearned, filesTouched[{path,why}], openQuestions, failingChecks, userPreferences}`; parse failure/provider error → deterministic summary; user text copied verbatim into `constraints`; persisted as `compaction` artifact `{upTo, summary, constraints, source, tokensBefore, tokensAfter}` (originals stay in `messages`, restart-safe); `context.compacted` event.
+- [x] S12-2 (DONE, compaction.test 4/4) Tests `test/compaction.test.ts` (cut selection, parse/fallback, e2e with fake Gemini: request after compaction starts with the summary and the goal verbatim, later requests reuse it).
+- [ ] S12-3 Workbench file edit/save: RPC `fs.write {workspace, path, content, baseHash}` (confined, secrets refused, conflict on hash mismatch) + editor mode in the Files tab.
+- [ ] S12-4 Full test run, live Gemini check, push.
+
 ## Next Actions
 
 Resume here for **M1 — Core MVP** (session 12). Session 11 shipped the workbench Files view + non-PTY Terminal tab. Suggested start: item 2 (F-UI-2 step/tool-call tree, or PTY), or item 4 (F-CTX-2 compaction). Pricing for gemini-3.5-flash-lite stays `null` until a verified published price exists. Next, in order:

@@ -1,3 +1,4 @@
+import type { CompactionOptions } from './context/compaction.ts';
 import { mkdirSync, writeFileSync, rmSync, readFileSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -53,6 +54,18 @@ export interface EngineOptions {
   mcpServers?: Record<string, McpServerConfig>;
   /** Hide MCP tools behind tool_search above this many tools (default 30 or mcp.json `toolSearchThreshold`). */
   mcpToolSearchThreshold?: number;
+  /** Transcript compaction (F-CTX-2). Env overrides: `HELIX_COMPACT_TRIGGER_TOKENS`, `HELIX_COMPACT_KEEP_TURNS`, `HELIX_COMPACT=off`. */
+  compaction?: CompactionOptions;
+}
+
+function compactionFrom(env: NodeJS.ProcessEnv, opts?: CompactionOptions): CompactionOptions {
+  const num = (v?: string) => (v && Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : undefined);
+  return {
+    ...opts,
+    ...(env.HELIX_COMPACT === 'off' ? { enabled: false } : {}),
+    ...(num(env.HELIX_COMPACT_TRIGGER_TOKENS) ? { triggerTokens: num(env.HELIX_COMPACT_TRIGGER_TOKENS) } : {}),
+    ...(num(env.HELIX_COMPACT_KEEP_TURNS) ? { keepRecentTurns: num(env.HELIX_COMPACT_KEEP_TURNS) } : {}),
+  };
 }
 
 const TOPICS = ['task.*', 'agent.*', 'tool.*', 'model.*', 'verify.*', 'approval.*', 'ledger.*', 'budget.*', 'context.*', 'artifact.*', 'checkpoint.*'];
@@ -96,7 +109,7 @@ export class Engine {
     const tools = builtinTools();
     this.mcp = new McpManager({ home: this.home, registry: tools, logger: this.logger, config: opts.mcpServers, toolSearchThreshold: opts.mcpToolSearchThreshold });
     this.mcpReady = opts.mcp === false ? Promise.resolve([]) : this.mcp.start();
-    this.runtime = new TaskRuntime({ db: this.db, bus: this.bus, gateway: this.gateway, ledger: this.ledger, tools, tracer: this.tracer, engineId: this.id, blobs: this.blobs, logger: this.logger, forceProcessSandbox: opts.forceProcessSandbox, taskRetryScale: opts.taskRetryScale, helixHome: this.home, indexing: opts.indexing });
+    this.runtime = new TaskRuntime({ db: this.db, bus: this.bus, gateway: this.gateway, ledger: this.ledger, tools, tracer: this.tracer, engineId: this.id, blobs: this.blobs, logger: this.logger, forceProcessSandbox: opts.forceProcessSandbox, taskRetryScale: opts.taskRetryScale, helixHome: this.home, indexing: opts.indexing, compaction: compactionFrom(env, opts.compaction) });
 
     const now = new Date().toISOString();
     this.db.run('INSERT INTO engine_instances (id, pid, started_at, heartbeat_at) VALUES (?, ?, ?, ?)', this.id, process.pid, now, now);
