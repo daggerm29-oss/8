@@ -184,6 +184,32 @@ export class TaskRuntime {
       .map((m) => ({ role: m.role, parts: parseJson<Part[]>(m.parts_json, []), meta: m.step ? { stepId: m.step } : undefined }));
   }
 
+  /** Step → tool-call tree (F-UI-2). Tool calls are linked through the call ids in each step's assistant message. */
+  steps(id: string) {
+    this.row(id);
+    const steps = this.o.db.all<{ id: string; idx: number; kind: string; status: string; started_at: string; ended_at: string | null; ledger_entry: string | null }>(
+      'SELECT id, idx, kind, status, started_at, ended_at, ledger_entry FROM steps WHERE task = ? ORDER BY idx, started_at', id);
+    const msgs = this.o.db.all<{ step: string; parts_json: string }>(`SELECT step, parts_json FROM messages WHERE task = ? AND role = 'assistant' AND step IS NOT NULL`, id);
+    const byStep = new Map(msgs.map((m) => [m.step, parseJson<Part[]>(m.parts_json, [])]));
+    const calls = new Map(this.o.db.all<{ call_id: string; tool: string; status: string; summary: string | null; duration_ms: number | null; at: string }>(
+      'SELECT call_id, tool, status, summary, duration_ms, at FROM tool_calls WHERE task = ?', id).map((c) => [c.call_id, c]));
+    const ledger = new Map(this.o.db.all<{ id: string; role: string; provider: string; model: string; input_tokens: number; output_tokens: number; cost_usd: number | null; status: string }>(
+      'SELECT id, role, provider, model, input_tokens, output_tokens, cost_usd, status FROM ledger_entries WHERE task = ?', id).map((l) => [l.id, l]));
+    return steps.map((s) => {
+      const parts = byStep.get(s.id) ?? [];
+      const l = s.ledger_entry ? ledger.get(s.ledger_entry) : undefined;
+      return {
+        id: s.id, index: s.idx, kind: s.kind, status: s.status, startedAt: s.started_at, endedAt: s.ended_at,
+        model: l ? { role: l.role, ref: `${l.provider}/${l.model}`, inputTokens: l.input_tokens, outputTokens: l.output_tokens, costUsd: l.cost_usd ?? 0 } : null,
+        text: parts.filter((p) => p.type === 'text').map((p) => (p as { text: string }).text).join(''),
+        toolCalls: parts.filter((p): p is Extract<Part, { type: 'tool_call' }> => p.type === 'tool_call').map((p) => {
+          const c = calls.get(p.id);
+          return { callId: p.id, tool: p.name, args: p.args, status: c?.status ?? 'pending', summary: c?.summary ?? null, durationMs: c?.duration_ms ?? null, at: c?.at ?? null };
+        }),
+      };
+    });
+  }
+
   create(p: TaskCreateParams): TaskSummary {
     if (!p.goal?.trim()) throw new Error('goal is required');
     const ws = this.workspace(p.workspacePath);

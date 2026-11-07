@@ -122,6 +122,7 @@ export const Methods = {
   workspaceList: 'workspace.list',
   /* M1 — activity monitor (F-UI-2) */
   taskMonitor: 'task.monitor',
+  taskSteps: 'task.steps',
   /* M1 — MCP (F-MCP-1) */
   mcpList: 'mcp.list',
   /* M1 — role-based models (F-MDL-4) */

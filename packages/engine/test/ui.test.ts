@@ -128,6 +128,14 @@ test('workbench server: serves UI, rejects foreign Host/Origin, token-gates WS, 
     assert.deepEqual(usage.fallbacks, []);
     await assert.rejects(peer.request(Methods.modelsUsage, {}), /task is required/);
 
+    const steps = await peer.request<Array<{ index: number; status: string; model: { ref: string } | null; toolCalls: Array<{ tool: string; status: string }> }>>(Methods.taskSteps, { task: t.id });
+    assert.equal(steps.length, 3, 'one step per model call');
+    assert.deepEqual(steps.map((s) => s.index), [0, 1, 2]);
+    assert.ok(steps.every((s) => s.status === 'done' && s.model?.ref === 'gemini/gemini-3.8-flash'));
+    const calls = steps.flatMap((s) => s.toolCalls);
+    assert.ok(calls.length >= 1 && calls.every((c) => c.status !== 'pending'), 'every requested tool call is linked to its result row');
+    await assert.rejects(peer.request(Methods.taskSteps, {}), /task is required/);
+
     const preview = await peer.request<Record<string, Binding>>(Methods.modelsRoles, { workspacePath: repo, model: 'gemini-3.8-flash', roles: { summarizer: { primary: 'gemini/cheap', fallbacks: ['gemini/cheaper'] } } });
     assert.deepEqual(preview.summarizer.chain.map((r) => r.model), ['cheap', 'cheaper']);
     assert.equal(preview.summarizer.source, 'task');
