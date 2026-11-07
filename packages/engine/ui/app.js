@@ -59,6 +59,8 @@ class Rpc {
       msg.error ? p.reject(new Error(msg.error.message)) : p.resolve(msg.result);
     } else if (msg.method === 'event') {
       for (const l of this.listeners) l(msg.params);
+    } else if (msg.method === 'terminal.output') {
+      this.onTerminal?.(msg.params);
     }
   }
   call(method, params = {}) {
@@ -241,6 +243,103 @@ async function renderArtifacts() {
   if (!arts.length) $('artifacts').append(h('p', { class: 'note' }, 'No artifacts.'));
 }
 
+/* ---------------- files (F-UI-1) ---------------- */
+const files = { ws: null, tree: null, open: null };
+const selectedWorkspace = () => state.tasks.find((x) => x.id === state.selected)?.workspacePath ?? null;
+
+async function renderFiles(force = false) {
+  const ws = selectedWorkspace();
+  if (!ws) return;
+  if (force || files.ws !== ws || !files.tree) {
+    files.ws = ws;
+    files.open = null;
+    $('file-name').textContent = 'Select a file';
+    $('file-info').textContent = '';
+    $('file-content').replaceChildren();
+    $('file-list').replaceChildren(h('li', { class: 'note' }, 'Loading…'));
+    try { files.tree = await rpc.call('fs.tree', { workspacePath: ws }); }
+    catch (err) { $('file-list').replaceChildren(h('li', { class: 'form-error' }, err.message)); return; }
+  }
+  renderFileList();
+}
+
+function renderFileList() {
+  const q = $('file-filter').value.trim().toLowerCase();
+  const all = files.tree?.files ?? [];
+  const matches = q ? all.filter((f) => f.toLowerCase().includes(q)) : all;
+  const shown = matches.slice(0, 600);
+  $('file-list').replaceChildren(...shown.map((f) => {
+    const i = f.lastIndexOf('/');
+    return h('li', {}, h('button', { type: 'button', title: f, 'aria-current': files.open === f ? 'true' : 'false', onclick: () => openFile(f) },
+      i >= 0 ? h('span', { class: 'dir' }, f.slice(0, i + 1)) : null, f.slice(i + 1)));
+  }));
+  if (!shown.length) $('file-list').append(h('li', { class: 'note' }, q ? 'No matches.' : 'No files.'));
+  $('file-count').textContent = `${fmtNum(matches.length)} file(s)${matches.length > shown.length ? `, showing ${shown.length}` : ''}${files.tree?.truncated ? ' · list truncated' : ''}`;
+}
+
+async function openFile(path) {
+  files.open = path;
+  renderFileList();
+  $('file-name').textContent = path;
+  $('file-info').textContent = 'loading…';
+  try {
+    const f = await rpc.call('fs.read', { workspacePath: files.ws, path });
+    if (files.open !== path) return;
+    $('file-info').textContent = `${fmtNum(f.size)} bytes${f.truncated ? ' · truncated' : ''}`;
+    $('file-content').replaceChildren(...(f.binary ? [h('span', { class: 'note' }, 'Binary file not shown.')] : f.content.replace(/\n$/, '').split('\n').map((l) => h('span', { class: 'ln' }, l || ' '))));
+  } catch (err) { $('file-info').textContent = ''; $('file-content').replaceChildren(h('span', { class: 'form-error' }, err.message)); }
+}
+
+/* ---------------- terminal (F-TRM-1 v0) ---------------- */
+const term = { buffers: new Map(), runId: null, history: [], cursor: -1 };
+const termBuffer = (ws) => { if (!term.buffers.has(ws)) term.buffers.set(ws, []); return term.buffers.get(ws); };
+const TERM_MAX_LINES = 4000;
+
+function termAppend(ws, text, cls = '') {
+  const buf = termBuffer(ws);
+  buf.push({ text, cls });
+  if (buf.length > TERM_MAX_LINES) buf.splice(0, buf.length - TERM_MAX_LINES);
+  if (state.tab === 'terminal' && selectedWorkspace() === ws) {
+    const out = $('term-output');
+    const stick = out.scrollTop + out.clientHeight >= out.scrollHeight - 24;
+    out.append(h('span', { class: cls }, text));
+    if (stick) out.scrollTop = out.scrollHeight;
+  }
+}
+
+function renderTerminal() {
+  const ws = selectedWorkspace();
+  const out = $('term-output');
+  out.replaceChildren(...(ws ? termBuffer(ws) : []).map((c) => h('span', { class: c.cls }, c.text)));
+  if (!out.childNodes.length) out.append(h('span', { class: 'exit-ok' }, `Workspace: ${ws ?? '—'}\n`));
+  out.scrollTop = out.scrollHeight;
+  $('term-kill').disabled = !term.runId;
+  $('term-run').disabled = !!term.runId;
+}
+
+async function runCommand(command) {
+  const ws = selectedWorkspace();
+  if (!ws || !command || term.runId) return;
+  if (term.history[term.history.length - 1] !== command) term.history.push(command);
+  term.cursor = -1;
+  const runId = `run_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  term.runId = runId;
+  term.runWs = ws;
+  renderTerminal();
+  termAppend(ws, `$ ${command}\n`, 'cmd');
+  try {
+    const r = await rpc.call('terminal.run', { workspacePath: ws, command, runId });
+    const status = r.killed ? 'killed' : r.timedOut ? 'timed out' : `exit ${r.exitCode ?? r.signal}`;
+    termAppend(ws, `[${status} · ${r.durationMs} ms${r.truncated ? ' · output truncated' : ''}]\n`, r.exitCode === 0 ? 'exit-ok' : 'exit-bad');
+  } catch (err) { termAppend(ws, `[error: ${err.message}]\n`, 'exit-bad'); }
+  finally { term.runId = null; if (state.tab === 'terminal') renderTerminal(); }
+}
+
+rpc.onTerminal = (p) => {
+  if (p.runId !== term.runId || !term.runWs) return;
+  termAppend(term.runWs, p.text, p.stream === 'stderr' ? 'stderr' : '');
+};
+
 async function renderTab() {
   if (!state.selected) return;
   try {
@@ -249,6 +348,8 @@ async function renderTab() {
     else if (state.tab === 'diff') await renderDiff();
     else if (state.tab === 'gates') renderGates();
     else if (state.tab === 'artifacts') await renderArtifacts();
+    else if (state.tab === 'files') await renderFiles();
+    else if (state.tab === 'terminal') renderTerminal();
   } catch (err) { console.error('[helix] render failed', err); }
 }
 
@@ -372,7 +473,7 @@ function scheduleRefresh() {
   refreshTimer = setTimeout(() => {
     refreshTasks().catch(() => {});
     if (!state.selected) loadMonitor().catch(() => {});
-    else if (state.tab !== 'activity' && state.tab !== 'impact') renderTab();
+    else if (!['activity', 'impact', 'files', 'terminal'].includes(state.tab)) renderTab();
   }, 250);
 }
 
@@ -446,6 +547,25 @@ function bindUi() {
     try { await rpc.call('checkpoint.restore', { task: state.selected, checkpoint: cp }); await renderDiff(); }
     catch (err) { alert(err.message); }
   });
+  $('file-filter').addEventListener('input', () => renderFileList());
+  $('term-form').addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    const input = $('term-input');
+    const cmd = input.value.trim();
+    if (!cmd) return;
+    input.value = '';
+    runCommand(cmd);
+  });
+  $('term-input').addEventListener('keydown', (ev) => {
+    if (ev.key !== 'ArrowUp' && ev.key !== 'ArrowDown') return;
+    if (!term.history.length) return;
+    ev.preventDefault();
+    if (ev.key === 'ArrowUp') term.cursor = term.cursor < 0 ? term.history.length - 1 : Math.max(0, term.cursor - 1);
+    else term.cursor = term.cursor < 0 ? -1 : term.cursor + 1 >= term.history.length ? -1 : term.cursor + 1;
+    ev.currentTarget.value = term.cursor < 0 ? '' : term.history[term.cursor];
+  });
+  $('term-kill').addEventListener('click', () => { if (term.runId) rpc.call('terminal.kill', { runId: term.runId }); });
+  $('term-clear').addEventListener('click', () => { const ws = selectedWorkspace(); if (ws) term.buffers.set(ws, []); renderTerminal(); });
   $('impact-form').addEventListener('submit', (ev) => { ev.preventDefault(); renderImpact(String(new FormData(ev.currentTarget).get('target')).trim()); });
   $('token-form').addEventListener('submit', () => {
     sessionStorage.setItem('helix.token', String(new FormData($('token-form')).get('token')).trim());

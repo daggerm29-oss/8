@@ -7,9 +7,9 @@
 - Project: Helix
 - Current Phase: M1 — Core MVP (engine-side slice in progress)
 - Overall Completion: ~25% (M0 Verified; M1 ~73%: engine slice + test selection/baseline + web workbench v0 + activity monitor + MCP stdio/HTTP + MCP safety)
-- Current Status: M1 session 10 — F-UI-2 activity monitor v0 + gate panel selection/baseline details Tested (browser + live Gemini verified)
-- Last Updated: 2026-11-07 (session 10)
-- Current Development Branch: `helix/m1-session10` (base: `main` of github.com/daggerm29-oss/8)
+- Current Status: M1 session 11 — workbench Files view + Terminal tab (F-TRM-1 v0, non-PTY) Tested (browser + live Gemini verified); BUG-009 fixed
+- Last Updated: 2026-11-07 (session 11)
+- Current Development Branch: `helix/m1-session11` (base: `main` of github.com/daggerm29-oss/8)
 
 ## Phase Overview
 
@@ -81,7 +81,7 @@ Statuses: Not Started / In Progress / Implemented / Tested / Verified / Blocked 
 | F-PRV-3 | Runtime telemetry | Not Started | — | Arch §18.3 |
 | F-PRV-4 | Environment Snapshot (X1) | Not Started | — | Arch §18.4, §29.3 |
 | F-PRV-5 | Browser automation tools | Not Started | — | Arch §18.5, §30.2 |
-| F-TRM-1 | Integrated terminal | In Progress | sandbox.test | M0: non-PTY `run_shell` execution only; PTY terminal is M1. Arch §19.1–19.3 |
+| F-TRM-1 | Integrated terminal | In Progress | sandbox.test, workbench-fs.test; browser (session 11) | v0 (session 11): workbench Terminal tab → RPC `terminal.run` in a per-workspace contained sandbox (no network, scrubbed env), live `terminal.output` notifications, `terminal.kill`, history. Non-PTY (no interactive programs, no colors). PTY (node-pty or `script`) still pending. Arch §19.1–19.3 |
 | F-TRM-2 | Diagnostic parsers | Tested | m1.test (diagnostics) | tsc, node:test (TAP/spec), pytest, unittest, eslint (stylish), go, generic + Python traceback; RPC `diagnostics.parse`. LLM fallback extraction not yet. Arch §19.4 |
 | F-GIT-1 | Source control panel | Not Started | — | Arch §20.1–20.2, §5.2 |
 | F-GIT-2 | Shadow checkpoints | Tested | agent.test, m1.test (restore) | Pre-images per write; `restore(task, cp?)` atomic temp+rename, deletes agent-created files, saves pre-restore content (undoable); RPC + CLI. shadow.git + 3-way merge for user edits pending. Arch §20.3 |
@@ -108,7 +108,7 @@ Statuses: Not Started / In Progress / Implemented / Tested / Verified / Blocked 
 | F-REV-1 | Review agent | Not Started | — | Arch §10.2 |
 | F-REV-2 | Security analysis | Not Started | — | Arch §25.10 |
 | F-REV-3 | Dependency risk gate (X17) | Not Started | — | Arch §16.7 |
-| F-UI-1 | Workbench | Tested | ui.test (2); browser + live Gemini run (session 6) | v0 web workbench served by the Engine (`packages/engine/ui/`, no build): task create/list, live event stream, transcript, diff per checkpoint + restore, gates, approvals, impact explorer, artifacts, ledger stats. Fragment token, Host/Origin loopback check, CSP. No editor/terminal/Electron yet. Arch §5.1–5.3 |
+| F-UI-1 | Workbench | Tested | ui.test (2); browser + live Gemini run (session 6) | v0 web workbench served by the Engine (`packages/engine/ui/`, no build): task create/list, live event stream, transcript, diff per checkpoint + restore, gates, approvals, impact explorer, artifacts, ledger stats, read-only Files view (`fs.tree`/`fs.read`, secrets filtered, confined) and Terminal tab (session 11). Fragment token, Host/Origin loopback check, CSP. No editor (edit/save) or Electron yet. Arch §5.1–5.3 |
 | F-UI-2 | Agent activity monitor | Tested | ui.test (task.monitor); browser + live Gemini run (session 10) | v0: RPC `task.monitor` (active first; status, running, elapsed, ledger, current step, last tool call, pending approvals, checkpoint count + last checkpoint files); workbench Monitor view (default with no task selected): summary stats, live table, per-task Cancel/Resume, batch approve/deny of pending approvals. Not yet: Agent→Step→ToolCall tree, pause, fork, change model, held leases (no multi-agent yet). Arch §5.4 |
 | F-UI-3 | Intelligence Explorer | Not Started | — | Arch §5.5 |
 | F-UI-4 | Artifacts | Not Started | — | Arch §5.6 |
@@ -198,6 +198,7 @@ Statuses: Not Started / In Progress / Implemented / Tested / Verified / Blocked 
 | mcp safety | wrapUntrusted escaping, stableJson, taint verdicts; read-only cache, truncation + mcp_read_result paging, provenance; engine taint e2e | Test passed (3/3) | `mcp-safety.test.ts`, session 8 |
 | mcp http + tool search | globMatch/toolPermitted/searchTools/activatedTools; streamable HTTP (session id, SSE with interleaved notification + server request, auth header, DELETE), deny filter, alwaysAllow persist + Plan Mode still denies; tool_search hides then activates tools | Test passed (3/3) | `mcp-http.test.ts`, session 7 |
 | workbench | unifiedDiff cases; UI served without token, foreign Host/Origin 403, token-gated WS, events over socket, checkpoint.diff whole/partial/after-restore, workspace/approval list | Test passed (2/2) | `ui.test.ts`, session 6 |
+| workbench files + terminal | fs.tree/fs.read filters + confinement, terminal.run streaming/exit/kill, unknown workspace rejected, UTF-8 not truncated | Test passed (2/2) | `workbench-fs.test.ts`, session 11 |
 | M1 live | ts-inventory fix + Plan Mode on js-calc with gemini-3.5-flash-lite | Verified | session 4 CLI runs (see Completed Work Log) |
 
 ## Session 4 (M1 start) — live plan
@@ -271,16 +272,30 @@ Branch: `helix/m1-session10` from `main` (session 9 merged as PR #6).
 - [x] S10-2 (DONE, code) Gate panel shows `selectedTests`, changed files, pre-existing/new counts, `preexistingOnly`, and the `verify.baseline` run.
 - [x] S10-3 DONE: engine 59/59, CLI 2/2, ui.test 2/2 incl. task.monitor assertions; tsc clean. Live: gemini-3.5-flash-lite task started from the workbench on a js-calc copy with an always-red unrelated test + `.helix/verify.json` (`baseline:true`, `node --test {{tests}}`): 7 calls, 16,458 in / 221 out, monitor showed running → done live; Gates tab showed baseline (unit failed, 2 diagnostics), selected tests `test/calc.test.js` only, changed `src/calc.js`, 0 new / 0 pre-existing, overall passed attempt 1. Browser fix: monitor relative times froze after tasks finished (tick now re-renders whenever visible). Note: ledger cost shows $0.0000 for gemini-3.5-flash-lite (no price entry) — pre-existing.
 
+## Session 11 (M1) — live plan
+
+Branch: `helix/m1-session11` from `main` (session 10 merged as PR #7).
+Order (tick when done; next session resumes at the first unticked item):
+- [x] S11-1 (DONE, code; tsc clean) `engine/src/workspace/files.ts`; `ExecOptions.onOutput`; Engine `knownWorkspace()` (registered workspaces only) + per-workspace terminal `LocalSandbox` destroyed on close; `terminal.kill {runId}`; runs aborted when the socket closes. RPC
+- [x] S11-2 (DONE, code) Files + Terminal tabs in `ui/{index.html,app.js,app.css}`.
+- [x] S11-3 Tests: `test/workbench-fs.test.ts` 2/2 (tree filters secrets/node_modules, read confinement incl. symlink escape + /etc/passwd + .env + byte cap, binary detect; WS: unknown workspace rejected, streamed stdout/stderr, exit code, kill, multi-byte not truncated). Browser + live: gemini-3.5-flash-lite task started from the workbench fixed js-calc copy (6 calls, 11,195 in / 180 out, `npm test --silent` passed attempt 1); Files tab listed 3 files and showed src/calc.js with line numbers; Terminal ran `npm test` (4 pass streamed), stderr in amber, `curl` failed DNS (sandbox has no network, as designed). Browser check found BUG-009 (below), fixed.
+- [x] S11-4 DONE: engine 61/61 (incl. workbench-fs 2/2 + UTF-8 truncation regression), CLI 2/2, tsc clean. Pushed to `helix/m1-session11`. The `helix-workbench` service (port 4100) was re-registered in this VM.
+- BUG-009 (fixed): `LocalSandbox.exec` set `truncated:true` for any multi-byte UTF-8 output (compared byte length to string length). Also affected agent `run_shell` summaries.
+- Old S11-1 text: `fs.tree {workspace}` (git ls-files / walk, secret files filtered, cap 5000) + `fs.read {workspace, path}` (confined to workspace, 512 KB cap, binary detection) + `terminal.run {workspace, command}` (runs in a LocalSandbox for the workspace, streams `terminal.output` events, returns exit code; policy class exec, dev UI only).
+- [ ] S11-2 Workbench: Files tab (tree + read-only viewer with line numbers) and Terminal tab (command input, streamed output, history).
+- [ ] S11-3 Tests (ui.test: fs.tree/fs.read confinement, terminal.run output + exit) + browser check; push.
+- Decision: gemini-3.5-flash-lite pricing stays `null` (no verified published price; do not invent one).
+
 ## Next Actions
 
-Resume here for **M1 — Core MVP** (session 11). Session 10 shipped the F-UI-2 activity monitor v0 and gate panel details. Suggested start: item 2 (PTY terminal panel F-TRM-1, file view), or add a price entry for gemini-3.5-flash-lite. Next, in order:
+Resume here for **M1 — Core MVP** (session 12). Session 11 shipped the workbench Files view + non-PTY Terminal tab. Suggested start: item 2 (F-UI-2 step/tool-call tree, or PTY), or item 4 (F-CTX-2 compaction). Pricing for gemini-3.5-flash-lite stays `null` until a verified published price exists. Next, in order:
 1. Remaining MCP (lower priority): MCP resources/prompts, OAuth for remote HTTP servers (F-AUTH-2), JSONPath projection of large results, workbench badge for tainted tasks.
-2. Workbench follow-ups: Monaco/CodeMirror file view, PTY terminal panel (F-TRM-1), Electron shell + OS keychain (IMPL-ADR-010); F-UI-2 extensions (step/tool-call tree, pause, fork from checkpoint, change model).
+2. Workbench follow-ups: file editing/save (through checkpoints) + syntax highlighting, PTY for the terminal (interactive programs, colors), Electron shell + OS keychain (IMPL-ADR-010); F-UI-2 extensions (step/tool-call tree, pause, fork from checkpoint, change model).
 3. Polish: `--verify auto` could emit `{{tests}}` gates for known runners (node --test, pytest, go test pkg selection); graph evidence in Plan Mode `affectedFiles`; tree-sitter extractor swap; gate result cache by (gate, inputs hash) (§9.6).
 4. F-CTX-2 compaction, F-MDL-4 role-based models, F-SBX-3 egress proxy, F-PRV-1/2 preview.
 
 Workbench: `node --disable-warning=ExperimentalWarning packages/engine/src/main.ts --ui` prints `http://127.0.0.1:<port>/#token=…`. In the v0 sandbox the registered service `helix-workbench` runs it on port 4100 with `--host 0.0.0.0 --allow-host '*' --no-auth` (dev preview only; sources `.env.development.local` for `GEMINI_API`).
-How to run: `pnpm --filter @helix/engine test` (59 tests), `pnpm --filter @helix/cli test`, `pnpm --filter @helix/provider-conformance test`, `npx tsc -p tsconfig.helix.json`.
+How to run: `pnpm --filter @helix/engine test` (61 tests), `pnpm --filter @helix/cli test`, `pnpm --filter @helix/provider-conformance test`, `npx tsc -p tsconfig.helix.json`.
 Live: `set -a; . ./.env.development.local; set +a; node --disable-warning=ExperimentalWarning evals/m0-exit.ts --model gemini-3.5-flash-lite` (key env var: `GEMINI_API`).
 MCP: `helix mcp add <name> [--trusted] -- <cmd...>` or `helix mcp add <name> --url <url> --header K=V`; `helix mcp list`; `helix mcp remove <name>`; mcp.json keys `allowTools`, `denyTools`, `alwaysAllow`, top-level `toolSearchThreshold`.
 CLI: `apps/cli/bin/helix -p "fix the failing test" -C <repo> --verify "<test cmd>" -m gemini-3.5-flash-lite`; `--plan` for Plan Mode; `helix search "<q>" -C <repo>`; `helix symbols <name> -C <repo>`; `helix impact <symbol|file> -C <repo>`; `--verify auto` or `.helix/verify.json` for gates; `helix checkpoints|restore <task>`.
