@@ -7,16 +7,16 @@
 - Project: Helix
 - Current Phase: M1 — Core MVP (engine-side slice in progress)
 - Overall Completion: ~25% (M0 Verified; **M1 = 31/76 features Tested/Verified (41%)**, 3 In Progress, 42 Not Started. Counted from the Feature Status table: Tested+Verified ÷ total — recount every session, never estimate)
-- Current Status: M1 session 15 — workbench Steps tab (Agent→Step→ToolCall tree, RPC `task.steps`) Tested (browser + live Gemini)
-- Last Updated: 2026-11-07 (session 15)
-- Current Development Branch: `helix/m1-session15-steps` (note: `origin/helix/m1-session15` holds an earlier parallel attempt, commit d1396d6 `task.tree` — pick one PR, do not merge both) (base: `main` of github.com/daggerm29-oss/8)
+- Current Status: M1 session 16 — interactive PTY shell in the workbench (F-TRM-1 still In Progress: history/exit indexing pending)
+- Last Updated: 2026-11-07 (session 16)
+- Current Development Branch: `helix/m1-session16`
 
 ## Phase Overview
 
 | Phase | Name | Status | Completion |
 |---|---|---|---|
 | M0 | Engineering Foundations | Verified (exit criteria met live, 2026-11-06) | 100% |
-| M1 | Core MVP | In Progress | 41% (31/76). Biggest gaps: preview + CDP + browser tools (F-PRV-1..5), egress proxy (F-SBX-3), visual/snapshot (F-VIS-*), Plan Mode/Explore subagent (F-ORC-*), review (F-REV-*), Git panel (F-GIT-1/3/4/5), desktop shell (F-UI-3/4), PTY terminal (F-TRM-1) |
+| M1 | Core MVP | In Progress | 41% (31/76). Biggest gaps: preview + CDP + browser tools (F-PRV-1..5), egress proxy (F-SBX-3), visual/snapshot (F-VIS-*), Plan Mode/Explore subagent (F-ORC-*), review (F-REV-*), Git panel (F-GIT-1/3/4/5), desktop shell (F-UI-3/4), terminal history indexing (F-TRM-1) |
 | M2 | Advanced Intelligence | Not Started | 0% |
 | M3 | Multi-Agent Intelligence | Not Started | 0% |
 | M4 | Team and Ecosystem | Not Started | 0% |
@@ -81,7 +81,7 @@ Statuses: Not Started / In Progress / Implemented / Tested / Verified / Blocked 
 | F-PRV-3 | Runtime telemetry | Not Started | — | Arch §18.3 |
 | F-PRV-4 | Environment Snapshot (X1) | Not Started | — | Arch §18.4, §29.3 |
 | F-PRV-5 | Browser automation tools | Not Started | — | Arch §18.5, §30.2 |
-| F-TRM-1 | Integrated terminal | In Progress | sandbox.test, workbench-fs.test; browser (session 11) | v0 (session 11): workbench Terminal tab → RPC `terminal.run` in a per-workspace contained sandbox (no network, scrubbed env), live `terminal.output` notifications, `terminal.kill`, history. Non-PTY (no interactive programs, no colors). PTY (node-pty or `script`) still pending. Arch §19.1–19.3 |
+| F-TRM-1 | Integrated terminal | In Progress | sandbox.test, workbench-fs.test (PTY: tty/TERM/size, Ctrl-C, exit code); browser (sessions 11, 16) | Run-command panel (`terminal.run`, non-PTY) + session 16 interactive PTY shell (`pty.open/write/kill`, xterm.js, colors, Ctrl-C, no network, fs-contained). Agent and user shells are separate processes. Remaining for AC: index PTY command history + exit codes; live resize (needs a PTY helper other than `script`). Arch §19.1–19.3 |
 | F-TRM-2 | Diagnostic parsers | Tested | m1.test (diagnostics) | tsc, node:test (TAP/spec), pytest, unittest, eslint (stylish), go, generic + Python traceback; RPC `diagnostics.parse`. LLM fallback extraction not yet. Arch §19.4 |
 | F-GIT-1 | Source control panel | Not Started | — | Arch §20.1–20.2, §5.2 |
 | F-GIT-2 | Shadow checkpoints | Tested | agent.test, m1.test (restore) | Pre-images per write; `restore(task, cp?)` atomic temp+rename, deletes agent-created files, saves pre-restore content (undoable); RPC + CLI. shadow.git + 3-way merge for user edits pending. Arch §20.3 |
@@ -332,7 +332,22 @@ Branch: `helix/m1-session16` (from `helix/m1-progress-fix`, which is pushed but 
 - [x] S16-1 F-TRM-1 PTY backend: `LocalSandbox.pty()` — util-linux `script -qfec` allocates a real PTY on the host around the same contained `bash -i` (user+net+mount ns, chroot, scrubbed env, TERM=xterm-256color). RPCs `pty.open {workspacePath, cols, rows}` / `pty.write {ptyId, data}` / `pty.kill {ptyId}`; notifications `pty.output {ptyId, data}`, `pty.exit {ptyId, exitCode}`; max 4 per connection, killed on disconnect. No PID namespace for PTYs (as ns init the shell can't own the PTY foreground group → Ctrl-C lost; verified by experiment); /proc stays unmounted.
 - [x] S16-2 Workbench Terminal tab: "Interactive shell" (xterm.js 5.5 served from `/vendor/xterm.{js,css}` out of node_modules; CSP style-src now allows 'unsafe-inline' for xterm's injected styles, script-src still 'self'). Existing run-command panel kept.
 - [x] S16-3 workbench-fs.test PTY assertions: tty + TERM + `stty size` = 20 90, Ctrl-C interrupts `sleep 30`, `exit 5` → pty.exit 5, write after exit rejects. workbench-fs + ui: 5/5 pass; tsc clean.
-- [ ] S16-4 full engine suite, browser check, progress/feature table, push.
+- [x] S16-4 browser (live workbench, task workspace /tmp/s15-calc-*): shell opens, ANSI green renders, `sleep 20` + Ctrl-C → `^C` + prompt, `curl example.com` → could not resolve (no network), cols fitted to panel (70×24, no horizontal overflow). Full engine suite `pnpm test`: **69/69 pass** (run before the UI-only column-fit tweak); tsc clean. Files: `packages/engine/src/sandbox/sandbox.ts` (pty), `src/engine.ts` (pty RPCs, vendor assets, CSP), `packages/protocol/src/index.ts`, `ui/{index.html,app.js,app.css}`, `test/workbench-fs.test.ts`, `packages/engine/package.json` (+@xterm/xterm), `pnpm-lock.yaml`.
+
+## NEXT SESSION — START HERE
+
+- **Milestone:** M1 — Core MVP. Completion **31/76 features Tested/Verified (41%)**, counted from the Feature Status table (recount, never estimate).
+- **Branches:** `helix/m1-session16` (this session; based on `helix/m1-progress-fix`). Neither is merged into `main` yet: open one PR from `helix/m1-session16` (it contains the progress fix). `main` = PR #12 (session 15).
+- **Exact next task: F-SBX-3 Network egress control** (Must; plan.md F-SBX-3, architecture.md §16.5, component table "Egress Proxy").
+  - Today sandboxes have **no network at all** (`unshare --net`, see `packages/engine/src/sandbox/sandbox.ts`), so installs/fetches fail. Goal: an Engine-hosted HTTP + CONNECT proxy (`packages/engine/src/sandbox/egress.ts`, node:http/net only, no TLS termination yet) with a per-workspace domain allowlist (default: registry.npmjs.org, pypi.org, files.pythonhosted.org, github.com, codeload.github.com).
+  - Reaching it from inside `unshare --net`: bridge via a Unix socket bind-mounted into the sandbox + a tiny in-sandbox TCP→unix forwarder on 127.0.0.1 (e.g. `node -e` or `socat` if present), then set `HTTP(S)_PROXY`/`npm_config_proxy` in `LocalSandbox.env()`. Keep `--net` so direct sockets stay impossible (that is the AC "direct-socket bypass attempts fail").
+  - Denied host → engine event `egress.denied {workspace, host}` + workbench prompt "Allow host" → RPC `egress.allow {workspacePath, host}` persisted in SQLite (new migration).
+  - **Acceptance:** allowlisted `curl https://registry.npmjs.org/` succeeds through the proxy in the sandbox; non-allowlisted host is denied and reported; `curl --noproxy '*'` / raw socket to a public IP fails; tests in a new `test/egress.test.ts`; full engine suite green; tsc clean.
+- **Then:** F-PRV-1/2 preview (dev server in sandbox + preview URL, needs egress for installs), then F-TRM-1 remainder (index PTY history/exit codes).
+- **Tests to run:** `npx tsc -p tsconfig.helix.json`; `cd packages/engine && pnpm test` (full suite, ~5–8 min, use timeout ≥ 600 s); focused: `node --disable-warning=ExperimentalWarning --test --test-concurrency=1 test/<file>.test.ts`.
+- **Run the workbench:** registered service `helix-workbench` (port 4100): `bash -lc "set -a; . ./.env.development.local; set +a; exec node --disable-warning=ExperimentalWarning packages/engine/src/main.ts --ws 4100 --ui --host 0.0.0.0 --allow-host '*' --no-auth"`. Live provider key: env `GEMINI_API` (model `gemini-3.5-flash-lite`).
+- **Known limitations / tech debt (session 16):** PTY has no PID namespace (Ctrl-C needs the shell to own the PTY foreground group, impossible as ns init); /proc is not mounted so host PIDs are invisible, but a same-uid host PID could be signalled if guessed. PTY size fixed at open. xterm needs CSP `style-src 'unsafe-inline'` (script-src still `'self'`).
+- **Blockers:** none. M1 exit criteria also need evals + a 10-user usability study (humans required).
 
 ## Next Actions
 

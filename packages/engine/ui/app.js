@@ -508,8 +508,9 @@ async function runCommand(command) {
 
 /* Interactive PTY shell (F-TRM-1): one per workspace, xterm.js view, input goes to pty.write. */
 const shells = new Map(); // ws -> { ptyId, xterm, el, exited }
-const PTY_COLS = 110;
 const PTY_ROWS = 24;
+/* Columns fitted to the panel at open (xterm char width ≈ 0.6 × 13px font); no live resize through `script`. */
+const ptyCols = () => Math.max(40, Math.min(200, Math.floor(($('pty-host').parentElement.clientWidth - 24) / 7.9)));
 
 function renderShell() {
   const ws = selectedWorkspace();
@@ -529,13 +530,14 @@ async function openShell() {
   if (!ws) return;
   shells.get(ws)?.xterm.dispose();
   const el = h('div', { class: 'pty-view' });
-  const xterm = new window.Terminal({ cols: PTY_COLS, rows: PTY_ROWS, convertEol: false, cursorBlink: true, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 13, theme: { background: '#0f1115', foreground: '#e6e6e6' } });
+  const cols = ptyCols();
+  const xterm = new window.Terminal({ cols, rows: PTY_ROWS, convertEol: false, cursorBlink: true, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 13, theme: { background: '#0f1115', foreground: '#e6e6e6' } });
   const s = { ptyId: null, xterm, el, exited: false, exitCode: null };
   shells.set(ws, s);
   renderShell();
   xterm.open(el);
   try {
-    const r = await rpc.call('pty.open', { workspacePath: ws, cols: PTY_COLS, rows: PTY_ROWS });
+    const r = await rpc.call('pty.open', { workspacePath: ws, cols, rows: PTY_ROWS });
     s.ptyId = r.ptyId;
     xterm.onData((data) => { if (!s.exited) rpc.call('pty.write', { ptyId: s.ptyId, data }).catch(() => {}); });
   } catch (err) {
