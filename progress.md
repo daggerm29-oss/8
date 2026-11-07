@@ -6,10 +6,10 @@
 
 - Project: Helix
 - Current Phase: M1 — Core MVP (engine-side slice in progress)
-- Overall Completion: ~24% (M0 Verified; M1 ~65%: engine slice + web workbench v0 + MCP stdio/HTTP + MCP safety)
-- Current Status: M1 session 8 — F-MCP-4 result cache/truncation + F-MCP-5 provenance/taint Tested (live Gemini: tainted follow-up denied); ISSUE-006 fixed
-- Last Updated: 2026-11-06 (session 8)
-- Current Development Branch: `helix/m1-session8` (contains session 7; merge this one PR) (base: `main` of github.com/daggerm29-oss/8)
+- Overall Completion: ~24% (M0 Verified; M1 ~70%: engine slice + test selection/baseline + web workbench v0 + MCP stdio/HTTP + MCP safety)
+- Current Status: M1 session 9 — F-TST-1 change-based test selection + baseline gate run Tested (live Gemini verified)
+- Last Updated: 2026-11-07 (session 9)
+- Current Development Branch: `helix/m1-session9` (base: `main` of github.com/daggerm29-oss/8)
 
 ## Phase Overview
 
@@ -64,7 +64,7 @@ Statuses: Not Started / In Progress / Implemented / Tested / Verified / Blocked 
 | F-AGT-1 | Primary agent loop | Tested | agent.test (7), cli.test (2) | M0 scope: transcript-derived state machine, per-step persistence, task-level backoff on 503/429. Arch §9.1–9.3, §30.1 |
 | F-AGT-2 | Plan Mode | Verified | m1.test (plan mode); live gemini-3.5-flash-lite plan task | Write tools absent from the tool list + policy deny; `submit_plan` → plan artifact with `unverifiedPaths`; CLI `--plan`, `helix plan`. No graph evidence yet (F-IDX-3). Arch §9.4 |
 | F-AGT-3 | Self-correction loop | Tested | agent.test, m1.test (diagnostics retry) | Retry prompt = structured diagnostics + 40-line tail (no full logs), max 3 attempts. Minimal-diff-since-green not yet. Arch §9.5 |
-| F-AGT-4 | Verification gates | Tested | agent.test, gates.test (3) | Configurable gates: `.helix/verify.json` or `--verify auto` (inferred from package.json/tsconfig/go.mod/Cargo.toml/python) or a single `--verify cmd`; required vs optional, per-gate timeout + parser, all gates each attempt, `verify.gate` events. No baseline (pre-existing failure) detection or change-based test selection yet. Arch §9.6 |
+| F-AGT-4 | Verification gates | Tested | agent.test, gates.test (3) | Configurable gates: `.helix/verify.json` or `--verify auto` (inferred from package.json/tsconfig/go.mod/Cargo.toml/python) or a single `--verify cmd`; required vs optional, per-gate timeout + parser, all gates each attempt, `verify.gate` events. Baseline (session 9): `"baseline": true` runs gates before the first edit; diagnostics tagged `[pre-existing]`/`[new]` (line-independent key); `allowPreexisting` gates pass when only old diagnostics remain. Arch §9.6 |
 | F-AGT-5 | Skills and hooks | Not Started | — | Arch §9.7 |
 | F-ORC-1 | Subagents | Not Started | — | Arch §10.1–10.2 |
 | F-ORC-2 | Task DAG scheduler | Not Started | — | Arch §10.3 |
@@ -101,7 +101,7 @@ Statuses: Not Started / In Progress / Implemented / Tested / Verified / Blocked 
 | F-VIS-2 | Select-and-instruct | Not Started | — | Arch §18.6 |
 | F-VIS-3 | Visual regression (X10) | Not Started | — | Arch §18.7 |
 | F-VIS-4 | UI consistency analysis | Not Started | — | Arch §18.7 |
-| F-TST-1 | Change-based test selection | Not Started | — | Arch §11.5, §9.6 |
+| F-TST-1 | Change-based test selection | Tested | selection.test (5); live gemini-3.5-flash-lite (session 9) | `{{tests}}` in a gate command → changed test files ∪ `coveringTests(changed)` from checkpoint changeset (index refreshed first), shell-quoted; empty → `fallback` or full run; `verify.gate.selectedTests`. Import-edge heuristic only (no call-graph/transitive selection yet). Arch §11.5, §9.6 |
 | F-TST-2 | Test generation | Not Started | — | Arch §9.6 |
 | F-TST-3 | Browser E2E from recordings (X16) | Not Started | — | Arch §18.5 |
 | F-TST-4 | Bug auto-reproduction (X11) | Not Started | — | Arch §9.5 |
@@ -194,6 +194,7 @@ Statuses: Not Started / In Progress / Implemented / Tested / Verified / Blocked 
 | verification gates | precedence, inference, validation, multi-gate runtime, optional gates, invalid config | Test passed (3/3) | `gates.test.ts`, session 5 |
 | code graph | refs extraction, transitive impact, import scoping, file impact, tool output | Test passed (2/2) | `graph.test.ts`, session 5 |
 | mcp | sanitizeSchema/exposedName; manager connect + 2-page tools/list, call, isError, timeout, broken/disabled servers, trust classes, no env leak; engine headless deny vs `tool:` preapprove | Test passed (3/3) | `mcp.test.ts`, session 6 |
+| test selection + baseline | expand/quote/fallback, diagnosticKey, config; selection skips unrelated failing test; fallback on empty selection; baseline pre-existing tagging + allowPreexisting; new diagnostics block | Test passed (5/5) | `selection.test.ts`, session 9 |
 | mcp safety | wrapUntrusted escaping, stableJson, taint verdicts; read-only cache, truncation + mcp_read_result paging, provenance; engine taint e2e | Test passed (3/3) | `mcp-safety.test.ts`, session 8 |
 | mcp http + tool search | globMatch/toolPermitted/searchTools/activatedTools; streamable HTTP (session id, SSE with interleaved notification + server request, auth header, DELETE), deny filter, alwaysAllow persist + Plan Mode still denies; tool_search hides then activates tools | Test passed (3/3) | `mcp-http.test.ts`, session 7 |
 | workbench | unifiedDiff cases; UI served without token, foreign Host/Origin 403, token-gated WS, events over socket, checkpoint.diff whole/partial/after-restore, workspace/approval list | Test passed (2/2) | `ui.test.ts`, session 6 |
@@ -253,16 +254,26 @@ Branch: `helix/m1-session8` from `helix/m1-session7` (session 7 not yet merged w
 - [x] S8-2 F-MCP-5: untrusted MCP output wrapped in `<untrusted-tool-output source=...>` (closing tag escaped), provenance `{source:'mcp:s/t', trust, taint}` stored on the tool_result; system prompt rule; taint derived from transcript → network/destructive actions that would be auto-allowed (class preapproval / alwaysAllow) become `ask` (headless: deny) unless explicitly `--allow tool:<name>`.
 - [x] S8-3 `test/mcp-safety.test.ts` 3/3 (wrap/escape, stableJson, taint matrix; cache hits/misses, no caching of record/errors, truncation + paging + id validation, provenance; engine e2e: untrusted read then preapproved `network` record denied, marker untouched, prompt rule + wrapped content sent to the model); engine 54/54, CLI 2/2, tsc clean. Live gemini-3.5-flash-lite with `--allow network`: echo ok, record denied by taint, marker untouched. Also fixed ISSUE-006 + CLI EPIPE (verified live: `context.composed` line now printed).
 
+## Session 9 (M1) — live plan
+
+Branch: `helix/m1-session9` from `main` (session 8 merged as PR #5).
+Order (tick when done; next session resumes at the first unticked item):
+- [x] S9-1 (DONE, code written; selection.test 5/5) F-TST-1 change-based test selection: gate command may contain `{{tests}}`; filled with shell-quoted test files = changed test files ∪ `index.coveringTests(changed file)` for the task's changeset (paths from `checkpoints`); empty selection → gate `fallback` command, else `{{tests}}` removed (full run). `verify.gate` event carries `selectedTests`. Code: `verify/gates.ts` (`expandGateCommand`), `agent/runtime.ts#verify`.
+- [x] S9-2 (DONE, selection.test) F-AGT-4 baseline: `.helix/verify.json` top-level `"baseline": true` (or task `baseline`) runs gates once before the first model turn → `baseline` artifact `{gates:[{name, passed, keys[]}]}` (key = file + normalized message, no line numbers). Retry prompt tags diagnostics `[pre-existing]`/`[new]`; gate `allowPreexisting: true` → a failure with only pre-existing diagnostics does not block. Skipped when the task already has checkpoints (resume after edits).
+- [x] S9-3 (DONE) `test/selection.test.ts` 5/5 (expand/quote/fallback/diagnosticKey/config units; e2e: unrelated failing test skipped by selection; empty selection → fallback; baseline tags `[pre-existing]` and tolerates old lint debt; new diagnostic still blocks); engine 59/59, CLI 2/2, tsc clean. Live gemini-3.5-flash-lite on js-calc + always-red `test/unrelated.test.js` with `node --test {{tests}}` + `baseline:true`: fixed subtract, gate ran only `test/calc.test.js`, passed attempt 1 (9 calls, 22994 in / 301 out). Pushed to `helix/m1-session9`.
+- Config example: `{"baseline": true, "gates": [{"name":"unit","kind":"test","command":"node --test {{tests}}","fallback":"npm test"}, {"name":"lint","kind":"lint","command":"npm run -s lint","allowPreexisting":true}]}`.
+- Runtime API added: `runtime.changeset(task)`, `runtime.selectTests(task, root, index)`; events `verify.baseline`, `verify.gate.{selectedTests, changedFiles, preexisting, new}`, `verify.result.gates[].preexistingOnly`.
+
 ## Next Actions
 
-Resume here for **M1 — Core MVP** (session 9). Session 8 shipped F-MCP-4/5 + ISSUE-006 (see Session 8 list). Suggested start: item 2 (F-UI-2 activity monitor / PTY terminal) or item 3 (F-TST-1 change-based test selection). Next, in order:
+Resume here for **M1 — Core MVP** (session 10). Session 9 shipped F-TST-1 v0 + baseline gate run. Suggested start: item 2 (F-UI-2 activity monitor / PTY terminal). Next, in order:
 1. Remaining MCP (lower priority): MCP resources/prompts, OAuth for remote HTTP servers (F-AUTH-2), JSONPath projection of large results, workbench badge for tainted tasks.
-2. Workbench follow-ups: F-UI-2 agent activity monitor (multi-task), Monaco/CodeMirror file view, PTY terminal panel (F-TRM-1), Electron shell + OS keychain (IMPL-ADR-010).
-3. Polish of priorities 2-3: baseline gate run (pre-existing failures), F-TST-1 change-based test selection from `impact().tests`, graph evidence in Plan Mode `affectedFiles`, tree-sitter extractor swap.
+2. Workbench follow-ups: F-UI-2 agent activity monitor (multi-task), Monaco/CodeMirror file view, PTY terminal panel (F-TRM-1), Electron shell + OS keychain (IMPL-ADR-010). Also show `selectedTests` / pre-existing counts in the workbench gate panel.
+3. Polish: `--verify auto` could emit `{{tests}}` gates for known runners (node --test, pytest, go test pkg selection); graph evidence in Plan Mode `affectedFiles`; tree-sitter extractor swap; gate result cache by (gate, inputs hash) (§9.6).
 4. F-CTX-2 compaction, F-MDL-4 role-based models, F-SBX-3 egress proxy, F-PRV-1/2 preview.
 
 Workbench: `node --disable-warning=ExperimentalWarning packages/engine/src/main.ts --ui` prints `http://127.0.0.1:<port>/#token=…`. In the v0 sandbox the registered service `helix-workbench` runs it on port 4100 with `--host 0.0.0.0 --allow-host '*' --no-auth` (dev preview only; sources `.env.development.local` for `GEMINI_API`).
-How to run: `pnpm --filter @helix/engine test` (54 tests), `pnpm --filter @helix/cli test`, `pnpm --filter @helix/provider-conformance test`, `npx tsc -p tsconfig.helix.json`.
+How to run: `pnpm --filter @helix/engine test` (59 tests), `pnpm --filter @helix/cli test`, `pnpm --filter @helix/provider-conformance test`, `npx tsc -p tsconfig.helix.json`.
 Live: `set -a; . ./.env.development.local; set +a; node --disable-warning=ExperimentalWarning evals/m0-exit.ts --model gemini-3.5-flash-lite` (key env var: `GEMINI_API`).
 MCP: `helix mcp add <name> [--trusted] -- <cmd...>` or `helix mcp add <name> --url <url> --header K=V`; `helix mcp list`; `helix mcp remove <name>`; mcp.json keys `allowTools`, `denyTools`, `alwaysAllow`, top-level `toolSearchThreshold`.
 CLI: `apps/cli/bin/helix -p "fix the failing test" -C <repo> --verify "<test cmd>" -m gemini-3.5-flash-lite`; `--plan` for Plan Mode; `helix search "<q>" -C <repo>`; `helix symbols <name> -C <repo>`; `helix impact <symbol|file> -C <repo>`; `--verify auto` or `.helix/verify.json` for gates; `helix checkpoints|restore <task>`.

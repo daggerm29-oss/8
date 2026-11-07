@@ -5,7 +5,10 @@ import { WorkspaceIndex } from '../index/index.ts';
 import { loadInstructions } from '../context/instructions.ts';
 import { assembleContext, type ComposedContext } from '../context/assembler.ts';
 import { formatDiagnostics, parseDiagnostics, type Diagnostic } from '../diagnostics/parsers.ts';
-import { describeGates, resolveGates, type Gate } from '../verify/gates.ts';
+import { describeGates, diagnosticKey, expandGateCommand, resolveGates, TESTS_PLACEHOLDER, type Gate } from '../verify/gates.ts';
+import { isTestPath } from '../index/extract.ts';
+
+interface BaselineArtifact { gates: Array<{ name: string; command: string; passed: boolean; keys: string[] }> }
 import { ProviderError, type Message, type Part, type TaskCreateParams, type TaskStatus, type TaskSummary } from '@helix/protocol';
 import type { Db } from '../storage/db.ts';
 import { json, parseJson } from '../storage/db.ts';
@@ -296,6 +299,7 @@ export class TaskRuntime {
     const index = this.o.indexing === false ? undefined : new WorkspaceIndex(this.o.db, initial.ws, root);
     try {
       const context = this.composeContext(initial, root, index);
+      await this.baseline(initial, sandbox, signal);
       while (!signal.aborted) {
         const t = this.row(id);
         const messages = this.transcript(id);
@@ -304,7 +308,7 @@ export class TaskRuntime {
         if (pending.length) {
           await this.runTools(t, pending, sandbox, signal, index);
         } else if (last?.role === 'assistant') {
-          if (await this.verify(t, last, sandbox, signal)) return;
+          if (await this.verify(t, last, sandbox, signal, index)) return;
         } else {
           if (t.step_count >= t.max_steps) {
             this.setStatus(id, 'failed', { error: `step limit reached (${t.max_steps})` });
@@ -540,8 +544,62 @@ export class TaskRuntime {
     }
   }
 
+  /** Workspace-relative paths the task has written, oldest first (from shadow checkpoints). */
+  changeset(task: string): string[] {
+    const paths = new Set<string>();
+    for (const r of this.o.db.all<{ files_json: string }>('SELECT files_json FROM checkpoints WHERE task = ? ORDER BY at, id', task)) {
+      for (const f of parseJson<Array<{ path: string }>>(r.files_json, [])) paths.add(f.path);
+    }
+    return [...paths];
+  }
+
+  /** Change-based test selection (F-TST-1, §11.5): changed test files plus tests that import a changed file. */
+  selectTests(task: string, root: string, index?: WorkspaceIndex): { changed: string[]; tests: string[] } {
+    const changed = this.changeset(task).filter((p) => existsSync(join(root, p)));
+    const tests = new Set<string>();
+    if (index) {
+      try {
+        index.update();
+      } catch (error) {
+        this.o.logger?.warn('index update before test selection failed', { task, error: (error as Error).message });
+      }
+    }
+    for (const p of changed) {
+      if (isTestPath(p)) tests.add(p);
+      else if (index) for (const covering of index.coveringTests(p)) tests.add(covering);
+    }
+    return { changed, tests: [...tests].filter((p) => existsSync(join(root, p))).sort() };
+  }
+
+  /** Runs the gates once before the first edit when `.helix/verify.json` sets `"baseline": true` (§9.6). */
+  private async baseline(t: TaskRow, sandbox: LocalSandbox, signal: AbortSignal): Promise<void> {
+    if (t.policy_profile === 'plan' || this.artifacts(t.id, 'baseline').length) return;
+    let cfg;
+    try {
+      cfg = resolveGates(sandbox.root, t.verify_command);
+    } catch {
+      return;
+    }
+    if (!cfg.baseline || !cfg.gates.length) return;
+    if (this.changeset(t.id).length) {
+      this.publish(t.id, t.ws, 'verify.baseline', { skipped: 'task already modified files' });
+      return;
+    }
+    const data: BaselineArtifact = { gates: [] };
+    for (const gate of cfg.gates) {
+      const { command } = expandGateCommand(gate, null);
+      const r = await sandbox.exec(command, { timeoutMs: gate.timeoutMs, signal });
+      if (signal.aborted) return;
+      const passed = r.exitCode === 0;
+      const diags = passed ? [] : parseDiagnostics(gate.parser ?? command, `${r.stdout}\n${r.stderr}`, { root: sandbox.root });
+      data.gates.push({ name: gate.name, command, passed, keys: [...new Set(diags.map(diagnosticKey))] });
+    }
+    this.saveArtifact(t.id, 'baseline', 'Baseline gate run', data);
+    this.publish(t.id, t.ws, 'verify.baseline', { gates: data.gates.map((g) => ({ name: g.name, passed: g.passed, diagnostics: g.keys.length })) }, 'audit');
+  }
+
   /** Verification gates (F-AGT-4, §9.6). Returns true when the task reached a terminal state. */
-  private async verify(t: TaskRow, last: Message, sandbox: LocalSandbox, signal: AbortSignal): Promise<boolean> {
+  private async verify(t: TaskRow, last: Message, sandbox: LocalSandbox, signal: AbortSignal, index?: WorkspaceIndex): Promise<boolean> {
     const finalText = last.parts.filter((p) => p.type === 'text').map((p) => (p as { text: string }).text).join('').trim();
     if (t.policy_profile === 'plan') {
       const plan = this.artifacts(t.id, 'plan').at(-1);
@@ -570,27 +628,43 @@ export class TaskRuntime {
     }
     this.setStatus(t.id, 'verifying');
     const attempt = t.verify_attempts + 1;
-    const results: Array<{ gate: Gate; exitCode: number | null; signal: string | null; passed: boolean; output: string; diagnostics: Diagnostic[]; durationMs: number }> = [];
+    const results: Array<{ gate: Gate; command: string; exitCode: number | null; signal: string | null; passed: boolean; output: string; diagnostics: Diagnostic[]; preexisting: Set<Diagnostic>; onlyPreexisting: boolean; durationMs: number }> = [];
+    const baseline = (this.artifacts(t.id, 'baseline').at(-1)?.data as BaselineArtifact | undefined) ?? null;
+    const selection = gates.some((g) => g.command.includes(TESTS_PLACEHOLDER)) ? this.selectTests(t.id, sandbox.root, index) : null;
     for (const gate of gates) {
-      const r = await sandbox.exec(gate.command, { timeoutMs: gate.timeoutMs, signal });
+      const { command, selectedTests } = expandGateCommand(gate, selection?.tests ?? null);
+      const r = await sandbox.exec(command, { timeoutMs: gate.timeoutMs, signal });
       if (signal.aborted) return true;
       const output = `${r.stdout}\n${r.stderr}${r.timedOut ? `\n[helix] gate '${gate.name}' timed out after ${gate.timeoutMs} ms` : ''}`;
       const passed = r.exitCode === 0;
-      const diagnostics = passed ? [] : parseDiagnostics(gate.parser ?? gate.command, output, { root: sandbox.root });
-      results.push({ gate, exitCode: r.exitCode, signal: r.signal, passed, output, diagnostics, durationMs: r.durationMs });
-      this.publish(t.id, t.ws, 'verify.gate', { gate: gate.name, kind: gate.kind, command: gate.command, required: gate.required, exitCode: r.exitCode, attempt, passed, durationMs: r.durationMs, diagnostics }, 'audit');
+      const diagnostics = passed ? [] : parseDiagnostics(gate.parser ?? command, output, { root: sandbox.root });
+      const base = baseline?.gates.find((g) => g.name === gate.name);
+      const baseKeys = new Set(base && !base.passed ? base.keys : []);
+      const preexisting = new Set(diagnostics.filter((d) => baseKeys.has(diagnosticKey(d))));
+      const onlyPreexisting = !passed && !r.timedOut && diagnostics.length > 0 && preexisting.size === diagnostics.length;
+      results.push({ gate, command, exitCode: r.exitCode, signal: r.signal, passed, output, diagnostics, preexisting, onlyPreexisting, durationMs: r.durationMs });
+      this.publish(t.id, t.ws, 'verify.gate', {
+        gate: gate.name, kind: gate.kind, command, required: gate.required, exitCode: r.exitCode, attempt, passed, durationMs: r.durationMs, diagnostics,
+        ...(selectedTests ? { selectedTests, changedFiles: selection?.changed ?? [] } : {}),
+        ...(baseline ? { preexisting: preexisting.size, new: diagnostics.length - preexisting.size } : {}),
+      }, 'audit');
     }
     this.o.db.run('UPDATE tasks SET verify_attempts = ? WHERE id = ?', attempt, t.id);
-    const failed = results.filter((x) => !x.passed && x.gate.required);
+    const tolerated = results.filter((x) => !x.passed && x.gate.required && x.gate.allowPreexisting && x.onlyPreexisting);
+    const failed = results.filter((x) => !x.passed && x.gate.required && !tolerated.includes(x));
     const allDiagnostics = failed.flatMap((x) => x.diagnostics);
-    const command = gates.map((g) => g.command).join(' && ');
+    const command = results.map((x) => x.command).join(' && ');
     this.publish(t.id, t.ws, 'verify.result', {
       command, exitCode: failed[0]?.exitCode ?? 0, attempt, passed: failed.length === 0, diagnostics: allDiagnostics,
-      gates: results.map((x) => ({ name: x.gate.name, kind: x.gate.kind, required: x.gate.required, passed: x.passed, exitCode: x.exitCode, durationMs: x.durationMs })),
+      gates: results.map((x) => ({ name: x.gate.name, kind: x.gate.kind, required: x.gate.required, passed: x.passed, exitCode: x.exitCode, durationMs: x.durationMs, ...(tolerated.includes(x) ? { preexistingOnly: true } : {}) })),
     }, 'audit');
     if (!failed.length) {
-      const warn = results.filter((x) => !x.passed).map((x) => x.gate.name);
-      this.setStatus(t.id, 'done', { result: (finalText || 'verification passed') + (warn.length ? `\n[optional gates failed: ${warn.join(', ')}]` : '') });
+      const warn = results.filter((x) => !x.passed && !tolerated.includes(x)).map((x) => x.gate.name);
+      const notes = [
+        warn.length ? `[optional gates failed: ${warn.join(', ')}]` : '',
+        tolerated.length ? `[pre-existing failures only: ${tolerated.map((x) => x.gate.name).join(', ')}]` : '',
+      ].filter(Boolean);
+      this.setStatus(t.id, 'done', { result: [finalText || 'verification passed', ...notes].join('\n') });
       return true;
     }
     if (attempt >= MAX_VERIFY_ATTEMPTS) {
@@ -600,8 +674,11 @@ export class TaskRuntime {
     // §9.5: structured diagnostics plus a short log tail per failing gate, never the full log.
     const sections = failed.map((x) => {
       const tail = x.output.trim().split('\n').slice(-40).join('\n').slice(-2500);
-      const body = x.diagnostics.length ? `Diagnostics (${x.diagnostics.length}):\n${formatDiagnostics(x.diagnostics)}\n\nLog tail:\n${tail}` : x.output.trim().slice(-6000 / failed.length);
-      return `Gate '${x.gate.name}' (${x.gate.kind}): \`${x.gate.command}\` exited with ${x.exitCode ?? x.signal}.\n\n${body}`;
+      const list = baseline
+        ? x.diagnostics.map((d) => `${x.preexisting.has(d) ? '[pre-existing] ' : '[new] '}${formatDiagnostics([d]).slice(2)}`).map((l) => `- ${l}`).join('\n')
+        : formatDiagnostics(x.diagnostics);
+      const body = x.diagnostics.length ? `Diagnostics (${x.diagnostics.length}):\n${list}\n\nLog tail:\n${tail}` : x.output.trim().slice(-6000 / failed.length);
+      return `Gate '${x.gate.name}' (${x.gate.kind}): \`${x.command}\` exited with ${x.exitCode ?? x.signal}.\n\n${body}`;
     });
     this.addMessage(t.id, null, { role: 'user', parts: [{ type: 'text', text: `Verification failed (attempt ${attempt}/${MAX_VERIFY_ATTEMPTS}).\n\n${sections.join('\n\n---\n\n')}\n\nFix the remaining problems, then finish with a summary.` }] });
     this.setStatus(t.id, 'running');
