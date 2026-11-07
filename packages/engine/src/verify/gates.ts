@@ -13,11 +13,38 @@ export interface Gate {
   timeoutMs: number;
   /** Diagnostic parser hint passed to parseDiagnostics (defaults to the command). */
   parser?: string;
+  /** Used when the command contains `{{tests}}` but change-based selection found no tests (F-TST-1). */
+  fallback?: string;
+  /** With a baseline run, a failure whose diagnostics all pre-date the task does not block. */
+  allowPreexisting?: boolean;
 }
 
 export interface GateConfig {
   source: 'command' | 'config' | 'inferred' | 'none';
   gates: Gate[];
+  /** Run the gates once before the first edit and label diagnostics as pre-existing or new. */
+  baseline?: boolean;
+}
+
+export const TESTS_PLACEHOLDER = '{{tests}}';
+
+const shellQuote = (s: string) => (/^[\w./@%+=:,-]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`);
+
+/**
+ * Expands `{{tests}}` with the change-selected test files (§9.6, F-TST-1). An empty selection runs the
+ * gate's `fallback` command, or the command with the placeholder removed (full suite).
+ */
+export function expandGateCommand(gate: Gate, selected: string[] | null): { command: string; selectedTests: string[] | null } {
+  if (!gate.command.includes(TESTS_PLACEHOLDER)) return { command: gate.command, selectedTests: null };
+  if (selected?.length) return { command: gate.command.split(TESTS_PLACEHOLDER).join(selected.map(shellQuote).join(' ')), selectedTests: selected };
+  if (gate.fallback) return { command: gate.fallback, selectedTests: [] };
+  return { command: gate.command.split(TESTS_PLACEHOLDER).join('').replace(/[ \t]{2,}/g, ' ').trim(), selectedTests: [] };
+}
+
+/** Line-independent identity of a diagnostic, so edits that shift lines do not make old failures look new. */
+export function diagnosticKey(d: { file?: string; code?: string; message: string }): string {
+  const msg = d.message.replace(/\d+(\.\d+)?/g, 'N').replace(/\s+/g, ' ').trim().slice(0, 200);
+  return `${d.file ?? ''}|${d.code ?? ''}|${msg}`;
 }
 
 export const VERIFY_CONFIG_PATH = '.helix/verify.json';
@@ -47,7 +74,13 @@ export function parseGateConfig(raw: unknown): Gate[] {
     names.add(name);
     const timeoutMs = o.timeoutMs === undefined ? DEFAULT_TIMEOUT_MS : Number(o.timeoutMs);
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 3_600_000) throw new GateConfigError(`${VERIFY_CONFIG_PATH}: gates[${i}].timeoutMs must be in (0, 3600000]`);
-    return { name, kind, command: o.command, required: o.required !== false, timeoutMs, ...(typeof o.parser === 'string' ? { parser: o.parser } : {}) };
+    if (o.fallback !== undefined && (typeof o.fallback !== 'string' || !o.fallback.trim())) throw new GateConfigError(`${VERIFY_CONFIG_PATH}: gates[${i}].fallback must be a non-empty string`);
+    return {
+      name, kind, command: o.command, required: o.required !== false, timeoutMs,
+      ...(typeof o.parser === 'string' ? { parser: o.parser } : {}),
+      ...(typeof o.fallback === 'string' ? { fallback: o.fallback } : {}),
+      ...(o.allowPreexisting === true ? { allowPreexisting: true } : {}),
+    };
   });
 }
 
@@ -100,7 +133,7 @@ export function resolveGates(root: string, verifyCommand: string | null | undefi
   if (existsSync(cfgPath)) {
     const raw = readJson(cfgPath);
     if (!raw) throw new GateConfigError(`${VERIFY_CONFIG_PATH} is not valid JSON`);
-    return { source: 'config', gates: parseGateConfig(raw) };
+    return { source: 'config', gates: parseGateConfig(raw), ...(raw.baseline === true ? { baseline: true } : {}) };
   }
   if (verifyCommand === AUTO_VERIFY) {
     const gates = inferGates(root);
@@ -111,5 +144,5 @@ export function resolveGates(root: string, verifyCommand: string | null | undefi
 
 export function describeGates(cfg: GateConfig): string {
   if (!cfg.gates.length) return '';
-  return cfg.gates.map((g) => `\`${g.command}\` (${g.kind}${g.required ? '' : ', optional'})`).join(', ');
+  return cfg.gates.map((g) => `\`${g.command.split(TESTS_PLACEHOLDER).join('<tests covering your changes>')}\` (${g.kind}${g.required ? '' : ', optional'})`).join(', ');
 }
