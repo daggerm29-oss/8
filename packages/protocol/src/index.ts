@@ -118,6 +118,8 @@ export const Methods = {
   checkpointDiff: 'checkpoint.diff',
   approvalList: 'agent.approvals.list',
   workspaceList: 'workspace.list',
+  /* M1 — activity monitor (F-UI-2) */
+  taskMonitor: 'task.monitor',
   /* M1 — MCP (F-MCP-1) */
   mcpList: 'mcp.list',
 } as const;

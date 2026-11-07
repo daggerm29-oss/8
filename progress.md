@@ -264,6 +264,13 @@ Order (tick when done; next session resumes at the first unticked item):
 - Config example: `{"baseline": true, "gates": [{"name":"unit","kind":"test","command":"node --test {{tests}}","fallback":"npm test"}, {"name":"lint","kind":"lint","command":"npm run -s lint","allowPreexisting":true}]}`.
 - Runtime API added: `runtime.changeset(task)`, `runtime.selectTests(task, root, index)`; events `verify.baseline`, `verify.gate.{selectedTests, changedFiles, preexisting, new}`, `verify.result.gates[].preexistingOnly`.
 
+## Session 10 (M1) — live plan
+
+Branch: `helix/m1-session10` from `main` (session 9 merged as PR #6).
+- [x] S10-1 (DONE, code + ui.test) F-UI-2 activity monitor v0: RPC `task.monitor` → per task {status, elapsedMs, ledger, stepCount, currentStep, lastTool, pendingApprovals[], lastCheckpoint}; workbench "Monitor" view (default when nothing selected, topbar button) with live table, batch approve/deny of pending approvals, cancel/resume, open task. Code: engine RPC server + `ui/app.js` / `index.html` / `app.css`.
+- [x] S10-2 (DONE, code) Gate panel shows `selectedTests`, changed files, pre-existing/new counts, `preexistingOnly`, and the `verify.baseline` run.
+- [ ] S10-3 `ui.test` covers `task.monitor`; browser check; live Gemini; push + progress update.
+
 ## Next Actions
 
 Resume here for **M1 — Core MVP** (session 10). Session 9 shipped F-TST-1 v0 + baseline gate run. Suggested start: item 2 (F-UI-2 activity monitor / PTY terminal). Next, in order:

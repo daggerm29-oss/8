@@ -92,6 +92,7 @@ function describeEvent(e) {
     case 'tool.result': return [`${d.tool} · ${d.verdict}${d.isError ? ' · error' : ''} · ${d.durationMs ?? 0}ms${d.summary ? ` — ${short(d.summary)}` : ''}`, d.verdict === 'deny' ? 'deny' : d.isError ? 'err' : ''];
     case 'approval.requested': return [`Approval needed: ${d.tool} ${short(d.args)}`, 'err'];
     case 'verify.gate': return [`Gate ${d.gate} (${d.required ? 'required' : 'optional'}) attempt ${d.attempt}: ${d.passed ? 'passed' : `failed exit ${d.exitCode}`}`, d.passed ? 'ok' : 'err'];
+    case 'verify.baseline': return [d.skipped ? `Baseline skipped · ${d.skipped}` : `Baseline · ${(d.gates ?? []).map((g) => `${g.name} ${g.passed ? 'passed' : `failed (${g.diagnostics})`}`).join(', ')}`];
     case 'verify.result': return [`Verification ${d.passed ? 'passed' : 'failed'} (attempt ${d.attempt})`, d.passed ? 'ok' : 'err'];
     case 'context.composed': return [`Context composed${d.tokens ? ` · ${fmtNum(d.tokens)} tokens` : ''}`];
     case 'artifact.created': return [`Artifact: ${d.kind} — ${d.title}`];
@@ -191,13 +192,27 @@ async function renderDiff() {
 }
 
 function renderGates() {
-  const events = (state.events.get(state.selected) ?? []).filter((e) => e.topic === 'verify.gate' || e.topic === 'verify.result');
+  const events = (state.events.get(state.selected) ?? []).filter((e) => ['verify.gate', 'verify.result', 'verify.baseline'].includes(e.topic));
   const box = $('gates');
+  const meta = (...items) => { const kept = items.filter(Boolean); return kept.length ? h('div', { class: 'meta' }, kept) : null; };
+  const item = (k, v) => h('span', {}, `${k}: `, h('span', { class: 'mono' }, v));
   box.replaceChildren(...events.map((e) => {
     const d = e.data;
-    const name = e.topic === 'verify.gate' ? `${d.gate} · ${d.command}` : `Overall result`;
+    if (e.topic === 'verify.baseline') {
+      return h('div', { class: 'gate' },
+        h('div', { class: 'top' }, h('strong', {}, 'Baseline (before any edits)'), h('span', { class: 'badge' }, d.skipped ? 'skipped' : `${d.gates?.length ?? 0} gate(s)`)),
+        d.skipped ? h('p', { class: 'note pad' }, d.skipped) : meta(...(d.gates ?? []).map((g) => item(g.name, g.passed ? 'passed' : `failed · ${g.diagnostics} diagnostic(s)`))));
+    }
+    const name = e.topic === 'verify.gate' ? `${d.gate} · ${d.command}` : 'Overall result';
+    const tolerated = e.topic === 'verify.result' ? (d.gates ?? []).filter((g) => g.preexistingOnly).map((g) => g.name) : [];
     return h('div', { class: 'gate' },
       h('div', { class: 'top' }, h('strong', { class: 'mono' }, name), h('span', { class: `badge ${d.passed ? 'done' : 'failed'}` }, `${d.passed ? 'passed' : 'failed'} · attempt ${d.attempt}`)),
+      meta(
+        d.selectedTests ? item('Selected tests', d.selectedTests.length ? d.selectedTests.join(', ') : 'none (fallback)') : null,
+        d.changedFiles?.length ? item('Changed files', d.changedFiles.join(', ')) : null,
+        d.preexisting !== undefined ? item('Diagnostics', `${d.new} new · ${d.preexisting} pre-existing`) : null,
+        tolerated.length ? item('Pre-existing only (not blocking)', tolerated.join(', ')) : null,
+      ),
       d.diagnostics?.length ? h('ul', {}, d.diagnostics.slice(0, 20).map((x) => h('li', {}, `${x.file ?? ''}${x.line ? `:${x.line}` : ''} ${x.severity ?? ''} ${x.message ?? ''}`))) : null);
   }));
   if (!events.length) box.append(h('p', { class: 'note' }, 'No verification gates have run for this task.'));
@@ -237,6 +252,81 @@ async function renderTab() {
   } catch (err) { console.error('[helix] render failed', err); }
 }
 
+/* ---------------- activity monitor (F-UI-2) ---------------- */
+const fmtElapsed = (ms) => {
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`;
+  return `${Math.floor(s / 3600)}h ${String(Math.floor((s % 3600) / 60)).padStart(2, '0')}m`;
+};
+const ago = (iso) => `${fmtElapsed(Math.max(0, Date.now() - Date.parse(iso)))} ago`;
+const monitor = { rows: [], fetchedAt: 0, checked: new Set() };
+
+async function loadMonitor() {
+  monitor.rows = await rpc.call('task.monitor', { limit: 100 });
+  monitor.fetchedAt = Date.now();
+  const pending = new Set(monitor.rows.flatMap((r) => r.pendingApprovals.map((a) => a.id)));
+  for (const id of monitor.checked) if (!pending.has(id)) monitor.checked.delete(id);
+  renderMonitor();
+}
+
+function renderMonitor() {
+  const rows = monitor.rows;
+  const active = rows.filter((r) => !TERMINAL.includes(r.status));
+  const approvals = rows.flatMap((r) => r.pendingApprovals.map((a) => ({ ...a, title: r.title || r.goal })));
+  const cost = rows.reduce((n, r) => n + (r.ledger?.costUsd ?? 0), 0);
+  const tokens = rows.reduce((n, r) => n + (r.ledger?.inputTokens ?? 0) + (r.ledger?.outputTokens ?? 0), 0);
+  const stat = (k, v) => h('div', { class: 'stat' }, h('div', { class: 'k' }, k), h('div', { class: 'v' }, v));
+  $('monitor-stats').replaceChildren(stat('Active tasks', fmtNum(active.length)), stat('Awaiting approval', fmtNum(approvals.length)), stat('Total tasks', fmtNum(rows.length)), stat('Tokens', fmtNum(tokens)), stat('Spend', fmtUsd(cost)));
+
+  $('monitor-approvals').hidden = !approvals.length;
+  $('monitor-approval-list').replaceChildren(...approvals.map((a) => h('li', {}, h('label', {},
+    h('input', { type: 'checkbox', checked: monitor.checked.has(a.id), onchange: (ev) => { ev.currentTarget.checked ? monitor.checked.add(a.id) : monitor.checked.delete(a.id); syncBatchButtons(); } }),
+    h('span', {}, h('strong', {}, a.tool), ` (${a.actionClass}) · ${short(a.title, 60)}`, h('span', { class: 'sub mono' }, ` ${short(a.args, 140)}`))))));
+  syncBatchButtons();
+
+  const drift = Date.now() - monitor.fetchedAt;
+  $('monitor-rows').replaceChildren(...rows.map((r) => {
+    const live = !TERMINAL.includes(r.status);
+    const l = r.ledger ?? {};
+    return h('tr', {},
+      h('td', {}, h('button', { type: 'button', class: 'task-link', title: r.goal, onclick: () => select(r.id) }, r.title || r.goal), h('span', { class: 'sub' }, `${r.provider}/${r.model}`)),
+      h('td', {}, h('span', { class: `badge ${r.status}` }, r.status), r.pendingApprovals.length ? h('span', { class: 'sub' }, `${r.pendingApprovals.length} approval(s)`) : null),
+      h('td', { class: live && r.running ? 'live' : '' }, r.currentStep ? `#${r.currentStep.index + 1} ${r.currentStep.kind}` : '—', r.currentStep ? h('span', { class: 'sub' }, r.currentStep.status) : null),
+      h('td', { class: 'mono' }, r.lastTool ? r.lastTool.tool : '—', r.lastTool ? h('span', { class: 'sub' }, `${r.lastTool.status} · ${ago(r.lastTool.at)}`) : null),
+      h('td', { class: 'mono' }, `${fmtNum(l.inputTokens)} / ${fmtNum(l.outputTokens)}`, h('span', { class: 'sub' }, `${fmtNum(l.calls)} call(s)`)),
+      h('td', { class: 'mono' }, fmtUsd(l.costUsd)),
+      h('td', { class: 'mono' }, fmtElapsed(r.elapsedMs + (live ? drift : 0))),
+      h('td', { class: 'mono' }, String(r.checkpointCount), r.lastCheckpoint ? h('span', { class: 'sub', title: r.lastCheckpoint.files.join(', ') }, short(r.lastCheckpoint.files.join(', '), 40)) : null),
+      h('td', {}, h('div', { class: 'actions' },
+        live ? h('button', { type: 'button', class: 'danger', 'aria-label': `Cancel ${r.title || r.goal}`, onclick: () => rpc.call('task.cancel', { id: r.id }).then(loadMonitor) }, 'Cancel') : null,
+        ['failed', 'cancelled', 'blocked'].includes(r.status) ? h('button', { type: 'button', 'aria-label': `Resume ${r.title || r.goal}`, onclick: () => rpc.call('task.resume', { id: r.id }).then(loadMonitor).catch((e) => alert(e.message)) }, 'Resume') : null)));
+  }));
+  if (!rows.length) $('monitor-rows').append(h('tr', {}, h('td', { colspan: 9, class: 'note' }, 'No tasks yet. Start one on the left.')));
+}
+
+function syncBatchButtons() {
+  $('batch-approve').disabled = !monitor.checked.size;
+  $('batch-deny').disabled = !monitor.checked.size;
+}
+
+async function batchRespond(approved) {
+  const ids = [...monitor.checked];
+  monitor.checked.clear();
+  await Promise.allSettled(ids.map((approvalId) => rpc.call('agent.approve', { approvalId, approved })));
+  await loadMonitor();
+}
+
+function showMonitor() {
+  state.selected = null;
+  state.stream = '';
+  $('task-view').hidden = true;
+  $('monitor-view').hidden = false;
+  $('show-monitor').setAttribute('aria-pressed', 'true');
+  renderTasks();
+  loadMonitor().catch((err) => console.error('[helix] monitor failed', err));
+}
+
 /* ---------------- actions ---------------- */
 async function refreshTasks() {
   state.tasks = await rpc.call('task.list', { limit: 100 });
@@ -266,7 +356,8 @@ async function select(id) {
   state.stream = '';
   const t = await rpc.call('task.get', { id });
   await loadHistory(t);
-  $('empty').hidden = true;
+  $('monitor-view').hidden = true;
+  $('show-monitor').setAttribute('aria-pressed', 'false');
   $('task-view').hidden = false;
   $('impact').replaceChildren();
   renderTasks();
@@ -278,8 +369,16 @@ async function select(id) {
 let refreshTimer = null;
 function scheduleRefresh() {
   clearTimeout(refreshTimer);
-  refreshTimer = setTimeout(() => { refreshTasks().catch(() => {}); if (state.tab !== 'activity' && state.tab !== 'impact') renderTab(); }, 250);
+  refreshTimer = setTimeout(() => {
+    refreshTasks().catch(() => {});
+    if (!state.selected) loadMonitor().catch(() => {});
+    else if (state.tab !== 'activity' && state.tab !== 'impact') renderTab();
+  }, 250);
 }
+
+setInterval(() => {
+  if (!state.selected && monitor.rows.some((r) => !TERMINAL.includes(r.status))) renderMonitor();
+}, 1000);
 
 function onEvent(e) {
   if (!e.task) return;
@@ -296,7 +395,7 @@ function onEvent(e) {
     if (state.tab === 'gates' && e.topic.startsWith('verify.')) renderGates();
     if (e.topic.startsWith('approval.') || e.topic === 'task.status') renderApprovals();
   }
-  if (['task.created', 'task.status', 'task.step', 'ledger.entry', 'checkpoint.restored', 'tool.result'].includes(e.topic)) scheduleRefresh();
+  if (['task.created', 'task.status', 'task.step', 'ledger.entry', 'checkpoint.restored', 'tool.result', 'approval.requested', 'approval.resolved'].includes(e.topic)) scheduleRefresh();
 }
 
 function setStatus(text, ok) {
@@ -306,7 +405,10 @@ function setStatus(text, ok) {
 }
 
 function bindUi() {
-  $('refresh').addEventListener('click', () => refreshTasks());
+  $('refresh').addEventListener('click', () => { refreshTasks(); if (!state.selected) loadMonitor(); });
+  $('show-monitor').addEventListener('click', showMonitor);
+  $('batch-approve').addEventListener('click', () => batchRespond(true));
+  $('batch-deny').addEventListener('click', () => batchRespond(false));
   for (const tab of document.querySelectorAll('[role="tab"]')) {
     tab.addEventListener('click', () => {
       state.tab = tab.dataset.tab;
@@ -389,6 +491,7 @@ async function start() {
     await loadWorkspaces();
     loadMcp();
     if (state.selected) await select(state.selected);
+    else await loadMonitor();
   } catch (err) {
     if (/token/i.test(err.message)) {
       sessionStorage.removeItem('helix.token');

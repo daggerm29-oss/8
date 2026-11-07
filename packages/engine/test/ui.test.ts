@@ -104,6 +104,21 @@ test('workbench server: serves UI, rejects foreign Host/Origin, token-gates WS, 
     const wsl = await peer.request<Array<{ path: string }>>(Methods.workspaceList, {});
     assert.equal(wsl.length, 1);
     assert.deepEqual(await peer.request(Methods.approvalList, { task: t.id }), []);
+
+    type MonitorRow = { id: string; status: string; running: boolean; elapsedMs: number; stepCount: number; currentStep: { index: number; kind: string } | null; lastTool: { tool: string; status: string } | null; pendingApprovals: unknown[]; checkpointCount: number; lastCheckpoint: { files: string[] } | null; ledger: { calls: number; inputTokens: number } };
+    const mon = await peer.request<MonitorRow[]>(Methods.taskMonitor, {});
+    assert.equal(mon.length, 1);
+    const row = mon[0];
+    assert.equal(row.id, t.id);
+    assert.equal(row.status, 'done');
+    assert.equal(row.running, false);
+    assert.ok(row.elapsedMs >= 0);
+    assert.equal(row.ledger.calls, 3);
+    assert.ok(row.currentStep && row.currentStep.index === row.stepCount - 1, 'current step is the latest step');
+    assert.equal(row.lastTool?.tool, 'write_file');
+    assert.deepEqual(row.pendingApprovals, []);
+    assert.ok(row.checkpointCount >= 2);
+    assert.ok(row.lastCheckpoint && row.lastCheckpoint.files.length > 0);
     peer.close();
   } finally {
     await engine.close();
