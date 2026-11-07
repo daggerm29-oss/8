@@ -6,7 +6,7 @@
 
 - Project: Helix
 - Current Phase: M1 — Core MVP (engine-side slice in progress)
-- Overall Completion: ~28% (M0 Verified; M1 ~81%: engine slice + test selection/baseline + web workbench v0 (files edit/save, terminal) + activity monitor + MCP stdio/HTTP + MCP safety + compaction + role-based models)
+- Overall Completion: ~25% (M0 Verified; **M1 = 31/76 features Tested/Verified (41%)**, 3 In Progress, 42 Not Started. Counted from the Feature Status table: Tested+Verified ÷ total — recount every session, never estimate)
 - Current Status: M1 session 15 — workbench Steps tab (Agent→Step→ToolCall tree, RPC `task.steps`) Tested (browser + live Gemini)
 - Last Updated: 2026-11-07 (session 15)
 - Current Development Branch: `helix/m1-session15-steps` (note: `origin/helix/m1-session15` holds an earlier parallel attempt, commit d1396d6 `task.tree` — pick one PR, do not merge both) (base: `main` of github.com/daggerm29-oss/8)
@@ -16,7 +16,7 @@
 | Phase | Name | Status | Completion |
 |---|---|---|---|
 | M0 | Engineering Foundations | Verified (exit criteria met live, 2026-11-06) | 100% |
-| M1 | Core MVP | In Progress | ~50% engine-side; desktop UI, MCP, preview, egress proxy not started |
+| M1 | Core MVP | In Progress | 41% (31/76). Biggest gaps: preview + CDP + browser tools (F-PRV-1..5), egress proxy (F-SBX-3), visual/snapshot (F-VIS-*), Plan Mode/Explore subagent (F-ORC-*), review (F-REV-*), Git panel (F-GIT-1/3/4/5), desktop shell (F-UI-3/4), PTY terminal (F-TRM-1) |
 | M2 | Advanced Intelligence | Not Started | 0% |
 | M3 | Multi-Agent Intelligence | Not Started | 0% |
 | M4 | Team and Ecosystem | Not Started | 0% |
