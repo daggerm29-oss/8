@@ -17,6 +17,10 @@ Usage:
   helix search "<query>"          hybrid code search over the workspace index
   helix symbols <name>            find symbol definitions in the workspace index
   helix impact <symbol|file>      callers, affected files and covering tests (code graph)
+  helix mcp list                  MCP servers, connection state and tools
+  helix mcp add <name> -- <cmd> [args...]   add a stdio MCP server to $HELIX_HOME/mcp.json
+  helix mcp add <name> --url <url> [--header K=V]   add a streamable HTTP MCP server
+  helix mcp remove <name>         remove an MCP server from mcp.json
 
 Options:
   -C, --cwd <dir>         workspace directory (default: current directory)
@@ -25,7 +29,8 @@ Options:
   -m, --model <id>        model id (default: provider default)
   --max-steps <n>         model turn limit (default 40)
   --budget <usd>          hard USD budget for the task
-  --allow <class>         preapprove an action class in headless mode (network, destructive); repeatable
+  --allow <class>         preapprove an action class in headless mode (network, destructive) or tool:<name>; repeatable
+  --trusted               (mcp add) trust the server's readOnlyHint annotations
   --plan                  Plan Mode: read-only investigation that produces a plan artifact
   --json                  print the final task summary as JSON
   -q, --quiet             do not stream progress to stderr
@@ -63,15 +68,35 @@ function render(e: HelixEvent): string | null {
   }
 }
 
-async function runAndWait(peer: RpcPeer, summary: TaskSummary, opts: { quiet: boolean; json: boolean }): Promise<number> {
+/**
+ * Events can arrive before `task.create` returns the id (ISSUE-006, e.g. `context.composed`), so the
+ * listener is installed right after connecting and buffers until `follow(id)` names the task.
+ */
+function eventFollower(peer: RpcPeer) {
+  let taskId: string | null = null;
+  let buffered: HelixEvent[] = [];
+  const print = (e: HelixEvent) => {
+    const line = render(e);
+    if (line) process.stderr.write(`${line}\n`);
+  };
+  peer.onNotification(Notifications.event, (params) => {
+    const e = params as HelixEvent;
+    if (taskId === null) { if (buffered.length < 1000) buffered.push(e); return; }
+    if (e.task === taskId) print(e);
+  });
+  return {
+    follow(id: string) {
+      taskId = id;
+      for (const e of buffered) if (e.task === id) print(e);
+      buffered = [];
+    },
+  };
+}
+
+async function runAndWait(peer: RpcPeer, summary: TaskSummary, opts: { quiet: boolean; json: boolean }, follower?: ReturnType<typeof eventFollower>): Promise<number> {
   if (!opts.quiet) {
-    peer.onNotification(Notifications.event, (params) => {
-      const e = params as HelixEvent;
-      if (e.task !== summary.id) return;
-      const line = render(e);
-      if (line) process.stderr.write(`${line}\n`);
-    });
     process.stderr.write(`helix task ${summary.id} · ${summary.provider}/${summary.model} · ${summary.workspacePath}\n`);
+    (follower ?? eventFollower(peer)).follow(summary.id);
   }
   const final = await peer.request<TaskSummary & { ledger: { calls: number; inputTokens: number; outputTokens: number; costUsd: number } }>(Methods.taskWait, { id: summary.id });
   if (opts.json) process.stdout.write(`${JSON.stringify(final, null, 2)}\n`);
@@ -105,6 +130,7 @@ export async function main(argv: string[]): Promise<number> {
       prompt: { type: 'string', short: 'p' }, cwd: { type: 'string', short: 'C' }, verify: { type: 'string' }, provider: { type: 'string' },
       model: { type: 'string', short: 'm' }, 'max-steps': { type: 'string' }, budget: { type: 'string' }, allow: { type: 'string', multiple: true },
       json: { type: 'boolean' }, plan: { type: 'boolean' }, quiet: { type: 'boolean', short: 'q' }, help: { type: 'boolean', short: 'h' },
+      url: { type: 'string' }, header: { type: 'string', multiple: true }, trusted: { type: 'boolean' },
     },
   });
   const [cmd, arg] = positionals;
@@ -112,8 +138,10 @@ export async function main(argv: string[]): Promise<number> {
     process.stdout.write(USAGE);
     return values.help ? 0 : 2;
   }
+  if (cmd === 'mcp' && (arg === 'add' || arg === 'remove')) return mcpEdit(arg, positionals.slice(2), values);
   const opts = { quiet: Boolean(values.quiet), json: Boolean(values.json) };
   const { peer, stop } = await connect(opts.quiet ? [] : ['task.*', 'agent.*', 'tool.*', 'verify.*', 'approval.*', 'context.*', 'artifact.*']);
+  const follower = opts.quiet ? undefined : eventFollower(peer);
   try {
     if (values.prompt) {
       const summary = await peer.request<TaskSummary>(Methods.taskCreate, {
@@ -121,7 +149,7 @@ export async function main(argv: string[]): Promise<number> {
         maxSteps: values['max-steps'] ? Number(values['max-steps']) : undefined, budgetUsd: values.budget ? Number(values.budget) : undefined,
         policyProfile: values.plan ? 'plan' : 'headless', preapprove: values.allow ?? [],
       });
-      const code = await runAndWait(peer, summary, opts);
+      const code = await runAndWait(peer, summary, opts, follower);
       if (values.plan && !opts.json) await printPlan(peer, summary.id);
       return code;
     }
@@ -133,7 +161,7 @@ export async function main(argv: string[]): Promise<number> {
     if (cmd === 'resume' && arg) {
       const summary = await peer.request<TaskSummary>(Methods.taskGet, { id: arg });
       if (!['done', 'failed', 'cancelled'].includes(summary.status)) await peer.request(Methods.taskResume, { id: arg });
-      return await runAndWait(peer, summary, opts);
+      return await runAndWait(peer, summary, opts, follower);
     }
     if (cmd === 'ledger' && arg) {
       process.stdout.write(`${JSON.stringify(await peer.request(Methods.ledgerQuery, { task: arg }), null, 2)}\n`);
@@ -169,6 +197,17 @@ export async function main(argv: string[]): Promise<number> {
       process.stdout.write(`affected: ${r.affectedFiles.join(', ') || '(none)'}\ntests: ${r.tests.join(', ') || '(none)'}\n`);
       return 0;
     }
+    if (cmd === 'mcp' && (arg === 'list' || arg === undefined)) {
+      const servers = await peer.request<Array<{ name: string; state: string; transport?: string; error?: string; tools: Array<{ name: string; actionClass: string; alwaysAllow?: boolean }>; filtered?: string[] }>>(Methods.mcpList, {});
+      if (values.json) { process.stdout.write(`${JSON.stringify(servers, null, 2)}\n`); return 0; }
+      if (!servers.length) process.stdout.write('no MCP servers configured (helix mcp add <name> -- <command>)\n');
+      for (const s of servers) {
+        process.stdout.write(`${s.name}  ${s.state}${s.transport ? ` (${s.transport})` : ''}  ${s.tools.length} tools${s.error ? `  — ${s.error}` : ''}\n`);
+        for (const t of s.tools) process.stdout.write(`  ${t.name}  [${t.actionClass}${t.alwaysAllow ? ', always allow' : ''}]\n`);
+        if (s.filtered?.length) process.stdout.write(`  filtered: ${s.filtered.join(', ')}\n`);
+      }
+      return 0;
+    }
     process.stdout.write(USAGE);
     return 2;
   } finally {
@@ -176,7 +215,34 @@ export async function main(argv: string[]): Promise<number> {
   }
 }
 
+/** `helix mcp add|remove` edit $HELIX_HOME/mcp.json directly (no engine needed). */
+async function mcpEdit(action: 'add' | 'remove', rest: string[], values: { url?: string; header?: string[]; trusted?: boolean }): Promise<number> {
+  const { helixHome, readMcpConfigFile, writeMcpConfigFile, mcpConfigPath } = await import('@helix/engine');
+  const { mkdirSync } = await import('node:fs');
+  const [name, ...command] = rest;
+  if (!name || !/^[A-Za-z0-9_.-]+$/.test(name)) { process.stderr.write('helix mcp: a server name ([A-Za-z0-9_.-]) is required\n'); return 2; }
+  const home = helixHome();
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  const file = readMcpConfigFile(home);
+  const servers = file.servers ?? file.mcpServers ?? {};
+  if (action === 'remove') {
+    if (!servers[name]) { process.stderr.write(`helix mcp: no server '${name}'\n`); return 1; }
+    delete servers[name];
+  } else {
+    if (!values.url && !command.length) { process.stderr.write('helix mcp add: pass --url <url> or -- <command> [args...]\n'); return 2; }
+    const headers = Object.fromEntries((values.header ?? []).map((h) => { const i = h.indexOf('='); return [h.slice(0, i), h.slice(i + 1)]; }).filter(([k]) => k));
+    servers[name] = values.url
+      ? { url: values.url, ...(Object.keys(headers).length ? { headers } : {}), ...(values.trusted ? { trust: 'trusted' as const } : {}) }
+      : { command: command[0], args: command.slice(1), ...(values.trusted ? { trust: 'trusted' as const } : {}) };
+  }
+  if (file.mcpServers && !file.servers) file.mcpServers = servers; else file.servers = servers;
+  writeMcpConfigFile(home, file);
+  process.stdout.write(`${action === 'add' ? 'added' : 'removed'} MCP server '${name}' in ${mcpConfigPath(home)}\n`);
+  return 0;
+}
+
 if (import.meta.main) {
+  process.stdout.on('error', (e: NodeJS.ErrnoException) => { if (e.code === 'EPIPE') process.exit(0); throw e; });
   main(process.argv.slice(2)).then((code) => process.exit(code), (error: Error) => {
     process.stderr.write(`helix: ${error.message}\n`);
     process.exit(1);
