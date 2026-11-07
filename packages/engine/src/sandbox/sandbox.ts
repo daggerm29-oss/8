@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
+import { StringDecoder } from 'node:string_decoder';
 import { existsSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -224,6 +225,46 @@ export class LocalSandbox {
         resolveExec({ exitCode: null, signal: null, timedOut, truncated, durationMs: 0, stdout: '', stderr: `spawn failed: ${err.message}` });
       });
     });
+  }
+
+  /**
+   * Interactive shell on a real PTY (F-TRM-1). util-linux `script` allocates the PTY on the host and runs the
+   * same contained `bash -i` as `exec` (same namespaces, scrubbed env), so no native module is needed.
+   * Limitation: size is fixed at open (no live resize through `script`).
+   */
+  pty(opts: { cols?: number; rows?: number; cwd?: string; onData: (data: string) => void; onExit: (exitCode: number | null) => void }): { pid: number | undefined; write(data: string): void; kill(): void } {
+    if (this.destroyed) throw new Error(`sandbox ${this.id} is destroyed`);
+    const cwd = this.resolvePath(opts.cwd ?? '.', 'read');
+    const cols = Math.min(Math.max(Math.floor(Number(opts.cols) || 100), 20), 500);
+    const rows = Math.min(Math.max(Math.floor(Number(opts.rows) || 30), 5), 200);
+    const shell = `stty rows ${rows} cols ${cols} 2>/dev/null; export PS1='helix:\\W\\$ '; exec bash --noprofile --norc -i`;
+    // No --pid here: as PID-namespace init the shell never owns the PTY's foreground group, so Ctrl-C is lost.
+    // /proc stays unmounted, so host processes remain invisible.
+    const argv = this.fsIsolation
+      ? ['unshare', '--user', '--map-root-user', '--net', '--mount', '--', 'bash', '-c', CONTAIN_SCRIPT, 'helix', this.newRoot!, this.root, this.scratch, cwd, shell, ...this.roPaths]
+      : this.provider === 'local-unshare'
+        ? ['unshare', '--user', '--map-root-user', '--net', '--', 'bash', '-c', shell]
+        : ['bash', '-c', shell];
+    const quoted = argv.map((a) => `'${a.replace(/'/g, `'\\''`)}'`).join(' ');
+    const env = this.env();
+    delete env.NO_COLOR;
+    delete env.CI;
+    env.TERM = 'xterm-256color';
+    const child = spawn('script', ['-qfec', quoted, '/dev/null'], { cwd, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    const decoder = new StringDecoder('utf8');
+    const emit = (chunk: Buffer) => { const s = decoder.write(chunk); if (s) opts.onData(globalRedactor.redact(s)); };
+    child.stdout.on('data', emit);
+    child.stderr.on('data', emit);
+    child.stdin.on('error', () => { /* shell already gone */ });
+    let exited = false;
+    const done = (code: number | null) => { if (!exited) { exited = true; opts.onExit(code); } };
+    child.on('close', (code) => done(code));
+    child.on('error', (err) => { opts.onData(`spawn failed: ${err.message}\r\n`); done(null); });
+    return {
+      pid: child.pid,
+      write: (data) => { if (!exited && typeof data === 'string') child.stdin.write(data); },
+      kill: () => { try { if (child.pid) process.kill(-child.pid, 'SIGKILL'); } catch { /* already exited */ } },
+    };
   }
 
   destroy(): void {

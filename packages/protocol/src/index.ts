@@ -134,10 +134,17 @@ export const Methods = {
   fsWrite: 'fs.write',
   terminalRun: 'terminal.run',
   terminalKill: 'terminal.kill',
+  /* F-TRM-1 PTY: interactive shell in the workspace sandbox */
+  ptyOpen: 'pty.open',
+  ptyWrite: 'pty.write',
+  ptyKill: 'pty.kill',
 } as const;
 
 export const Notifications = {
   event: 'event',
   /** Per-connection live output of `terminal.run` ({ runId, stream, text }); not persisted. */
   terminalOutput: 'terminal.output',
+  /** Per-connection PTY output ({ ptyId, data }) and exit ({ ptyId, exitCode }); not persisted. */
+  ptyOutput: 'pty.output',
+  ptyExit: 'pty.exit',
 } as const;

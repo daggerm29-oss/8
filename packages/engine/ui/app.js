@@ -61,6 +61,8 @@ class Rpc {
       for (const l of this.listeners) l(msg.params);
     } else if (msg.method === 'terminal.output') {
       this.onTerminal?.(msg.params);
+    } else if (msg.method === 'pty.output' || msg.method === 'pty.exit') {
+      this.onPty?.(msg.method, msg.params);
     }
   }
   call(method, params = {}) {
@@ -483,6 +485,7 @@ function renderTerminal() {
   out.scrollTop = out.scrollHeight;
   $('term-kill').disabled = !term.runId;
   $('term-run').disabled = !!term.runId;
+  renderShell();
 }
 
 async function runCommand(command) {
@@ -502,6 +505,54 @@ async function runCommand(command) {
   } catch (err) { termAppend(ws, `[error: ${err.message}]\n`, 'exit-bad'); }
   finally { term.runId = null; if (state.tab === 'terminal') renderTerminal(); }
 }
+
+/* Interactive PTY shell (F-TRM-1): one per workspace, xterm.js view, input goes to pty.write. */
+const shells = new Map(); // ws -> { ptyId, xterm, el, exited }
+const PTY_ROWS = 24;
+/* Columns fitted to the panel at open (xterm char width ≈ 0.6 × 13px font); no live resize through `script`. */
+const ptyCols = () => Math.max(40, Math.min(200, Math.floor(($('pty-host').parentElement.clientWidth - 24) / 7.9)));
+
+function renderShell() {
+  const ws = selectedWorkspace();
+  const host = $('pty-host');
+  const s = ws ? shells.get(ws) : null;
+  host.replaceChildren(...(s ? [s.el] : []));
+  host.hidden = !s;
+  $('pty-open').hidden = !!(s && !s.exited);
+  $('pty-close').hidden = !(s && !s.exited);
+  $('pty-open').disabled = !ws || typeof window.Terminal !== 'function';
+  $('pty-status').textContent = !ws ? 'Select a task to pick a workspace.' : s ? (s.exited ? `Shell exited (${s.exitCode ?? 'killed'}).` : 'Shell running in the workspace sandbox.') : 'No shell open.';
+  if (s && !s.exited) s.xterm.focus();
+}
+
+async function openShell() {
+  const ws = selectedWorkspace();
+  if (!ws) return;
+  shells.get(ws)?.xterm.dispose();
+  const el = h('div', { class: 'pty-view' });
+  const cols = ptyCols();
+  const xterm = new window.Terminal({ cols, rows: PTY_ROWS, convertEol: false, cursorBlink: true, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 13, theme: { background: '#0f1115', foreground: '#e6e6e6' } });
+  const s = { ptyId: null, xterm, el, exited: false, exitCode: null };
+  shells.set(ws, s);
+  renderShell();
+  xterm.open(el);
+  try {
+    const r = await rpc.call('pty.open', { workspacePath: ws, cols, rows: PTY_ROWS });
+    s.ptyId = r.ptyId;
+    xterm.onData((data) => { if (!s.exited) rpc.call('pty.write', { ptyId: s.ptyId, data }).catch(() => {}); });
+  } catch (err) {
+    xterm.write(`\r\n[error: ${err.message}]\r\n`);
+    s.exited = true;
+  }
+  renderShell();
+}
+
+rpc.onPty = (method, p) => {
+  const s = [...shells.values()].find((x) => x.ptyId === p.ptyId);
+  if (!s) return;
+  if (method === 'pty.output') s.xterm.write(p.data);
+  else { s.exited = true; s.exitCode = p.exitCode; s.xterm.write(`\r\n[shell exited: ${p.exitCode ?? 'killed'}]\r\n`); if (state.tab === 'terminal') renderShell(); }
+};
 
 rpc.onTerminal = (p) => {
   if (p.runId !== term.runId || !term.runWs) return;
@@ -751,6 +802,8 @@ function bindUi() {
     ev.currentTarget.value = term.cursor < 0 ? '' : term.history[term.cursor];
   });
   $('term-kill').addEventListener('click', () => { if (term.runId) rpc.call('terminal.kill', { runId: term.runId }); });
+  $('pty-open').addEventListener('click', () => openShell());
+  $('pty-close').addEventListener('click', () => { const s = shells.get(selectedWorkspace()); if (s?.ptyId) rpc.call('pty.kill', { ptyId: s.ptyId }); });
   $('term-clear').addEventListener('click', () => { const ws = selectedWorkspace(); if (ws) term.buffers.set(ws, []); renderTerminal(); });
   $('impact-form').addEventListener('submit', (ev) => { ev.preventDefault(); renderImpact(String(new FormData(ev.currentTarget).get('target')).trim()); });
   $('token-form').addEventListener('submit', () => {

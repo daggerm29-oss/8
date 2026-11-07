@@ -115,6 +115,29 @@ test('engine: fs.tree/fs.read/terminal.run over WS for known workspaces only, wi
     const k = await long;
     assert.equal(k.killed, true);
     assert.ok(k.durationMs < 10_000);
+
+    // F-TRM-1 PTY: real tty, interactive input, Ctrl-C reaches the foreground job, exit is reported.
+    let ptyOut = '';
+    let ptyExit: { ptyId: string; exitCode: number | null } | undefined;
+    peer.onNotification('pty.output', (p: unknown) => { ptyOut += (p as { data: string }).data; });
+    peer.onNotification('pty.exit', (p: unknown) => { ptyExit = p as never; });
+    const until = async (re: RegExp, ms = 15_000) => { const end = Date.now() + ms; while (!re.test(ptyOut)) { if (Date.now() > end) throw new Error(`pty timeout waiting for ${re}; got: ${JSON.stringify(ptyOut.slice(-400))}`); await new Promise((r) => setTimeout(r, 50)); } };
+    await assert.rejects(peer.request(Methods.ptyOpen, { workspacePath: '/nonexistent-helix' }), /no such workspace|unknown workspace/);
+    const { ptyId } = await peer.request(Methods.ptyOpen, { workspacePath: root, cols: 90, rows: 20 }) as { ptyId: string };
+    await until(/helix:\S*[$#] /);
+    await peer.request(Methods.ptyWrite, { ptyId, data: '[ -t 0 ] && echo "TTY=yes $TERM $(stty size)"\r' });
+    await until(/TTY=yes xterm-256color 20 90/);
+    await peer.request(Methods.ptyWrite, { ptyId, data: 'sleep 30; echo NOT_INTERRUPTED\r' });
+    await new Promise((r) => setTimeout(r, 400));
+    await peer.request(Methods.ptyWrite, { ptyId, data: '\x03' });
+    await peer.request(Methods.ptyWrite, { ptyId, data: 'echo AFTER_$((6*7))\r' });
+    await until(/AFTER_42/);
+    assert.doesNotMatch(ptyOut, /\rNOT_INTERRUPTED|\nNOT_INTERRUPTED/, "Ctrl-C interrupted the foreground sleep");
+    await peer.request(Methods.ptyWrite, { ptyId, data: 'exit 5\r' });
+    const end = Date.now() + 10_000;
+    while (!ptyExit && Date.now() < end) await new Promise((r) => setTimeout(r, 50));
+    assert.deepEqual(ptyExit, { ptyId, exitCode: 5 });
+    await assert.rejects(peer.request(Methods.ptyWrite, { ptyId, data: 'x' }), /no such terminal/);
     ws.close();
   } finally {
     await engine.close();
