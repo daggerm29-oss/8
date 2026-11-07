@@ -132,8 +132,18 @@
               <p class="note" id="file-count"></p>
             </nav>
             <div class="file-view">
-              <div class="file-head"><span id="file-name" class="mono">Select a file</span><span id="file-info" class="muted"></span></div>
+              <div class="file-head">
+                <span id="file-name" class="mono">Select a file</span>
+                <span class="file-actions">
+                  <span id="file-info" class="muted" aria-live="polite"></span>
+                  <button type="button" class="ghost" id="file-edit" hidden>Edit</button>
+                  <button type="button" class="primary" id="file-save" hidden>Save</button>
+                  <button type="button" class="ghost" id="file-cancel" hidden>Cancel</button>
+                </span>
+              </div>
               <pre id="file-content" class="code mono" tabindex="0" aria-label="File content"></pre>
+              <label class="sr-only" for="file-editor">Edit file content</label>
+              <textarea id="file-editor" class="code mono editor" spellcheck="false" autocomplete="off" hidden></textarea>
             </div>
           </div>
         </div>

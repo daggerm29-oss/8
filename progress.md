@@ -6,10 +6,10 @@
 
 - Project: Helix
 - Current Phase: M1 — Core MVP (engine-side slice in progress)
-- Overall Completion: ~25% (M0 Verified; M1 ~73%: engine slice + test selection/baseline + web workbench v0 + activity monitor + MCP stdio/HTTP + MCP safety)
-- Current Status: M1 session 11 — workbench Files view + Terminal tab (F-TRM-1 v0, non-PTY) Tested (browser + live Gemini verified); BUG-009 fixed
-- Last Updated: 2026-11-07 (session 11)
-- Current Development Branch: `helix/m1-session11` (base: `main` of github.com/daggerm29-oss/8)
+- Overall Completion: ~27% (M0 Verified; M1 ~78%: engine slice + test selection/baseline + web workbench v0 (files edit/save, terminal) + activity monitor + MCP stdio/HTTP + MCP safety + compaction)
+- Current Status: M1 session 12 — F-CTX-2 compaction Tested (live Gemini verified) + workbench file edit/save Tested (browser verified)
+- Last Updated: 2026-11-07 (session 12)
+- Current Development Branch: `helix/m1-session12` (base: `main` of github.com/daggerm29-oss/8)
 
 ## Phase Overview
 
@@ -58,7 +58,7 @@ Statuses: Not Started / In Progress / Implemented / Tested / Verified / Blocked 
 | F-IDX-5 | Domain extractors | Not Started | — | Arch §11.7 |
 | F-IDX-6 | Semantic embeddings (local-first) | Not Started | — | Arch §12.3 |
 | F-CTX-1 | Budgeted context assembler | Tested | m1.test (assembler, runtime) | Per-kind quotas with carry-over; persisted `context` artifact keeps the prompt prefix stable across restarts; `context.composed` event. Arch §13.1–13.3 |
-| F-CTX-2 | Compaction | Not Started | — | Arch §13.4 |
+| F-CTX-2 | Compaction | Tested | compaction.test (4); live gemini-3.5-flash-lite (session 12) | `context/compaction.ts`: trigger = est. request > `triggerTokens` (default 80% contextWindow); cut at assistant boundary keeping `keepRecentTurns` (4); summarizer role, schema §13.4; deterministic fallback; constraints verbatim; `compaction` artifact (originals kept, restart-safe); min slice + must-shrink guards. HTS eval pending. Arch §13.4 |
 | F-CTX-3 | Project instructions | Tested | m1.test (instructions, runtime) | `$HELIX_HOME/HELIX.md` → root AGENTS.md/HELIX.md → nested; truncation warning. Nested files for edited paths are loaded only at compose time (touchedPaths API exists). Arch §13.5 |
 | F-CTX-4 | Typed project memory | Not Started | — | Arch §13.6 |
 | F-AGT-1 | Primary agent loop | Tested | agent.test (7), cli.test (2) | M0 scope: transcript-derived state machine, per-step persistence, task-level backoff on 503/429. Arch §9.1–9.3, §30.1 |
@@ -108,7 +108,7 @@ Statuses: Not Started / In Progress / Implemented / Tested / Verified / Blocked 
 | F-REV-1 | Review agent | Not Started | — | Arch §10.2 |
 | F-REV-2 | Security analysis | Not Started | — | Arch §25.10 |
 | F-REV-3 | Dependency risk gate (X17) | Not Started | — | Arch §16.7 |
-| F-UI-1 | Workbench | Tested | ui.test (2); browser + live Gemini run (session 6) | v0 web workbench served by the Engine (`packages/engine/ui/`, no build): task create/list, live event stream, transcript, diff per checkpoint + restore, gates, approvals, impact explorer, artifacts, ledger stats, read-only Files view (`fs.tree`/`fs.read`, secrets filtered, confined) and Terminal tab (session 11). Fragment token, Host/Origin loopback check, CSP. No editor (edit/save) or Electron yet. Arch §5.1–5.3 |
+| F-UI-1 | Workbench | Tested | ui.test (2); browser + live Gemini run (session 6) | v0 web workbench served by the Engine (`packages/engine/ui/`, no build): task create/list, live event stream, transcript, diff per checkpoint + restore, gates, approvals, impact explorer, artifacts, ledger stats, read-only Files view (`fs.tree`/`fs.read`, secrets filtered, confined) and Terminal tab (session 11). Fragment token, Host/Origin loopback check, CSP. Edit/save via `fs.write` (hash-checked, session 12). No Electron yet. Arch §5.1–5.3 |
 | F-UI-2 | Agent activity monitor | Tested | ui.test (task.monitor); browser + live Gemini run (session 10) | v0: RPC `task.monitor` (active first; status, running, elapsed, ledger, current step, last tool call, pending approvals, checkpoint count + last checkpoint files); workbench Monitor view (default with no task selected): summary stats, live table, per-task Cancel/Resume, batch approve/deny of pending approvals. Not yet: Agent→Step→ToolCall tree, pause, fork, change model, held leases (no multi-agent yet). Arch §5.4 |
 | F-UI-3 | Intelligence Explorer | Not Started | — | Arch §5.5 |
 | F-UI-4 | Artifacts | Not Started | — | Arch §5.6 |
@@ -292,19 +292,22 @@ Branch: `helix/m1-session12` from `main` (session 11 merged as PR #8).
 Order (tick when done; next session resumes at the first unticked item):
 - [x] S12-1 (DONE, code; tsc clean; extra guards: skip when the slice is < `minSliceTokens` (default 1024) and discard a compaction whose view is not smaller → `context.compaction_skipped`) F-CTX-2 compaction (`engine/src/context/compaction.ts` + `agent/runtime.ts#modelTurn`): trigger when the estimated request (system + transcript view + tools) exceeds `triggerTokens` (default 80% of the model contextWindow; Engine option `compaction` / env `HELIX_COMPACT_TRIGGER_TOKENS`); cut only at an assistant-turn boundary, keep the last `keepRecentTurns` (default 4) turns (so tool call/result pairs never split, current step never compacted); summarizer call (role `summarizer`, same model, no tools) returns `{decisions, factsLearned, filesTouched[{path,why}], openQuestions, failingChecks, userPreferences}`; parse failure/provider error → deterministic summary; user text copied verbatim into `constraints`; persisted as `compaction` artifact `{upTo, summary, constraints, source, tokensBefore, tokensAfter}` (originals stay in `messages`, restart-safe); `context.compacted` event.
 - [x] S12-2 (DONE, compaction.test 4/4) Tests `test/compaction.test.ts` (cut selection, parse/fallback, e2e with fake Gemini: request after compaction starts with the summary and the goal verbatim, later requests reuse it).
-- [ ] S12-3 Workbench file edit/save: RPC `fs.write {workspace, path, content, baseHash}` (confined, secrets refused, conflict on hash mismatch) + editor mode in the Files tab.
-- [ ] S12-4 Full test run, live Gemini check, push.
+- [x] S12-3 (DONE) Workbench file edit/save: `fs.read` now returns `hash` (sha256, null when truncated); `writeWorkspaceFile` + RPC `fs.write {workspacePath, path, content, baseHash}`: relative paths only, parent realpath confined (symlink escape refused), `.git`/secrets/host denylist refused, 2 MB cap, `FileConflictError` when `baseHash` ≠ current (null = must not exist), atomic temp+rename keeping mode; refused while a task is running in that workspace; audited `workspace.file_written`. UI: Edit/Save/Cancel in the Files tab, textarea editor, Ctrl/Cmd+S, Tab inserts 2 spaces, unsaved-changes confirm + beforeunload, conflict message. Binary/truncated files stay read-only.
+- [x] S12-4 (DONE) engine 66/66 (compaction 4 + workbench-fs 3), CLI 2/2, tsc clean. Live gemini-3.5-flash-lite on a js-calc copy with `HELIX_COMPACT_TRIGGER_TOKENS=1500 HELIX_COMPACT_KEEP_TURNS=2 HELIX_COMPACT_MIN_SLICE_TOKENS=100`: 3 model-written compactions (1717→1645, 1761→1628, 1685→1403 est. tokens), task done, subtract fixed, tests untouched (9 steps, 12 calls, 16,356 in / 786 out). Browser: Files → Edit → Ctrl+S saved to disk; external change then Save → conflict message, disk content kept. CLI prints `⌁ compacted messages a–b (source): before → after tokens`.
+- Limits: textarea editor (no syntax highlighting); CRLF files are saved with LF (browser textarea normalizes); user edits are not checkpointed (agent checkpoints only). Compaction eval (HTS ≤2 pp delta) not run — no HTS suite yet; token counts are the ~4 chars/token estimate.
+- `helix-workbench` service re-registered in this VM: `node packages/engine/src/main.ts --ws 4100 --ui --host 0.0.0.0 --allow-host '*' --no-auth` (sources `.env.development.local`).
 
 ## Next Actions
 
-Resume here for **M1 — Core MVP** (session 12). Session 11 shipped the workbench Files view + non-PTY Terminal tab. Suggested start: item 2 (F-UI-2 step/tool-call tree, or PTY), or item 4 (F-CTX-2 compaction). Pricing for gemini-3.5-flash-lite stays `null` until a verified published price exists. Next, in order:
+Resume here for **M1 — Core MVP** (session 13). Session 12 shipped F-CTX-2 compaction and workbench file edit/save. Suggested start: F-MDL-4 role-based models (lets compaction use a cheaper Tier-S summarizer instead of the task model), then F-UI-2 step/tool-call tree or PTY terminal, then F-SBX-3 egress proxy. Pricing for gemini-3.5-flash-lite stays `null` until a verified published price exists. Next, in order:
 1. Remaining MCP (lower priority): MCP resources/prompts, OAuth for remote HTTP servers (F-AUTH-2), JSONPath projection of large results, workbench badge for tainted tasks.
-2. Workbench follow-ups: file editing/save (through checkpoints) + syntax highlighting, PTY for the terminal (interactive programs, colors), Electron shell + OS keychain (IMPL-ADR-010); F-UI-2 extensions (step/tool-call tree, pause, fork from checkpoint, change model).
+2. Workbench follow-ups: checkpoint user edits + syntax highlighting + CRLF preservation, PTY for the terminal (interactive programs, colors), Electron shell + OS keychain (IMPL-ADR-010); F-UI-2 extensions (step/tool-call tree, pause, fork from checkpoint, change model).
 3. Polish: `--verify auto` could emit `{{tests}}` gates for known runners (node --test, pytest, go test pkg selection); graph evidence in Plan Mode `affectedFiles`; tree-sitter extractor swap; gate result cache by (gate, inputs hash) (§9.6).
-4. F-CTX-2 compaction, F-MDL-4 role-based models, F-SBX-3 egress proxy, F-PRV-1/2 preview.
+4. F-CTX-2 HTS eval, F-MDL-4 role-based models, F-SBX-3 egress proxy, F-PRV-1/2 preview.
 
 Workbench: `node --disable-warning=ExperimentalWarning packages/engine/src/main.ts --ui` prints `http://127.0.0.1:<port>/#token=…`. In the v0 sandbox the registered service `helix-workbench` runs it on port 4100 with `--host 0.0.0.0 --allow-host '*' --no-auth` (dev preview only; sources `.env.development.local` for `GEMINI_API`).
-How to run: `pnpm --filter @helix/engine test` (61 tests), `pnpm --filter @helix/cli test`, `pnpm --filter @helix/provider-conformance test`, `npx tsc -p tsconfig.helix.json`.
+How to run: `pnpm --filter @helix/engine test` (66 tests), `pnpm --filter @helix/cli test`, `pnpm --filter @helix/provider-conformance test`, `npx tsc -p tsconfig.helix.json`.
 Live: `set -a; . ./.env.development.local; set +a; node --disable-warning=ExperimentalWarning evals/m0-exit.ts --model gemini-3.5-flash-lite` (key env var: `GEMINI_API`).
+Compaction env: `HELIX_COMPACT_TRIGGER_TOKENS`, `HELIX_COMPACT_KEEP_TURNS`, `HELIX_COMPACT_MIN_SLICE_TOKENS`, `HELIX_COMPACT=off` (Engine option `compaction`).
 MCP: `helix mcp add <name> [--trusted] -- <cmd...>` or `helix mcp add <name> --url <url> --header K=V`; `helix mcp list`; `helix mcp remove <name>`; mcp.json keys `allowTools`, `denyTools`, `alwaysAllow`, top-level `toolSearchThreshold`.
 CLI: `apps/cli/bin/helix -p "fix the failing test" -C <repo> --verify "<test cmd>" -m gemini-3.5-flash-lite`; `--plan` for Plan Mode; `helix search "<q>" -C <repo>`; `helix symbols <name> -C <repo>`; `helix impact <symbol|file> -C <repo>`; `--verify auto` or `.helix/verify.json` for gates; `helix checkpoints|restore <task>`.

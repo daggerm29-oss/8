@@ -61,6 +61,7 @@ function render(e: HelixEvent): string | null {
     case 'tool.result': return `  ${d.verdict === 'deny' ? '✗ denied' : d.isError ? '!' : '✓'} ${d.summary ?? d.tool}`;
     case 'verify.gate': return `  gate ${d.gate} (${d.kind}${d.required ? '' : ', optional'}): ${d.passed ? 'passed' : `failed (exit ${d.exitCode})`} in ${d.durationMs} ms`;
     case 'verify.result': return `  verify #${d.attempt}: ${d.passed ? 'passed' : `failed (exit ${d.exitCode})${d.diagnostics?.length ? ` · ${d.diagnostics.length} diagnostics: ${d.diagnostics.slice(0, 3).map((x: any) => `${x.file ?? '?'}:${x.line ?? '?'} ${x.message}`.slice(0, 120)).join(' | ')}` : ''}`}`;
+    case 'context.compacted': return `  ⌁ compacted messages ${d.from}–${d.upTo - 1} (${d.source}): ${d.tokensBefore} → ${d.tokensAfter} tokens${d.error ? ` · ${d.error}` : ''}`;
     case 'context.composed': return `  ⌁ context: ${d.items?.length ?? 0} items, ${d.usedTokens}/${d.budgetTokens} tokens${d.index ? ` · index ${d.index.files} files/${d.index.symbols} symbols (${d.index.indexed} reindexed)` : ''}`;
     case 'artifact.created': return `  ▣ ${d.kind} artifact ${d.artifactId}`;
     case 'approval.requested': return `  ? approval needed for ${d.tool} (${d.actionClass})`;
