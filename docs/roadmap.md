@@ -1,0 +1,122 @@
+# Helix — Roadmap checklist (single source of truth for progress)
+
+> Percentages in `progress.md` are computed from this file by `node scripts/progress.mjs`. Never type percentages by hand.
+> Only **top-level** checkboxes (`- [ ]` at the start of a line) are counted. Indented sub-bullets are for splitting work and are not counted.
+> Do not add, remove, or reword top-level items unless the user asks. Tick an item only when its Accept line passes.
+> Scope source: `plan.md` §12. Architecture refs are in brackets.
+
+## M0 — Foundations
+
+- [x] Monorepo + `@helix/protocol` JSON-RPC (WebSocket/stdio)
+- [x] Engine core: SQLite storage, migrations, blob store, event bus, audit chain
+- [x] OTel-compatible tracer + redacting logger
+- [x] Provider adapter framework + conformance suite (F-MDL-1)
+- [x] Gemini adapter (F-MDL-2)
+- [x] OpenAI adapter, API-key mode (F-MDL-3)
+- [x] Local sandbox v0 (F-SBX-1)
+- [x] Tool framework: fs, shell, exact search
+- [x] Primary agent loop + restart resume (F-AGT-1)
+- [x] Ledger v0 (F-TOK-1)
+- [x] CLI `helix -p` + live M0 exit eval (3/3 fixtures)
+
+## M1 — MVP, grounded single agent
+
+- [x] Plan Mode (F-AGT-2)
+- [x] Self-correction loop (F-AGT-3)
+- [x] Verification gates + baseline (F-AGT-4)
+- [x] Whole-toolchain containment (F-SBX-2)
+- [x] Sandbox lifecycle + resources (F-SBX-5)
+- [x] Symbol index, heuristic (F-IDX-1)
+- [x] Hybrid retrieval (F-IDX-4)
+- [x] Budgeted context assembler (F-CTX-1)
+- [x] Compaction (F-CTX-2)
+- [x] Project instructions (F-CTX-3)
+- [x] Shadow checkpoints + restore (F-GIT-2)
+- [x] MCP client stdio/HTTP (F-MCP-1)
+- [x] MCP permissions (F-MCP-3)
+- [x] Human approvals (F-ORC-4)
+- [x] Budgets (F-TOK-2)
+- [x] Role-based models + fallback (F-MDL-4)
+- [x] Diagnostic parsers (F-TRM-2)
+- [x] Web workbench: tasks, monitor, steps, diff, file edit, roles, approvals (F-UI-1/2)
+- [x] Terminal: run-command + PTY (F-TRM-1)
+- [ ] **T1 Egress proxy (F-SBX-3)** [§16.5] — Engine HTTP+CONNECT proxy (`packages/engine/src/sandbox/egress.ts`, node:http/net only, no TLS termination). Default allowlist: registry.npmjs.org, pypi.org, files.pythonhosted.org, github.com, codeload.github.com. Bridge into `unshare --net` via bind-mounted Unix socket + in-sandbox TCP→unix forwarder; set `HTTP(S)_PROXY`/`npm_config_proxy` in `LocalSandbox.env()`. Denied host → `egress.denied` event; RPC `egress.allow {workspacePath, host}` persisted (new migration). Accept: allowlisted `curl https://registry.npmjs.org/` works in sandbox; other hosts denied and reported; `curl --noproxy '*'` fails; new `test/egress.test.ts` passes.
+- [ ] **T2 Dev server start (F-PRV-1)** [§17.2] — Detect `dev`/`start` script or Vite/Next, start in sandbox on a free port, emit `preview.ready {url}`; agent tool `start_dev_server`. Accept: fixture web app starts and responds on localhost.
+- [ ] **T3 Preview panel (F-PRV-2)** [§17.1, §17.3] — Workbench "Preview" tab: iframe of dev-server URL + reload. One tab only. Accept: browser check shows the fixture page inside the workbench.
+- [ ] **T4 Browser tools, minimal (F-PRV-5)** [§18.5] — Agent tools `preview_screenshot`, `preview_console` (headless Chromium via CDP, else Playwright). No recording. Accept: agent takes a screenshot and reads console errors of the fixture page.
+- [ ] **T5 Git panel, minimal (F-GIT-1, F-GIT-5)** [§20.1, §20.6] — Workbench "Git" tab: status, diff, stage all, commit. Agent tools cannot force-push or push to main. Accept: commit from panel appears in `git log`; agent `git push --force` is denied.
+- [ ] **T6 Explore subagent (F-ORC-1)** [§10.2] — Read-only subagent (find_symbol, code_search, read_file) as tool `explore {question}` returning a short summary. No DAG. Accept: fake-model test shows parent gets the summary and subagent has no write tools.
+- [ ] **T7 M1 demo eval** — `fixtures/m1/web-hello` + `evals/m1-demo.ts`: open workspace, ask "change the page heading to Hello Helix", agent installs deps via proxy, starts dev server, edits, screenshot confirms, gates pass, commit from Git panel. Accept: passes once live with Gemini; result in `evals/results/`.
+
+Launch gates (human, not counted): O1/O2 benchmarks, 10-user usability study.
+
+## M2 — Precision and efficiency
+
+- [x] MCP tool search (F-MCP-2)
+- [x] MCP result compression + cache (F-MCP-4)
+- [x] MCP prompt-injection defense (F-MCP-5)
+- [x] Code graph v0 + `impact` tool (F-IDX-3)
+- [x] Change-based test selection (F-TST-1)
+- [ ] Precise references via SCIP/LSP (F-IDX-2) [§11.4]
+- [ ] Impact Report attached to Plan Mode artifacts [§11.5]
+- [ ] tree-sitter parser swap for the symbol index [§11.2]
+- [ ] Local-first vector embeddings in hybrid retrieval (F-IDX-6) [§12.3]
+- [ ] Domain extractors (F-IDX-5) [§11.7]
+- [ ] Runtime telemetry via CDP + Environment Snapshot (F-PRV-3/4) [§18.3]
+- [ ] Element→source + select-and-instruct in preview [§17]
+- [ ] Credential masking via TLS-terminating proxy (F-SBX-4) [§16.6]
+- [ ] Model router v1 (F-MDL-5) [§7.6]
+- [ ] Session replay [§30]
+- [ ] Artifacts view v2 with structured evidence (F-UI-4)
+- [ ] Test generation (F-TST) [§19]
+- [ ] Skills and hooks (F-AGT-5) [§9.7]
+- [ ] OSV dependency gate (F-REV-3)
+- [ ] Electron desktop shell + OS keychain (F-AUTH-1)
+- [ ] Windows support
+- [ ] M2 eval: cost vs baseline, MCP tokens ≤ 3k/turn at 200 tools, element→source ≥ 95% on fixtures
+
+Launch gates (human, not counted): Sign in with ChatGPT (needs OpenAI approval), O3/O5 benchmarks.
+
+## M3 — Parallel and background
+
+- [ ] General subagents + task DAG scheduler (F-ORC-2) [§10.3]
+- [ ] Write leases + worktrees + merge agent (F-ORC-3) [§10.4]
+- [ ] Cloud sandbox provider (+ self-hosted Firecracker option) [§16]
+- [ ] Local and cloud background workers, durable across restarts (F-ORC-5) [§10.6]
+- [ ] Schedules and triggers [§10.6]
+- [ ] Visual regression [§19]
+- [ ] Bug auto-repro [§19]
+- [ ] E2E tests from recordings [§19]
+- [ ] Fix-history / typed project memory (F-CTX-4) [§13.6]
+- [ ] Architecture diagrams
+- [ ] Inline completion v1
+- [ ] M3 eval: 300-file migration with zero lost writes; visual regression false positives ≤ 5%
+
+## M4 — Team and ecosystem
+
+- [ ] Helix Cloud control plane: orgs, RBAC, policies, audit export
+- [ ] SSO + SCIM (F-AUTH-3) [§8.5]
+- [ ] OAuth broker (F-AUTH-2) [§8.2]
+- [ ] PR review bot: GitHub App, then GitLab
+- [ ] Deploy adapters
+- [ ] Shared memory and skills
+- [ ] Auto ADRs
+- [ ] App scaffolding templates + integration wizards
+- [ ] Learned routing priors (opt-in data)
+
+Launch gates (human, not counted): 3 design-partner pilots, SOC 2 Type I readiness, external pen test.
+
+## M5 — Platform
+
+- [ ] Agents-as-code SDK on the Helix Engine
+- [ ] Execution-flow visualization
+- [ ] Specialist small models: rerank, routing, diagnostics extraction
+- [ ] Mobile remote control
+- [ ] Curated marketplace for skills and MCP bundles
+
+## M6 — Collaboration
+
+- [ ] Multiplayer sessions (CRDT)
+- [ ] Voice input
+- [ ] Enterprise data-residency regions
+- [ ] On-prem control plane
