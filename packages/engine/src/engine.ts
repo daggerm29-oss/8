@@ -27,6 +27,7 @@ import { LocalSandbox, unshareAvailable } from './sandbox/sandbox.ts';
 import { DEFAULT_EGRESS_ALLOWLIST, EgressProxy } from './sandbox/egress.ts';
 import { DevServers } from './preview/devserver.ts';
 import { PreviewBrowser } from './preview/browser.ts';
+import { elementContext, mapElementToSource, parseLoc } from './preview/locate.ts';
 import { listWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile } from './workspace/files.ts';
 import { gitCommit, gitDiff, gitStageAll, gitStatus } from './workspace/git.ts';
 import { WorkspaceIndex } from './index/index.ts';
@@ -301,6 +302,42 @@ export class Engine {
 
     peer.handle(Methods.previewStart, guard<{ workspacePath: string }>((p) => this.devServers.start(this.knownWorkspace(p.workspacePath))));
     peer.handle(Methods.previewStop, guard<{ workspacePath: string }>((p) => ({ stopped: this.devServers.stop(this.knownWorkspace(p.workspacePath)) })));
+    const previewUrl = (root: string) => {
+      const info = this.devServers.get(root);
+      if (!info) throw new Error('no dev server running for this workspace (start it first)');
+      return info.url;
+    };
+    const locateAt = async (workspacePath: string, x: number, y: number) => {
+      const root = this.knownWorkspace(workspacePath);
+      const card = await this.browser.locate(previewUrl(root), x, y);
+      if (!card) throw new Error(`no element at ${x},${y}`);
+      const idx = this.index(root);
+      const source = mapElementToSource(card, idx);
+      return { root, card, source, context: elementContext(card, source, idx) };
+    };
+    peer.handle(Methods.previewInspect, guard<{ workspacePath: string }>(async (p) => {
+      const shot = await this.browser.screenshot(previewUrl(this.knownWorkspace(p.workspacePath)));
+      return { image: readFileSync(shot.path).toString('base64'), width: 1280, height: 800, url: shot.url, title: shot.title };
+    }));
+    peer.handle(Methods.previewLocate, guard<{ workspacePath: string; x: number; y: number }>(async (p) => {
+      const { card, source, context } = await locateAt(p.workspacePath, p.x, p.y);
+      return { card, source, context };
+    }));
+    peer.handle(Methods.previewInstruct, guard<{ workspacePath: string; x: number; y: number; instruction: string; path?: string; start?: boolean } & Omit<TaskCreateParams, 'workspacePath' | 'goal'>>(async (p) => {
+      const instruction = String(p.instruction ?? '').trim();
+      if (!instruction) throw new Error('instruction is required');
+      const { root, card, source, context } = await locateAt(p.workspacePath, p.x, p.y);
+      let confirmed = source;
+      if (p.path) {
+        const at = parseLoc(root, `${p.path}:${source && source.path === p.path ? source.line : 1}`);
+        if (!at) throw new Error(`not a workspace file: ${p.path}`);
+        confirmed = { path: at.path, line: at.line, strategy: source?.strategy ?? 'text', confidence: 1, needsConfirm: false, chain: source?.chain ?? [] };
+      }
+      const ctx = confirmed !== source ? elementContext(card, confirmed, this.index(root)) : context;
+      const { x: _x, y: _y, instruction: _i, path: _p, ...rest } = p;
+      const task = this.runtime.create({ ...rest, workspacePath: root, goal: `${instruction}\n\n${ctx}`, title: rest.title ?? instruction.slice(0, 80), start: p.start ?? true });
+      return { task, card, source: confirmed };
+    }));
     peer.handle(Methods.gitStatus, guard<{ workspacePath: string }>((p) => gitStatus(this.knownWorkspace(p.workspacePath))));
     peer.handle(Methods.gitDiff, guard<{ workspacePath: string }>((p) => gitDiff(this.knownWorkspace(p.workspacePath))));
     peer.handle(Methods.gitStageAll, guard<{ workspacePath: string }>((p) => gitStageAll(this.knownWorkspace(p.workspacePath))));

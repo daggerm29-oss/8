@@ -144,6 +144,10 @@ export const Methods = {
   /* F-PRV-1 dev server */
   previewStart: 'preview.start',
   previewStop: 'preview.stop',
+  /* §18.6 element→source + select-and-instruct */
+  previewInspect: 'preview.inspect',
+  previewLocate: 'preview.locate',
+  previewInstruct: 'preview.instruct',
   /* F-GIT-1 minimal Git panel */
   gitStatus: 'git.status',
   gitDiff: 'git.diff',
