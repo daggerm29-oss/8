@@ -11,15 +11,15 @@
 
 > These are **checklist completion** numbers (ticked items with recorded evidence ÷ all items). They are not a measure of product quality or release readiness; human launch gates in `docs/roadmap.md` are not counted.
 
-**Overall checklist completion: 61%** (54/89 roadmap items)  
+**Overall checklist completion: 62%** (55/89 roadmap items)  
 **Current milestone:** M2 Precision and efficiency  
-**Next task:** Skills and hooks (F-AGT-5) [§9.7] (deferred from M1)
+**Next task:** OSV dependency gate (F-REV-3) (deferred from M1)
 
 | Milestone | Progress | Items | Status |
 | --- | --- | --- | --- |
 | M0 Foundations | ██████████ 100% | 11/11 | Done |
 | M1 MVP, grounded single agent | ██████████ 100% | 26/26 | Done |
-| M2 Precision and efficiency | ████████░░ 77% | 17/22 | In progress |
+| M2 Precision and efficiency | ████████░░ 82% | 18/22 | In progress |
 | M3 Parallel and background | ░░░░░░░░░░ 0% | 0/12 | Not started |
 | M4 Team and ecosystem | ░░░░░░░░░░ 0% | 0/9 | Not started |
 | M5 Platform | ░░░░░░░░░░ 0% | 0/5 | Not started |
@@ -28,7 +28,7 @@
 
 ## Current task notes (overwrite when the task changes)
 
-- Next: M2 "Skills and hooks (F-AGT-5)" [§9.7] — not started; write its Accept line first.
+- Next: M2 "OSV dependency gate (F-REV-3)" — not started; write its Accept line first (no network to osv.dev in tests: use a local advisory DB fixture / injectable fetch).
 
 ## Ideas parking lot (one line each, max 15 — do not implement)
 
@@ -38,6 +38,7 @@
 - Persist demoted model refs per workspace
 - PTY history indexing + live resize
 - Test generation: coverage-driven target picking + test-runner subagent; non-JS default commands
+- Hooks: pre_commit/session_start events, YAML hooks file, skills in tool_search
 - Preview through an Engine origin proxy (p<port>-<ws>.localhost, §17.3) so remote workbench users can see it
 
 ## How to run
