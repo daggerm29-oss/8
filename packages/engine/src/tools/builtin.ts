@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { ToolRegistry, type Tool } from './registry.ts';
+import { ToolRegistry, type PreviewCapture, type Tool } from './registry.ts';
 import { codeSearch, findSymbol, impactTool } from './index-tools.ts';
 
 const SKIP_DIRS = new Set(['node_modules', '.git', '.next', 'dist', 'build', '__pycache__', '.venv', 'target']);
@@ -127,7 +127,7 @@ const editFile: Tool = {
 const runShell: Tool = {
   spec: {
     name: 'run_shell',
-    description: 'Run a bash command in the workspace sandbox (no network). Returns exit code, stdout, and stderr. Use it to run tests.',
+    description: 'Run a bash command in the workspace sandbox (network only to allowlisted hosts such as registry.npmjs.org, via the Helix proxy). Returns exit code, stdout, and stderr. Use it to run tests.',
     inputSchema: { type: 'object', properties: { command: { type: 'string', minLength: 1 }, cwd: { type: 'string' }, timeoutMs: { type: 'integer', minimum: 1000, maximum: 600_000 } }, required: ['command'] },
   },
   async run(args, { sandbox, signal }) {
@@ -138,6 +138,91 @@ const runShell: Tool = {
       isError: r.exitCode !== 0,
       summary: `$ ${String(args.command).slice(0, 80)} → ${status}`,
     };
+  },
+};
+
+/** Dev server start (F-PRV-1, §17.2). The server keeps running after the call; its URL is on the host loopback. */
+const startDevServerTool: Tool = {
+  spec: {
+    name: 'start_dev_server',
+    description: 'Start the workspace web dev server (package.json "dev" or "start" script) in the sandbox, or reuse the running one. Returns its preview URL once it answers HTTP. Install dependencies first with run_shell.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  async run(_args, { startDevServer }) {
+    if (!startDevServer) return { content: 'dev servers are not available in this context', isError: true, summary: 'start_dev_server unavailable' };
+    try {
+      const s = await startDevServer();
+      return { content: `dev server running: ${s.url} (command: ${s.command}, sandbox port ${s.port})`, summary: `dev server → ${s.url}` };
+    } catch (e) {
+      return { content: `dev server failed: ${(e as Error).message}`, isError: true, summary: 'dev server failed' };
+    }
+  },
+};
+
+const previewPathSchema = { type: 'object', properties: { path: { type: 'string', description: 'Page path on the dev server, e.g. "/" or "/about" (default "/")' } }, additionalProperties: false } as const;
+
+function formatConsole(entries: PreviewCapture['console']): string {
+  if (!entries.length) return '(no console messages)';
+  return entries.slice(0, 50).map((e) => `[${e.level}] ${e.text}${e.url ? ` (${e.url}${e.line !== undefined ? `:${e.line + 1}` : ''})` : ''}`).join('\n');
+}
+
+/** Browser tools, minimal (F-PRV-5, §18.5): headless Chrome against the running dev server. */
+const previewScreenshot: Tool = {
+  spec: {
+    name: 'preview_screenshot',
+    description: 'Load a page of the running dev server in a headless browser and take a screenshot. Returns the PNG path, page title, visible text excerpt and console errors. Start the server with start_dev_server first.',
+    inputSchema: previewPathSchema,
+  },
+  async run(args, { previewBrowser }) {
+    if (!previewBrowser) return { content: 'browser tools are not available in this context', isError: true, summary: 'preview_screenshot unavailable' };
+    try {
+      const s = await previewBrowser.screenshot((args as { path?: string }).path);
+      const errors = s.console.filter((e) => e.level === 'error');
+      return {
+        content: `screenshot saved: ${s.path} (${s.bytes} bytes)\nurl: ${s.url}\ntitle: ${s.title}\nload: ${s.status}\nvisible text:\n${s.text.slice(0, 1500)}\nconsole errors:\n${formatConsole(errors)}`,
+        summary: `screenshot ${s.url} · ${errors.length} console error(s)`,
+      };
+    } catch (e) {
+      return { content: `screenshot failed: ${(e as Error).message}`, isError: true, summary: 'preview_screenshot failed' };
+    }
+  },
+};
+
+const previewConsole: Tool = {
+  spec: {
+    name: 'preview_console',
+    description: 'Load a page of the running dev server in a headless browser and return its console messages and uncaught exceptions. Start the server with start_dev_server first.',
+    inputSchema: previewPathSchema,
+  },
+  async run(args, { previewBrowser }) {
+    if (!previewBrowser) return { content: 'browser tools are not available in this context', isError: true, summary: 'preview_console unavailable' };
+    try {
+      const c = await previewBrowser.console((args as { path?: string }).path);
+      const errors = c.console.filter((e) => e.level === 'error').length;
+      return { content: `url: ${c.url}\nload: ${c.status}\nconsole:\n${formatConsole(c.console)}`, summary: `console ${c.url} · ${c.console.length} message(s), ${errors} error(s)` };
+    } catch (e) {
+      return { content: `console capture failed: ${(e as Error).message}`, isError: true, summary: 'preview_console failed' };
+    }
+  },
+};
+
+/** Explore subagent (F-ORC-1, §10.2): a read-only sub-loop that answers a codebase question with a short summary. */
+const exploreTool: Tool = {
+  spec: {
+    name: 'explore',
+    description: 'Delegate a codebase question to a read-only explore subagent (find_symbol, code_search, read_file). Returns a short summary with path:line evidence. Use it for open-ended "where/how is X done" questions to keep your own context small.',
+    inputSchema: { type: 'object', properties: { question: { type: 'string', description: 'The specific question to answer about the codebase' } }, required: ['question'], additionalProperties: false },
+  },
+  async run(args, { explore }) {
+    const question = String((args as { question?: unknown }).question ?? '').trim();
+    if (!question) return { content: 'question is required', isError: true };
+    if (!explore) return { content: 'the explore subagent is not available in this context', isError: true, summary: 'explore unavailable' };
+    try {
+      const summary = await explore(question);
+      return { content: summary, summary: `explore → ${summary.length} chars` };
+    } catch (e) {
+      return { content: `explore failed: ${(e as Error).message}`, isError: true, summary: 'explore failed' };
+    }
   },
 };
 
@@ -160,17 +245,27 @@ export const submitPlan: Tool = {
       required: ['goal', 'affectedFiles', 'steps', 'verification'],
     },
   },
-  async run(args, { submitArtifact, sandbox }) {
+  async run(args, { submitArtifact, sandbox, index }) {
     if (!submitArtifact) return { content: 'submit_plan is only available in Plan Mode', isError: true };
     const files = (args.affectedFiles as Array<{ path: string }>) ?? [];
     const missing = files.filter((f) => { try { sandbox.resolvePath(f.path); return !existsSync(sandbox.resolvePath(f.path)); } catch { return true; } }).map((f) => f.path);
-    const id = submitArtifact('plan', String(args.goal).slice(0, 120), { ...args, unverifiedPaths: missing });
-    return { content: `plan saved as ${id}${missing.length ? `; note: these paths do not exist yet (new files?): ${missing.join(', ')}` : ''}. Now reply with a one-paragraph summary and stop.`, summary: `plan ${id}: ${(args.steps as unknown[]).length} steps` };
+    let impactArtifactId: string | undefined;
+    let impactNote = '';
+    if (index) {
+      index.update();
+      const planned = new Set(files.map((f) => f.path));
+      const report = index.planImpact(files.map((f) => f.path).filter((p) => !missing.includes(p)));
+      report.dependentsNotInPlan = report.dependentsNotInPlan.filter((p) => !planned.has(p));
+      impactArtifactId = submitArtifact('impact', 'Impact Report', report);
+      impactNote = `\nImpact Report ${impactArtifactId}: risk ${report.riskScore} (${report.riskTerms.map((t) => `${t.term}=${t.value}×${t.weight}`).join(' + ')}); dependents ${report.transitiveDependents.count}; tests ${report.coveringTests.join(', ') || 'none'}${report.dependentsNotInPlan.length ? `; dependents not in the plan: ${report.dependentsNotInPlan.join(', ')}` : ''}`;
+    }
+    const id = submitArtifact('plan', String(args.goal).slice(0, 120), { ...args, unverifiedPaths: missing, ...(impactArtifactId ? { impactArtifactId } : {}) });
+    return { content: `plan saved as ${id}${missing.length ? `; note: these paths do not exist yet (new files?): ${missing.join(', ')}` : ''}.${impactNote}\nNow reply with a one-paragraph summary and stop.`, summary: `plan ${id}: ${(args.steps as unknown[]).length} steps` };
   },
 };
 
 export function builtinTools(): ToolRegistry {
   const reg = new ToolRegistry();
-  for (const t of [readFile, listDir, search, findSymbol, codeSearch, impactTool, writeFile, editFile, runShell, submitPlan]) reg.register(t);
+  for (const t of [readFile, listDir, search, findSymbol, codeSearch, impactTool, writeFile, editFile, runShell, startDevServerTool, previewScreenshot, previewConsole, exploreTool, submitPlan]) reg.register(t);
   return reg;
 }

@@ -11,15 +11,15 @@
 
 > These are **checklist completion** numbers (ticked items with recorded evidence ÷ all items). They are not a measure of product quality or release readiness; human launch gates in `docs/roadmap.md` are not counted.
 
-**Overall checklist completion: 39%** (35/89 roadmap items)  
-**Current milestone:** M1 MVP, grounded single agent  
-**Next task:** T1 Egress proxy (F-SBX-3) [§16.5]
+**Overall checklist completion: 49%** (44/89 roadmap items)  
+**Current milestone:** M2 Precision and efficiency  
+**Next task:** tree-sitter parser swap for the symbol index [§11.2] (deferred from M1)
 
 | Milestone | Progress | Items | Status |
 | --- | --- | --- | --- |
 | M0 Foundations | ██████████ 100% | 11/11 | Done |
-| M1 MVP, grounded single agent | ███████░░░ 73% | 19/26 | In progress |
-| M2 Precision and efficiency | ██░░░░░░░░ 23% | 5/22 | Partly built early |
+| M1 MVP, grounded single agent | ██████████ 100% | 26/26 | Done |
+| M2 Precision and efficiency | ███░░░░░░░ 32% | 7/22 | In progress |
 | M3 Parallel and background | ░░░░░░░░░░ 0% | 0/12 | Not started |
 | M4 Team and ecosystem | ░░░░░░░░░░ 0% | 0/9 | Not started |
 | M5 Platform | ░░░░░░░░░░ 0% | 0/5 | Not started |
@@ -28,7 +28,7 @@
 
 ## Current task notes (overwrite when the task changes)
 
-- No task in progress yet. Start with the "Next task" shown above.
+- Next: M2 "tree-sitter parser swap for the symbol index" [§11.2] — needs an Accept line in docs/roadmap.md first.
 
 ## Ideas parking lot (one line each, max 15 — do not implement)
 
@@ -37,6 +37,7 @@
 - `--verify auto` emitting `{{tests}}` gates
 - Persist demoted model refs per workspace
 - PTY history indexing + live resize
+- Preview through an Engine origin proxy (p<port>-<ws>.localhost, §17.3) so remote workbench users can see it
 
 ## How to run
 
@@ -54,5 +55,6 @@
 
 ## Last session (overwrite each session, max 5 lines)
 
-- 2026-11-08: Added `docs/roadmap.md` (M0–M6 checklist), `scripts/progress.mjs` (computed checklist completion), milestone-agnostic `AGENTS.md`.
-- Review fixes: session batches (many tasks, one draft PR per session, resume open PR branch, never self-merge); ticks only count with an `Evidence:` line (35 pre-existing ticks marked legacy); deferred-from-M1 items tagged; percentages labeled as checklist completion.
+- 2026-11-08 (PR #16): M1 T1–T7 done (T7 live Gemini demo PASS, evals/results/m1-demo-*); M1 100%.
+- M2: precise TS/JS references via TypeScript LS in sandbox (F-IDX-2); Impact Report artifact linked from Plan Mode plans.
+- Full engine suite 84/84 at session end. Next: tree-sitter parser swap (write its Accept line first).

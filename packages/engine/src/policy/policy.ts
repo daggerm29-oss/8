@@ -32,8 +32,9 @@ const NETWORK: Array<[RegExp, string]> = [
 
 const TOOL_CLASS: Record<string, ActionClass> = {
   read_file: 'read', list_dir: 'read', tool_search: 'read', search: 'read', find_symbol: 'read', code_search: 'read', submit_plan: 'read',
+  preview_screenshot: 'read', preview_console: 'read', explore: 'read',
   write_file: 'write', edit_file: 'write',
-  run_shell: 'exec',
+  run_shell: 'exec', start_dev_server: 'exec',
 };
 
 /** Dynamically registered tools (MCP, F-MCP-3 v0) declare their class here; unknown `mcp__*` tools default to network. */
@@ -68,8 +69,25 @@ const MATRIX: Record<PolicyProfile, Record<ActionClass, Verdict>> = {
  * (network, destructive) then lose blanket auto-approval (class preapproval, `all`, MCP alwaysAllow) and
  * need a confirmation; only an explicit per-tool preapproval (`tool:<name>`) still allows them.
  */
+/** Git safeguards (F-GIT-5, §20.6): pushes agents may never make, regardless of profile or preapproval. */
+const DEFAULT_BRANCHES = /^(main|master)$/;
+export function forbiddenGitPush(command: string): string | null {
+  for (const m of command.matchAll(/\bgit\b((?:\s+-[cC]\s+\S+|\s+--?[\w-]+(?:=\S+)?)*)\s+push\b([^;&|\n]*)/g)) {
+    const args = m[2].trim().split(/\s+/).filter(Boolean);
+    if (args.some((a) => /^--(force|force-with-lease|force-if-includes|mirror)(=|$)/.test(a) || /^-[a-zA-Z]*f[a-zA-Z]*$/.test(a))) return 'force-push is denied for agents';
+    const refspecs = args.filter((a) => !a.startsWith('-')).slice(1);
+    if (refspecs.some((r) => r.startsWith('+'))) return 'force-push (+refspec) is denied for agents';
+    if (refspecs.some((r) => DEFAULT_BRANCHES.test(r.replace(/^\+/, '').split(':').pop()!.replace(/^refs\/heads\//, '')))) return 'push to the default branch is denied for agents';
+  }
+  return null;
+}
+
 export function evaluate(input: { tool: string; args: unknown; profile: PolicyProfile; preapprove?: string[]; sandboxHasNetwork?: boolean; tainted?: boolean }): PolicyDecision {
   const { actionClass } = classify(input.tool, input.args);
+  if (input.tool === 'run_shell') {
+    const forbidden = forbiddenGitPush(String((input.args as { command?: unknown })?.command ?? ''));
+    if (forbidden) return { verdict: 'deny', actionClass, reason: forbidden };
+  }
   let { reason } = classify(input.tool, input.args);
   let verdict = MATRIX[input.profile][actionClass];
   const pre = new Set(input.preapprove ?? []);

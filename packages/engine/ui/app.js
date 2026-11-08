@@ -1,7 +1,7 @@
 // Helix Workbench v0 (F-UI-1). Plain ES module, no build step: talks JSON-RPC 2.0 to the Engine over the
 // same-origin WebSocket (§22.2). All engine data is rendered with textContent — never innerHTML.
 
-const TOPICS = ['task.*', 'agent.*', 'tool.*', 'model.*', 'verify.*', 'approval.*', 'ledger.*', 'budget.*', 'context.*', 'artifact.*', 'checkpoint.*'];
+const TOPICS = ['task.*', 'agent.*', 'tool.*', 'model.*', 'verify.*', 'approval.*', 'ledger.*', 'budget.*', 'context.*', 'artifact.*', 'checkpoint.*', 'preview.*'];
 const TERMINAL = ['done', 'failed', 'cancelled'];
 const $ = (id) => document.getElementById(id);
 
@@ -559,6 +559,75 @@ rpc.onTerminal = (p) => {
   termAppend(term.runWs, p.text, p.stream === 'stderr' ? 'stderr' : '');
 };
 
+/* ---------------- preview (F-PRV-2) ---------------- */
+const preview = { byWs: new Map(), busy: false, error: '' };
+
+function renderPreview() {
+  const ws = selectedWorkspace();
+  const info = ws ? preview.byWs.get(ws) : null;
+  const frame = $('preview-frame');
+  $('preview-status').textContent = preview.busy ? 'Starting dev server…' : preview.error ? preview.error : info ? `${info.command} → ${info.url}` : 'No dev server running.';
+  $('preview-start').hidden = !!info;
+  $('preview-start').disabled = preview.busy || !ws;
+  $('preview-reload').hidden = !info;
+  $('preview-open').hidden = !info;
+  frame.hidden = !info;
+  if (info) {
+    $('preview-open').href = info.url;
+    if (frame.dataset.url !== info.url) { frame.dataset.url = info.url; frame.src = info.url; }
+  }
+}
+
+async function startPreview() {
+  const ws = selectedWorkspace();
+  if (!ws || preview.busy) return;
+  preview.busy = true; preview.error = '';
+  renderPreview();
+  try { preview.byWs.set(ws, await rpc.call('preview.start', { workspacePath: ws }, 120_000)); }
+  catch (err) { preview.error = `Failed: ${String(err.message ?? err).split('\n')[0]}`; }
+  finally { preview.busy = false; if (state.tab === 'preview') renderPreview(); }
+}
+
+function reloadPreview() {
+  const frame = $('preview-frame');
+  if (frame.dataset.url) frame.src = frame.dataset.url;
+}
+
+/* ---------------- git (F-GIT-1 minimal) ---------------- */
+function patchView(title, patch) {
+  if (!patch) return null;
+  return h('div', { class: 'file' }, h('div', { class: 'file-head' }, h('span', {}, title)),
+    h('pre', { class: 'patch mono' }, patch.split('\n').map((l) => h('span', { class: l.startsWith('@@') ? 'h' : l.startsWith('+') && !l.startsWith('+++') ? 'a' : l.startsWith('-') && !l.startsWith('---') ? 'd' : '' }, l || ' '))));
+}
+
+async function renderGit() {
+  const ws = selectedWorkspace();
+  if (!ws) return;
+  const st = await rpc.call('git.status', { workspacePath: ws });
+  if (!st.isRepo) {
+    $('git-branch').textContent = 'Not a git repository.';
+    $('git-files').replaceChildren();
+    $('git-diff').replaceChildren();
+    $('git-stage').disabled = $('git-commit').disabled = true;
+    return;
+  }
+  $('git-branch').textContent = `${st.branch ?? '(detached)'}${st.head ? ` @ ${st.head}` : ''} · ${st.files.length} changed`;
+  $('git-files').replaceChildren(...(st.files.length ? st.files.map((f) => h('li', {}, h('span', { class: 'st' }, `${f.index}${f.worktree}`), h('span', {}, f.path)))
+    : [h('li', { class: 'note' }, 'Working tree clean.')]));
+  const staged = st.files.some((f) => f.index !== ' ' && f.index !== '?');
+  $('git-stage').disabled = !st.files.some((f) => f.worktree !== ' ');
+  $('git-commit').disabled = !staged;
+  const d = await rpc.call('git.diff', { workspacePath: ws });
+  $('git-diff').replaceChildren(...[patchView('Staged', d.staged), patchView('Unstaged', d.unstaged)].filter(Boolean));
+}
+
+async function gitAction(fn) {
+  $('git-result').className = 'note';
+  try { $('git-result').textContent = await fn(); }
+  catch (err) { $('git-result').className = 'note err'; $('git-result').textContent = String(err.message ?? err); }
+  await renderGit();
+}
+
 async function renderTab() {
   if (!state.selected) return;
   try {
@@ -571,6 +640,8 @@ async function renderTab() {
     else if (state.tab === 'artifacts') await renderArtifacts();
     else if (state.tab === 'files') await renderFiles();
     else if (state.tab === 'terminal') renderTerminal();
+    else if (state.tab === 'preview') renderPreview();
+    else if (state.tab === 'git') await renderGit();
   } catch (err) { console.error('[helix] render failed', err); }
 }
 
@@ -703,6 +774,12 @@ setInterval(() => {
 }, 1000);
 
 function onEvent(e) {
+  if (e.topic === 'preview.ready' || e.topic === 'preview.exited') {
+    const wsPath = e.data?.workspacePath;
+    if (wsPath) e.topic === 'preview.ready' ? preview.byWs.set(wsPath, e.data) : preview.byWs.delete(wsPath);
+    if (state.tab === 'preview') renderPreview();
+    return;
+  }
   if (!e.task) return;
   if (e.topic === 'model.delta') {
     if (e.task === state.selected) { state.stream += e.data?.text ?? ''; if (state.tab === 'activity') renderActivity(); }
@@ -728,6 +805,21 @@ function setStatus(text, ok) {
 }
 
 function bindUi() {
+  $('preview-start').addEventListener('click', startPreview);
+  $('preview-reload').addEventListener('click', reloadPreview);
+  $('git-refresh').addEventListener('click', () => gitAction(async () => ''));
+  $('git-stage').addEventListener('click', () => gitAction(async () => {
+    const st = await rpc.call('git.stageAll', { workspacePath: selectedWorkspace() });
+    return `Staged ${st.files.length} file(s).`;
+  }));
+  $('git-commit-form').addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    gitAction(async () => {
+      const c = await rpc.call('git.commit', { workspacePath: selectedWorkspace(), message: $('git-message').value });
+      $('git-message').value = '';
+      return `Committed ${c.sha}: ${c.subject}`;
+    });
+  });
   $('refresh').addEventListener('click', () => { refreshTasks(); if (!state.selected) loadMonitor(); });
   $('show-monitor').addEventListener('click', showMonitor);
   $('batch-approve').addEventListener('click', () => batchRespond(true));

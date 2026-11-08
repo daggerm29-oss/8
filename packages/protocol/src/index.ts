@@ -138,6 +138,17 @@ export const Methods = {
   ptyOpen: 'pty.open',
   ptyWrite: 'pty.write',
   ptyKill: 'pty.kill',
+  /* F-SBX-3 egress allowlist */
+  egressAllow: 'egress.allow',
+  egressList: 'egress.list',
+  /* F-PRV-1 dev server */
+  previewStart: 'preview.start',
+  previewStop: 'preview.stop',
+  /* F-GIT-1 minimal Git panel */
+  gitStatus: 'git.status',
+  gitDiff: 'git.diff',
+  gitStageAll: 'git.stageAll',
+  gitCommit: 'git.commit',
 } as const;
 
 export const Notifications = {

@@ -1,0 +1,11 @@
+{
+  "name": "fixture-web-hello",
+  "private": true,
+  "scripts": {
+    "dev": "node --watch server.js",
+    "test": "node --test \"test/*.test.js\""
+  },
+  "dependencies": {
+    "escape-html": "1.0.3"
+  }
+}

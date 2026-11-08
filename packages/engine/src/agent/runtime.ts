@@ -20,8 +20,11 @@ import type { Ledger, ModelRole } from '../models/ledger.ts';
 import { assertUsable, loadRoleLayers, refString, resolveRoles, type ModelRef, type ResolvedRoles, type RolesInput } from '../models/roles.ts';
 import type { Tracer } from '../obs/tracing.ts';
 import type { Logger } from '../util/log.ts';
-import type { ToolRegistry } from '../tools/registry.ts';
+import type { ToolContext, ToolRegistry } from '../tools/registry.ts';
 import { LocalSandbox } from '../sandbox/sandbox.ts';
+import type { EgressProxy } from '../sandbox/egress.ts';
+import type { DevServers } from '../preview/devserver.ts';
+import type { PreviewBrowser } from '../preview/browser.ts';
 import { evaluate, type PolicyProfile } from '../policy/policy.ts';
 import { prefixedId } from '../util/ids.ts';
 import { globalRedactor } from '../util/redact.ts';
@@ -48,6 +51,12 @@ export interface RuntimeOptions {
   blobs?: BlobStore;
   logger?: Logger;
   forceProcessSandbox?: boolean;
+  /** Engine egress proxy bridged into task sandboxes (F-SBX-3). */
+  egress?: EgressProxy;
+  /** Workspace dev servers (F-PRV-1) for the `start_dev_server` tool. */
+  devServers?: DevServers;
+  /** Headless browser for `preview_screenshot` / `preview_console` (F-PRV-5). */
+  browser?: PreviewBrowser;
   /** Multiplier for task-level backoff delays (tests use a tiny value). */
   taskRetryScale?: number;
   /** Helix home, for user-level `HELIX.md` instructions (§13.5). */
@@ -66,6 +75,9 @@ export interface CheckpointInfo {
   files: Array<{ path: string; created: boolean }>;
 }
 
+const EXPLORE_TOOLS = ['find_symbol', 'code_search', 'read_file'];
+const EXPLORE_MAX_STEPS = 6;
+const EXPLORE_MAX_CHARS = 6000;
 const PLAN_TOOLS = ['read_file', 'list_dir', 'search', 'find_symbol', 'code_search', 'impact', 'submit_plan'];
 
 export function summarizeRoles(roles: ResolvedRoles): Record<string, string> {
@@ -275,7 +287,9 @@ export class TaskRuntime {
       const run = this.running.get(id);
       if (run) {
         const remaining = deadline - Date.now();
-        await (remaining === Infinity ? run.done : Promise.race([run.done, new Promise((r) => setTimeout(r, remaining))]));
+        let timer: NodeJS.Timeout | undefined;
+        await (remaining === Infinity ? run.done : Promise.race([run.done, new Promise((r) => { timer = setTimeout(r, remaining); })]));
+        clearTimeout(timer);
       } else if (TERMINAL.includes(this.row(id).status)) break;
       else await new Promise((r) => setTimeout(r, 200));
       if (TERMINAL.includes(this.row(id).status)) break;
@@ -356,7 +370,7 @@ export class TaskRuntime {
   private async loop(id: string, signal: AbortSignal): Promise<void> {
     const initial = this.row(id);
     const root = this.wsPath(initial.ws);
-    const sandbox = new LocalSandbox(prefixedId('sbx'), root, { forceProcess: this.o.forceProcessSandbox });
+    const sandbox = new LocalSandbox(prefixedId('sbx'), root, { forceProcess: this.o.forceProcessSandbox, egress: this.o.egress });
     this.o.db.run('INSERT INTO sandboxes (id, provider, ws, owner_engine, state, created_at, labels_json) VALUES (?, ?, ?, ?, ?, ?, ?)',
       sandbox.id, sandbox.provider, initial.ws, this.o.engineId, 'running', new Date().toISOString(), json({ task: id }));
     this.setStatus(id, 'running');
@@ -638,6 +652,53 @@ export class TaskRuntime {
     this.publish(t.id, t.ws, 'agent.message', { stepId, text, toolCalls: result.message.parts.filter((p) => p.type === 'tool_call').map((p) => (p as { name: string }).name), costUsd: result.costUsd });
   }
 
+  /**
+   * Explore subagent (F-ORC-1 minimal, §10.2): fresh brief (the question only, not the parent transcript),
+   * explorer role, read-only tools, a step cap, and a summary truncated to ~1.5k tokens.
+   */
+  private async explore(t: TaskRow, question: string, sandbox: LocalSandbox, signal: AbortSignal, index?: WorkspaceIndex): Promise<string> {
+    const tools = this.o.tools.specs((name) => EXPLORE_TOOLS.includes(name));
+    const system = 'You are a read-only code explorer subagent. Answer the question about the workspace using find_symbol, code_search and read_file. '
+      + 'You cannot modify files or run commands. Finish with a short plain-text summary (max ~200 words) of findings, each with path:line evidence, then a list of suggested files.';
+    const messages: Message[] = [{ role: 'user', parts: [{ type: 'text', text: question }] }];
+    this.publish(t.id, t.ws, 'agent.subagent', { kind: 'explore', question: question.slice(0, 300), tools: tools.map((s) => s.name) });
+    for (let step = 0; step < EXPLORE_MAX_STEPS; step++) {
+      const res = await this.callRole(t, 'explorer', {
+        ws: t.ws, task: t.id, agent: 'explore', signal,
+        request: { system, messages, tools, toolChoice: step === EXPLORE_MAX_STEPS - 1 ? 'none' : 'auto', maxOutputTokens: 2048 },
+      });
+      messages.push(res.message);
+      const calls = res.message.parts.filter((p): p is Extract<Part, { type: 'tool_call' }> => p.type === 'tool_call');
+      if (!calls.length) {
+        const text = res.message.parts.flatMap((p) => (p.type === 'text' ? [p.text] : [])).join('').trim() || '(the explore subagent returned no summary)';
+        return text.length > EXPLORE_MAX_CHARS ? `${text.slice(0, EXPLORE_MAX_CHARS)}\n[truncated]` : text;
+      }
+      const results: Part[] = [];
+      for (const call of calls) {
+        const out = EXPLORE_TOOLS.includes(call.name)
+          ? await this.o.tools.run(call.name, call.args, { sandbox, signal, index })
+          : { content: `tool '${call.name}' is not available to the read-only explore subagent`, isError: true };
+        results.push({ type: 'tool_result', callId: call.id, name: call.name, content: out.content.slice(0, 20_000), isError: out.isError, provenance: { source: 'builtin', trust: 'trusted', taint: false } });
+      }
+      messages.push({ role: 'tool', parts: results });
+    }
+    return `explore subagent stopped after ${EXPLORE_MAX_STEPS} steps without a summary`;
+  }
+
+  /** Browser tools only ever navigate to this workspace's own dev server (never arbitrary URLs). */
+  private previewBrowserFor(root: string): ToolContext['previewBrowser'] {
+    const { browser, devServers } = this.o;
+    if (!browser || !devServers || !browser.available()) return undefined;
+    const urlFor = (path = '/') => {
+      const info = devServers.get(root);
+      if (!info) throw new Error('no dev server is running for this workspace; call start_dev_server first');
+      const target = new URL(path, info.url);
+      if (target.origin !== new URL(info.url).origin) throw new Error(`path must stay on the dev server (${info.url})`);
+      return target.href;
+    };
+    return { screenshot: (path) => browser.screenshot(urlFor(path)), console: (path) => browser.console(urlFor(path)) };
+  }
+
   private async runTools(t: TaskRow, calls: Array<Extract<Part, { type: 'tool_call' }>>, sandbox: LocalSandbox, signal: AbortSignal, index?: WorkspaceIndex): Promise<void> {
     const preapprove = parseJson<string[]>(t.preapprove_json, []);
     let tainted = this.transcript(t.id).some((m) => m.parts.some((p) => p.type === 'tool_result' && p.provenance?.taint));
@@ -651,6 +712,9 @@ export class TaskRuntime {
         ? await this.o.tracer.withSpan('tool.call', { tool: call.name, 'task.id': t.id, action_class: decision.actionClass }, () =>
             this.o.tools.run(call.name, call.args, {
               sandbox, signal, index,
+              startDevServer: this.o.devServers ? () => this.o.devServers!.start(sandbox.root) : undefined,
+              previewBrowser: this.previewBrowserFor(sandbox.root),
+              explore: (question) => this.explore(t, question, sandbox, signal, index),
               beforeWrite: (abs, prev) => this.checkpoint(t, sandbox, abs, prev),
               submitArtifact: t.policy_profile === 'plan' ? (kind, title, data) => {
                 const artId = this.saveArtifact(t.id, kind, title, data);

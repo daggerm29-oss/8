@@ -49,8 +49,24 @@ export interface ImpactReport {
   /** Files that may need changes or re-verification, most direct first (excludes the definition files). */
   affectedFiles: string[];
   tests: string[];
+  precision: 'heuristic' | 'precise';
+}
+
+export interface PlanImpactReport {
+  changedFiles: string[];
+  changedSymbols: string[];
+  directDependents: string[];
+  transitiveDependents: { depth: number; count: number; top: string[] };
+  coveringTests: string[];
+  uncoveredChangedFiles: string[];
+  /** Dependent files (depth ≤ 2) that the plan does not list; candidates the plan may have missed. */
+  dependentsNotInPlan: string[];
+  riskScore: number;
+  riskTerms: Array<{ term: string; value: number; weight: number; contribution: number }>;
   precision: 'heuristic';
 }
+
+const round2 = (n: number) => Math.round(n * 100) / 100;
 
 export interface IndexStats {
   files: number;
@@ -260,6 +276,93 @@ export class WorkspaceIndex {
     report.affectedFiles = [...files].filter((f) => !isTestPath(f));
     report.tests = [...testSet];
     return report;
+  }
+
+  /**
+   * Replaces the heuristic callers of a symbol report with precise depth-1 references (F-IDX-2):
+   * `refs[i]` belongs to `report.definitions[i]`; a null entry keeps that definition's heuristic callers.
+   */
+  withPreciseCallers(report: ImpactReport, refs: Array<Array<{ path: string; line: number; isDefinition: boolean }> | null>): ImpactReport {
+    if (report.kind !== 'symbol' || !refs.some(Boolean)) return report;
+    const callers: ImpactCaller[] = [];
+    report.definitions.forEach((d, i) => {
+      const own = refs[i];
+      const calls = `${d.qualifiedName} (${d.path}:${d.line})`;
+      if (!own) {
+        callers.push(...report.callers.filter((c) => c.depth === 1 && c.calls === d.qualifiedName).map((c) => ({ ...c, calls })));
+        return;
+      }
+      for (const r of own) {
+        if (r.isDefinition || (r.path === d.path && r.line === d.line)) continue;
+        if (callers.some((c) => c.path === r.path && c.line === r.line && c.calls === calls)) continue;
+        callers.push({ path: r.path, line: r.line, caller: this.enclosing(r.path, r.line), calls, depth: 1 });
+      }
+    });
+    const defFiles = new Set(report.definitions.map((d) => d.path));
+    const files = new Set(callers.map((c) => c.path).filter((p) => !defFiles.has(p)));
+    const tests = new Set<string>();
+    for (const p of [...defFiles, ...files]) {
+      if (isTestPath(p)) tests.add(p);
+      for (const t of this.coveringTests(p)) tests.add(t);
+    }
+    return { ...report, callers, affectedFiles: [...files].filter((f) => !isTestPath(f)), tests: [...tests], precision: 'precise' };
+  }
+
+  /**
+   * Impact Report for a plan's change set (§11.5, minimal): changed symbols, reverse-import dependents (depth 1
+   * and 2), covering tests, uncovered files, and an explainable risk score
+   * `1·log2(1+dependents) + 1·publicApiChange + 2·uncoveredRatio`. Paths not in the index are ignored.
+   */
+  planImpact(paths: string[]): PlanImpactReport {
+    const changed = [...new Set(paths)].filter((p) => this.db.get('SELECT 1 AS ok FROM idx_files WHERE ws = ? AND path = ?', this.ws, p));
+    const changedSet = new Set(changed);
+    const changedSymbols = this.db.all<{ q: string; path: string; exported: number }>(
+      `SELECT qualified_name AS q, path, exported FROM idx_symbols WHERE ws = ? AND kind != 'heading' AND (exported = 1 OR kind IN ('class','function')) AND path IN (${changed.map(() => '?').join(',') || "''"}) ORDER BY path, line`,
+      this.ws, ...changed,
+    );
+    const direct = new Set<string>();
+    for (const p of changed) for (const d of this.dependents(p)) if (!changedSet.has(d)) direct.add(d);
+    const second = new Set<string>();
+    for (const p of direct) for (const d of this.dependents(p)) if (!changedSet.has(d) && !direct.has(d)) second.add(d);
+    const covering = new Map<string, string[]>();
+    for (const p of changed) {
+      if (isTestPath(p)) { covering.set(p, [p]); continue; }
+      const closure = new Set([p, ...this.dependents(p)]);
+      for (const d of [...closure]) for (const dd of this.dependents(d)) closure.add(dd);
+      const t = new Set<string>();
+      for (const c of closure) { if (isTestPath(c)) t.add(c); for (const x of this.coveringTests(c)) t.add(x); }
+      covering.set(p, [...t]);
+    }
+    const tests = new Set<string>([...covering.values()].flat());
+    for (const p of [...direct, ...second]) if (isTestPath(p)) tests.add(p);
+    const nonTest = changed.filter((p) => !isTestPath(p));
+    const uncovered = nonTest.filter((p) => !covering.get(p)!.length);
+    const dependents = [...direct, ...second].filter((p) => !isTestPath(p));
+    const terms = [
+      { term: 'log2(1+dependents)', value: Math.log2(1 + dependents.length), weight: 1 },
+      { term: 'publicApiChange', value: changedSymbols.some((s) => s.exported) ? 1 : 0, weight: 1 },
+      { term: 'uncoveredRatio', value: nonTest.length ? uncovered.length / nonTest.length : 0, weight: 2 },
+    ].map((t) => ({ ...t, value: round2(t.value), contribution: round2(t.value * t.weight) }));
+    return {
+      changedFiles: changed,
+      changedSymbols: changedSymbols.slice(0, 40).map((s) => `${s.q} (${s.path})`),
+      directDependents: [...direct].filter((p) => !isTestPath(p)),
+      transitiveDependents: { depth: 2, count: dependents.length, top: dependents.slice(0, 20) },
+      coveringTests: [...tests],
+      uncoveredChangedFiles: uncovered,
+      dependentsNotInPlan: dependents,
+      riskScore: round2(terms.reduce((s, t) => s + t.contribution, 0)),
+      riskTerms: terms,
+      precision: 'heuristic',
+    };
+  }
+
+  /** Innermost indexed symbol containing `line` ('' = top level). */
+  private enclosing(path: string, line: number): string {
+    return this.db.get<{ q: string }>(
+      `SELECT qualified_name AS q FROM idx_symbols WHERE ws = ? AND path = ? AND kind != 'heading' AND line <= ? AND end_line >= ? ORDER BY end_line - line ASC LIMIT 1`,
+      this.ws, path, line, line,
+    )?.q ?? '';
   }
 
   /** Test files that import a file (static `tests` edges heuristic, §11.5). */
