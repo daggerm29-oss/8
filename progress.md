@@ -55,5 +55,6 @@
 
 ## Last session (overwrite each session, max 5 lines)
 
-- 2026-11-08 (session PR #16): T1 egress proxy (F-SBX-3) done: `sandbox/egress.ts`, in-sandbox forwarder, `egress.allow`/`egress.list` RPC, migration v4.
-- T2 dev server (F-PRV-1) done: `preview/devserver.ts`, sandbox `exposePorts`/`connectPort`, `preview.start/stop`, `start_dev_server` tool.
+- 2026-11-08 (PR #16): M1 T1–T7 done (T7 live Gemini demo PASS, evals/results/m1-demo-*); M1 100%.
+- M2: precise TS/JS references via TypeScript LS in sandbox (F-IDX-2); Impact Report artifact linked from Plan Mode plans.
+- Full engine suite 84/84 at session end. Next: tree-sitter parser swap (write its Accept line first).
