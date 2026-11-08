@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { ToolRegistry, type PreviewCapture, type Tool } from './registry.ts';
-import { codeSearch, findSymbol, impactTool } from './index-tools.ts';
+import { codeSearch, domainMap, findSymbol, impactTool } from './index-tools.ts';
 
 const SKIP_DIRS = new Set(['node_modules', '.git', '.next', 'dist', 'build', '__pycache__', '.venv', 'target']);
 
@@ -266,6 +266,6 @@ export const submitPlan: Tool = {
 
 export function builtinTools(): ToolRegistry {
   const reg = new ToolRegistry();
-  for (const t of [readFile, listDir, search, findSymbol, codeSearch, impactTool, writeFile, editFile, runShell, startDevServerTool, previewScreenshot, previewConsole, exploreTool, submitPlan]) reg.register(t);
+  for (const t of [readFile, listDir, search, findSymbol, codeSearch, impactTool, domainMap, writeFile, editFile, runShell, startDevServerTool, previewScreenshot, previewConsole, exploreTool, submitPlan]) reg.register(t);
   return reg;
 }

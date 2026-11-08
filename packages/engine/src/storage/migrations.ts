@@ -90,4 +90,13 @@ export const MIGRATIONS: string[] = [
   CREATE INDEX idx_vectors_path ON idx_vectors(ws, path);
   DELETE FROM idx_files; DELETE FROM idx_symbols; DELETE FROM idx_imports; DELETE FROM idx_chunks; DELETE FROM idx_refs;
   `,
+  /* v6: domain extractors (F-IDX-5, §11.7): routes, db tables, config keys (names only, never values). Clears index rows to re-extract. */ `
+  CREATE TABLE idx_routes (ws TEXT NOT NULL, path TEXT NOT NULL, line INTEGER NOT NULL, method TEXT NOT NULL, route TEXT NOT NULL, handler TEXT NOT NULL, framework TEXT NOT NULL);
+  CREATE INDEX idx_routes_path ON idx_routes(ws, path);
+  CREATE TABLE idx_tables (ws TEXT NOT NULL, path TEXT NOT NULL, line INTEGER NOT NULL, name TEXT NOT NULL, source TEXT NOT NULL, columns_json TEXT NOT NULL);
+  CREATE INDEX idx_tables_path ON idx_tables(ws, path);
+  CREATE TABLE idx_config (ws TEXT NOT NULL, path TEXT NOT NULL, line INTEGER NOT NULL, key TEXT NOT NULL, kind TEXT NOT NULL);
+  CREATE INDEX idx_config_path ON idx_config(ws, path);
+  DELETE FROM idx_files; DELETE FROM idx_symbols; DELETE FROM idx_imports; DELETE FROM idx_chunks; DELETE FROM idx_refs; DELETE FROM idx_vectors;
+  `,
 ];

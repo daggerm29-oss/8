@@ -42,6 +42,25 @@ export const codeSearch: Tool = {
   },
 };
 
+export const domainMap: Tool = {
+  spec: {
+    name: 'domain_map',
+    description: 'List the app domain from the code index: HTTP routes (method, path, handler), database tables (with columns), and environment/config keys (names only), each with file:line. Use to find the handler for an endpoint, where a table is defined, or which env vars the app reads.',
+    inputSchema: { type: 'object', properties: { kind: { type: 'string', enum: ['routes', 'tables', 'config', 'all'], description: 'Which section to list (default all)' } } },
+  },
+  async run(args, { index }) {
+    if (!index) return { content: 'code index unavailable for this task; use search', isError: true };
+    index.update();
+    const d = index.domain();
+    const kind = String(args.kind ?? 'all');
+    const sections: string[] = [];
+    if (kind === 'all' || kind === 'routes') sections.push(`## Routes (${d.routes.length})\n${d.routes.map((r) => `${r.method} ${r.path} → ${r.handler}  [${r.framework}] ${r.file}:${r.line}`).join('\n') || '(none)'}`);
+    if (kind === 'all' || kind === 'tables') sections.push(`## Tables (${d.tables.length})\n${d.tables.map((t) => `${t.name} (${t.columns.join(', ')})  [${t.source}] ${t.file}:${t.line}`).join('\n') || '(none)'}`);
+    if (kind === 'all' || kind === 'config') sections.push(`## Config keys (${d.config.length})\n${d.config.map((c) => `${c.key}  ${c.file}:${c.line}`).join('\n') || '(none)'}`);
+    return { content: sections.join('\n\n'), summary: `domain_map ${kind}: ${d.routes.length} routes, ${d.tables.length} tables, ${d.config.length} keys` };
+  },
+};
+
 export const impactTool: Tool = {
   spec: {
     name: 'impact',

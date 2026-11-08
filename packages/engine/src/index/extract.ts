@@ -26,7 +26,7 @@ export interface Extraction {
 
 const EXT: Record<string, Lang> = {
   ts: 'ts', tsx: 'ts', mts: 'ts', cts: 'ts', js: 'js', jsx: 'js', mjs: 'js', cjs: 'js', py: 'py', go: 'go', rs: 'rs', java: 'java', kt: 'kt',
-  md: 'md', mdx: 'md', json: 'json', yaml: 'yaml', yml: 'yaml', toml: 'yaml', css: 'css', scss: 'css', html: 'html', sh: 'sh', bash: 'sh', sql: 'text', txt: 'text',
+  md: 'md', mdx: 'md', json: 'json', yaml: 'yaml', yml: 'yaml', toml: 'yaml', css: 'css', scss: 'css', html: 'html', sh: 'sh', bash: 'sh', sql: 'text', prisma: 'text', txt: 'text',
 };
 
 export function langOf(path: string): Lang | null {

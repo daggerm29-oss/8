@@ -5,6 +5,7 @@ import { dirname, join, normalize, relative } from 'node:path';
 import type { Db } from '../storage/db.ts';
 import { extract, identifierTerms, isTestPath, langOf, type Lang } from './extract.ts';
 import { extractRefs } from './graph.ts';
+import { extractDomain, type ConfigKey, type DbTable, type Route } from './domain.ts';
 import { dot, embed, EMBED_DIM, EMBED_MODEL, fromBlob, toBlob } from './embed.ts';
 
 const SKIP_DIRS = new Set(['node_modules', '.git', '.next', 'dist', 'build', 'out', 'coverage', '__pycache__', '.venv', 'venv', 'target', '.turbo', '.cache', 'vendor']);
@@ -166,6 +167,7 @@ export class WorkspaceIndex {
     this.db.run('DELETE FROM idx_chunks WHERE ws = ? AND path = ?', this.ws, path);
     this.db.run('DELETE FROM idx_refs WHERE ws = ? AND path = ?', this.ws, path);
     this.db.run('DELETE FROM idx_vectors WHERE ws = ? AND path = ?', this.ws, path);
+    for (const t of ['idx_routes', 'idx_tables', 'idx_config']) this.db.run(`DELETE FROM ${t} WHERE ws = ? AND path = ?`, this.ws, path);
   }
 
   private add(path: string, hash: string, text: string, lang: Lang, size: number): number {
@@ -174,6 +176,10 @@ export class WorkspaceIndex {
     this.db.run('INSERT INTO idx_files (ws, path, hash, lang, size, lines, is_test, indexed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', this.ws, path, hash, lang, size, lines.length, isTestPath(path) ? 1 : 0, new Date().toISOString());
     for (const s of symbols) this.db.run('INSERT INTO idx_symbols (ws, path, kind, name, qualified_name, line, end_line, signature, exported) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', this.ws, path, s.kind, s.name, s.qualifiedName, s.line, s.endLine, s.signature, s.exported ? 1 : 0);
     for (const r of extractRefs(lang, text, symbols)) this.db.run('INSERT INTO idx_refs (ws, path, line, name, caller) VALUES (?, ?, ?, ?, ?)', this.ws, path, r.line, r.name, r.caller);
+    const domain = extractDomain(path, lang, text);
+    for (const r of domain.routes) this.db.run('INSERT INTO idx_routes (ws, path, line, method, route, handler, framework) VALUES (?, ?, ?, ?, ?, ?, ?)', this.ws, path, r.line, r.method, r.path, r.handler, r.framework);
+    for (const t of domain.tables) this.db.run('INSERT INTO idx_tables (ws, path, line, name, source, columns_json) VALUES (?, ?, ?, ?, ?, ?)', this.ws, path, t.line, t.name, t.source, JSON.stringify(t.columns));
+    for (const c of domain.config) this.db.run('INSERT INTO idx_config (ws, path, line, key, kind) VALUES (?, ?, ?, ?, ?)', this.ws, path, c.line, c.key, c.kind);
     for (const spec of imports) this.db.run('INSERT INTO idx_imports (ws, path, spec, resolved) VALUES (?, ?, ?, ?)', this.ws, path, spec, this.resolveImport(path, spec, lang));
     // Chunks: one per top-level symbol (methods stay inside their class chunk unless the class is huge), windows for the gaps.
     const tops = symbols.filter((s) => s.kind !== 'method' || s.endLine - s.line > 80).sort((a, b) => a.line - b.line);
@@ -441,6 +447,18 @@ export class WorkspaceIndex {
       .sort((a, b) => b.score - a.score)
       .slice(0, limit)
       .map((f) => ({ path: f.path, startLine: f.start, endLine: f.end, symbol: f.symbol, score: Number(f.score.toFixed(5)), why: [...f.why], preview: this.slice(f.path, f.start, Math.min(f.end, f.start + 40)) }));
+  }
+
+  /** Domain map (§11.7): routes, DB tables, and config keys with their defining file:line. */
+  domain(): { routes: Array<Route & { file: string }>; tables: Array<DbTable & { file: string }>; config: Array<ConfigKey & { file: string }> } {
+    return {
+      routes: this.db.all<{ path: string; line: number; method: string; route: string; handler: string; framework: string }>('SELECT path, line, method, route, handler, framework FROM idx_routes WHERE ws = ? ORDER BY route, method', this.ws)
+        .map((r) => ({ file: r.path, line: Number(r.line), method: r.method, path: r.route, handler: r.handler, framework: r.framework })),
+      tables: this.db.all<{ path: string; line: number; name: string; source: string; columns_json: string }>('SELECT path, line, name, source, columns_json FROM idx_tables WHERE ws = ? ORDER BY name', this.ws)
+        .map((t) => ({ file: t.path, line: Number(t.line), name: t.name, source: t.source as DbTable['source'], columns: JSON.parse(t.columns_json) as string[] })),
+      config: this.db.all<{ path: string; line: number; key: string; kind: string }>('SELECT path, line, key, kind FROM idx_config WHERE ws = ? ORDER BY key, path', this.ws)
+        .map((c) => ({ file: c.path, line: Number(c.line), key: c.key, kind: 'env' as const })),
+    };
   }
 
   slice(path: string, start: number, end: number): string {
