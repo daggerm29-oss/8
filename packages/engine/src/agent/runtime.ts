@@ -696,7 +696,7 @@ export class TaskRuntime {
       if (target.origin !== new URL(info.url).origin) throw new Error(`path must stay on the dev server (${info.url})`);
       return target.href;
     };
-    return { screenshot: (path) => browser.screenshot(urlFor(path)), console: (path) => browser.console(urlFor(path)) };
+    return { screenshot: (path) => browser.screenshot(urlFor(path)), console: (path) => browser.console(urlFor(path)), snapshot: (path) => browser.snapshot(urlFor(path)) };
   }
 
   private async runTools(t: TaskRow, calls: Array<Extract<Part, { type: 'tool_call' }>>, sandbox: LocalSandbox, signal: AbortSignal, index?: WorkspaceIndex): Promise<void> {

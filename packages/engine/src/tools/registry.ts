@@ -1,3 +1,4 @@
+import type { EnvironmentSnapshot, NetEvent } from '../preview/browser.ts';
 import type { Provenance } from '@helix/protocol';
 import type { JsonSchema, ToolSpec } from '@helix/protocol';
 import type { LocalSandbox } from '../sandbox/sandbox.ts';
@@ -19,6 +20,7 @@ export interface ToolContext {
   previewBrowser?: {
     screenshot: (path?: string) => Promise<PreviewCapture & { path: string; bytes: number }>;
     console: (path?: string) => Promise<PreviewCapture>;
+    snapshot: (path?: string) => Promise<EnvironmentSnapshot>;
   };
 }
 
@@ -26,7 +28,9 @@ export interface PreviewCapture {
   url: string;
   title: string;
   text: string;
-  console: Array<{ level: string; text: string; source: string; url?: string; line?: number }>;
+  console: Array<{ level: string; text: string; source: string; url?: string; line?: number; count: number }>;
+  network: NetEvent[];
+  pending: number;
   status: 'loaded' | 'timeout';
 }
 
