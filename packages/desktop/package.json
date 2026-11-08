@@ -4,6 +4,11 @@
   "private": true,
   "description": "Helix desktop shell: Electron main process supervising the Engine (architecture.md §5.1).",
   "main": "main.cjs",
+  "scripts": {
+    "setup": "node setup.cjs",
+    "start": "electron .",
+    "test": "node --test test/desktop.test.mjs"
+  },
   "devDependencies": {
     "electron": "^38.0.0"
   }
