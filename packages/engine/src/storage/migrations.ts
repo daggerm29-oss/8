@@ -84,4 +84,10 @@ export const MIGRATIONS: string[] = [
   /* v4: workspace egress allowlist (F-SBX-3, §16.5) */ `
   CREATE TABLE egress_allow (ws TEXT NOT NULL, host TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY (ws, host));
   `,
+  /* v5: local-first chunk embeddings (F-IDX-6, §12.3), content-addressed. Clears index rows so every file is re-embedded. */ `
+  CREATE TABLE idx_embeddings (hash TEXT PRIMARY KEY, model TEXT NOT NULL, dim INTEGER NOT NULL, vec BLOB NOT NULL);
+  CREATE TABLE idx_vectors (ws TEXT NOT NULL, path TEXT NOT NULL, start_line INTEGER NOT NULL, end_line INTEGER NOT NULL, symbol TEXT NOT NULL, hash TEXT NOT NULL);
+  CREATE INDEX idx_vectors_path ON idx_vectors(ws, path);
+  DELETE FROM idx_files; DELETE FROM idx_symbols; DELETE FROM idx_imports; DELETE FROM idx_chunks; DELETE FROM idx_refs;
+  `,
 ];
