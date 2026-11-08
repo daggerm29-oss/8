@@ -3,7 +3,7 @@
 > **Working codename:** Helix (placeholder — rename freely).
 > **Document type:** Product requirements, competitive research, and execution plan.
 > **Companion document:** [`architecture.md`](./architecture.md) — the technical blueprint. Every feature here has an `Arch §` reference to the section that implements it.
-> **Build sessions:** this is the long-term vision, not the task list. The current milestone's trimmed scope in [`progress.md`](./progress.md) overrides §11, §12 and §19 for what to build now.
+> **Build sessions:** this is the long-term vision, not the task list. The checklist in [`docs/roadmap.md`](./docs/roadmap.md) overrides §11, §12 and §19 for what to build; progress percentages are in [`progress.md`](./progress.md).
 > **Research date:** November 6, 2026. All competitor facts reflect public documentation retrieved on that date and will drift; re-verify before relying on them.
 
 ---
