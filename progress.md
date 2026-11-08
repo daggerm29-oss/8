@@ -11,15 +11,15 @@
 
 > These are **checklist completion** numbers (ticked items with recorded evidence ÷ all items). They are not a measure of product quality or release readiness; human launch gates in `docs/roadmap.md` are not counted.
 
-**Overall checklist completion: 56%** (50/89 roadmap items)  
+**Overall checklist completion: 57%** (51/89 roadmap items)  
 **Current milestone:** M2 Precision and efficiency  
-**Next task:** Model router v1 (F-MDL-5) [§7.6]
+**Next task:** Session replay [§30]
 
 | Milestone | Progress | Items | Status |
 | --- | --- | --- | --- |
 | M0 Foundations | ██████████ 100% | 11/11 | Done |
 | M1 MVP, grounded single agent | ██████████ 100% | 26/26 | Done |
-| M2 Precision and efficiency | ██████░░░░ 59% | 13/22 | In progress |
+| M2 Precision and efficiency | ██████░░░░ 64% | 14/22 | In progress |
 | M3 Parallel and background | ░░░░░░░░░░ 0% | 0/12 | Not started |
 | M4 Team and ecosystem | ░░░░░░░░░░ 0% | 0/9 | Not started |
 | M5 Platform | ░░░░░░░░░░ 0% | 0/5 | Not started |
@@ -28,8 +28,8 @@
 
 ## Current task notes (overwrite when the task changes)
 
-- Next: M2 "Model router v1 (F-MDL-5)" [§7.6] — not started; write its Accept line first.
-- Plan: rule table step type → tier (S/M/L) over role chains in `models/roles.ts`; per-(provider, model) circuit breaker (5 consecutive failures or ≥50% errors in 60 s → open, half-open after cooldown) in `models/gateway.ts`; one-tier escalation after a failed gate; decision + rationale recorded in the ledger.
+- Next: M2 "Session replay" [§26.4 — roadmap bracket says §30 but replay is §26.4] — not started; write its Accept line first.
+- Plan: RPC `task.bundle` → redacted session bundle (task, IR messages, steps, tool calls in/out, ledger with router_reason); deterministic replay serves recorded model responses + tool results, reports first divergence step.
 
 ## Ideas parking lot (one line each, max 15 — do not implement)
 
