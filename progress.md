@@ -11,15 +11,15 @@
 
 > These are **checklist completion** numbers (ticked items with recorded evidence ÷ all items). They are not a measure of product quality or release readiness; human launch gates in `docs/roadmap.md` are not counted.
 
-**Overall checklist completion: 46%** (41/89 roadmap items)  
-**Current milestone:** M1 MVP, grounded single agent  
-**Next task:** T7 M1 demo eval
+**Overall checklist completion: 47%** (42/89 roadmap items)  
+**Current milestone:** M2 Precision and efficiency  
+**Next task:** Precise references via SCIP/LSP (F-IDX-2) [§11.4]
 
 | Milestone | Progress | Items | Status |
 | --- | --- | --- | --- |
 | M0 Foundations | ██████████ 100% | 11/11 | Done |
-| M1 MVP, grounded single agent | ██████████ 96% | 25/26 | In progress |
-| M2 Precision and efficiency | ██░░░░░░░░ 23% | 5/22 | Partly built early |
+| M1 MVP, grounded single agent | ██████████ 100% | 26/26 | Done |
+| M2 Precision and efficiency | ██░░░░░░░░ 23% | 5/22 | In progress |
 | M3 Parallel and background | ░░░░░░░░░░ 0% | 0/12 | Not started |
 | M4 Team and ecosystem | ░░░░░░░░░░ 0% | 0/9 | Not started |
 | M5 Platform | ░░░░░░░░░░ 0% | 0/5 | Not started |
@@ -28,7 +28,7 @@
 
 ## Current task notes (overwrite when the task changes)
 
-- T7 M1 demo eval: not started. Next: `fixtures/m1/web-hello` + `evals/m1-demo.ts` (live Gemini, `GEMINI_API`, free tier ~20 req/day).
+- M1 complete (T7 live demo passed). Next: M2 "Precise references via SCIP/LSP (F-IDX-2)" — needs an Accept line in docs/roadmap.md first.
 
 ## Ideas parking lot (one line each, max 15 — do not implement)
 
