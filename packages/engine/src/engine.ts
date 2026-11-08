@@ -19,6 +19,7 @@ import { Logger, helixHome } from './util/log.ts';
 import { prefixedId, randomToken } from './util/ids.ts';
 import { globalRedactor } from './util/redact.ts';
 import { Vault } from './vault/vault.ts';
+import { detectKeychain, type Keychain } from './vault/keychain.ts';
 import { Ledger } from './models/ledger.ts';
 import { ModelGateway } from './models/gateway.ts';
 import { ReplayAdapter, exportBundle, type SessionBundle } from './replay/bundle.ts';
@@ -69,6 +70,8 @@ export interface EngineOptions {
   mcpToolSearchThreshold?: number;
   /** Transcript compaction (F-CTX-2). Env overrides: `HELIX_COMPACT_TRIGGER_TOKENS`, `HELIX_COMPACT_KEEP_TURNS`, `HELIX_COMPACT=off`. */
   compaction?: CompactionOptions;
+  /** OS credential store for provider keys (default: detected from `env`). */
+  keychain?: Keychain;
 }
 
 function compactionFrom(env: NodeJS.ProcessEnv, opts?: CompactionOptions): CompactionOptions {
@@ -126,7 +129,7 @@ export class Engine {
     this.bus = new EventBus(this.db);
     this.tracer = new Tracer(this.db, { otlpEndpoint: env.OTEL_EXPORTER_OTLP_ENDPOINT ?? null, logger: this.logger });
     this.blobs = new BlobStore(join(this.home, 'blobs'), this.db);
-    this.vault = new Vault(env);
+    this.vault = new Vault(env, opts.keychain ?? detectKeychain(env));
     this.ledger = new Ledger(this.db, this.bus);
     this.replay = new ReplayAdapter();
     this.gateway = new ModelGateway({ adapters: [...(opts.adapters ?? [new GeminiAdapter(), new OpenAIAdapter()]), this.replay], vault: this.vault, ledger: this.ledger, tracer: this.tracer, logger: this.logger, retry: opts.retry });
@@ -315,6 +318,17 @@ export class Engine {
       return { killed: !!c };
     }));
 
+    peer.handle(Methods.vaultStatus, guard(() => this.vault.status()));
+    peer.handle(Methods.vaultSetKey, guard<{ provider: string; key: string }>((p) => {
+      this.vault.setProviderKey(p.provider, p.key);
+      this.bus.publish({ topic: 'vault.key_set', ws: 'engine', data: { provider: p.provider, store: this.vault.keychain.kind }, persist: 'audit' });
+      return { ok: true, provider: p.provider, source: this.vault.keySource(p.provider) };
+    }));
+    peer.handle(Methods.vaultDeleteKey, guard<{ provider: string }>((p) => {
+      this.vault.deleteProviderKey(p.provider);
+      this.bus.publish({ topic: 'vault.key_deleted', ws: 'engine', data: { provider: p.provider, store: this.vault.keychain.kind }, persist: 'audit' });
+      return { ok: true, provider: p.provider, source: this.vault.keySource(p.provider) };
+    }));
     peer.handle(Methods.egressAllow, guard<{ workspacePath: string; host: string }>((p) => {
       const host = typeof p.host === 'string' ? p.host.trim().toLowerCase() : '';
       if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(host) || host.length > 253) throw new Error('host must be a DNS name like example.com');

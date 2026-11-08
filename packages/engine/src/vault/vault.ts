@@ -3,6 +3,7 @@ import { resolve, sep } from 'node:path';
 import type { AuthContext } from '@helix/protocol';
 import { globalRedactor } from '../util/redact.ts';
 import { helixHome } from '../util/log.ts';
+import { NoKeychain, type Keychain } from './keychain.ts';
 
 /**
  * Host paths the Engine never reads on behalf of tools (§25.5), explicitly including the Codex
@@ -33,26 +34,69 @@ const PROVIDER_ENV: Record<string, ProviderEnv> = {
   openai: { keys: ['OPENAI_API_KEY'], baseUrl: 'HELIX_OPENAI_BASE_URL' },
 };
 
+export type KeySource = 'env' | 'keychain' | null;
+
 /**
- * Vault v0 (F-AUTH-1, §8.1). Provider keys come from the Engine's environment only and are held in
- * memory; they are never written to disk, never placed in a sandbox environment, and every value is
- * registered with the redactor so it cannot reach logs, transcripts, or tool output. OS keychain
- * storage and the OAuth broker are M1+/M2 work (IMPL-ADR-010).
+ * Vault (F-AUTH-1, §8.1). Provider keys resolve from the Engine's environment first, then the OS
+ * keychain. They are held in memory only, never written to Helix's own storage, never placed in a
+ * sandbox environment, and every value is registered with the redactor so it cannot reach logs,
+ * transcripts, or tool output. The OAuth broker is later work (IMPL-ADR-010).
  */
 export class Vault {
   private readonly env: NodeJS.ProcessEnv;
+  readonly keychain: Keychain;
+  private readonly cache = new Map<string, string | undefined>();
 
-  constructor(env: NodeJS.ProcessEnv = process.env) {
+  constructor(env: NodeJS.ProcessEnv = process.env, keychain: Keychain = new NoKeychain()) {
     this.env = env;
+    this.keychain = keychain;
     for (const p of Object.values(PROVIDER_ENV)) for (const k of p.keys) globalRedactor.register(env[k]);
+  }
+
+  private envKey(provider: string): string | undefined {
+    return PROVIDER_ENV[provider]?.keys.map((k) => this.env[k]).find((v) => v && v.length > 0);
+  }
+
+  private keychainKey(provider: string): string | undefined {
+    if (!this.cache.has(provider)) {
+      let value: string | undefined;
+      try { value = this.keychain.get(`provider:${provider}`); } catch { value = undefined; }
+      globalRedactor.register(value);
+      this.cache.set(provider, value);
+    }
+    return this.cache.get(provider);
   }
 
   providerAuth(provider: string): AuthContext {
     const spec = PROVIDER_ENV[provider];
     if (!spec) return {};
-    const apiKey = spec.keys.map((k) => this.env[k]).find((v) => v && v.length > 0);
+    const apiKey = this.envKey(provider) ?? this.keychainKey(provider);
     const baseUrl = this.env[spec.baseUrl] || undefined;
     return { apiKey, baseUrl };
+  }
+
+  keySource(provider: string): KeySource {
+    if (this.envKey(provider)) return 'env';
+    return this.keychainKey(provider) ? 'keychain' : null;
+  }
+
+  status(): { keychain: Keychain['kind']; providers: Array<{ id: string; source: KeySource }> } {
+    return { keychain: this.keychain.kind, providers: Object.keys(PROVIDER_ENV).map((id) => ({ id, source: this.keySource(id) })) };
+  }
+
+  setProviderKey(provider: string, key: string): void {
+    if (!PROVIDER_ENV[provider]) throw new Error(`unknown provider: ${provider}`);
+    const value = typeof key === 'string' ? key.trim() : '';
+    if (!value) throw new Error('key must be a non-empty string');
+    globalRedactor.register(value);
+    this.keychain.set(`provider:${provider}`, value);
+    this.cache.set(provider, value);
+  }
+
+  deleteProviderKey(provider: string): void {
+    if (!PROVIDER_ENV[provider]) throw new Error(`unknown provider: ${provider}`);
+    this.keychain.delete(`provider:${provider}`);
+    this.cache.set(provider, undefined);
   }
 
   isConfigured(provider: string): boolean {

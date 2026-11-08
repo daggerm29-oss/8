@@ -144,6 +144,10 @@ export const Methods = {
   /* F-SBX-4 credential masking */
   secretsBind: 'secrets.bind',
   secretsList: 'secrets.list',
+  /* F-AUTH-1 provider keys in the OS keychain */
+  vaultStatus: 'vault.status',
+  vaultSetKey: 'vault.setKey',
+  vaultDeleteKey: 'vault.deleteKey',
   /* F-PRV-1 dev server */
   previewStart: 'preview.start',
   previewStop: 'preview.stop',

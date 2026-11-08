@@ -1,0 +1,10 @@
+{
+  "name": "@helix/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Helix desktop shell: Electron main process supervising the Engine (architecture.md §5.1).",
+  "main": "main.cjs",
+  "devDependencies": {
+    "electron": "^38.0.0"
+  }
+}
