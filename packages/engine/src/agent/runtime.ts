@@ -22,6 +22,7 @@ import type { Tracer } from '../obs/tracing.ts';
 import type { Logger } from '../util/log.ts';
 import type { ToolRegistry } from '../tools/registry.ts';
 import { LocalSandbox } from '../sandbox/sandbox.ts';
+import type { EgressProxy } from '../sandbox/egress.ts';
 import { evaluate, type PolicyProfile } from '../policy/policy.ts';
 import { prefixedId } from '../util/ids.ts';
 import { globalRedactor } from '../util/redact.ts';
@@ -48,6 +49,8 @@ export interface RuntimeOptions {
   blobs?: BlobStore;
   logger?: Logger;
   forceProcessSandbox?: boolean;
+  /** Engine egress proxy bridged into task sandboxes (F-SBX-3). */
+  egress?: EgressProxy;
   /** Multiplier for task-level backoff delays (tests use a tiny value). */
   taskRetryScale?: number;
   /** Helix home, for user-level `HELIX.md` instructions (§13.5). */
@@ -356,7 +359,7 @@ export class TaskRuntime {
   private async loop(id: string, signal: AbortSignal): Promise<void> {
     const initial = this.row(id);
     const root = this.wsPath(initial.ws);
-    const sandbox = new LocalSandbox(prefixedId('sbx'), root, { forceProcess: this.o.forceProcessSandbox });
+    const sandbox = new LocalSandbox(prefixedId('sbx'), root, { forceProcess: this.o.forceProcessSandbox, egress: this.o.egress });
     this.o.db.run('INSERT INTO sandboxes (id, provider, ws, owner_engine, state, created_at, labels_json) VALUES (?, ?, ?, ?, ?, ?, ?)',
       sandbox.id, sandbox.provider, initial.ws, this.o.engineId, 'running', new Date().toISOString(), json({ task: id }));
     this.setStatus(id, 'running');

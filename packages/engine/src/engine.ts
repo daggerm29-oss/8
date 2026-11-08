@@ -24,6 +24,7 @@ import { builtinTools } from './tools/builtin.ts';
 import { McpManager, type McpServerConfig, type McpServerStatus } from './mcp/manager.ts';
 import { TaskRuntime } from './agent/runtime.ts';
 import { LocalSandbox, unshareAvailable } from './sandbox/sandbox.ts';
+import { DEFAULT_EGRESS_ALLOWLIST, EgressProxy } from './sandbox/egress.ts';
 import { listWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile } from './workspace/files.ts';
 import { WorkspaceIndex } from './index/index.ts';
 import { parseDiagnostics } from './diagnostics/parsers.ts';
@@ -72,7 +73,7 @@ function compactionFrom(env: NodeJS.ProcessEnv, opts?: CompactionOptions): Compa
   };
 }
 
-const TOPICS = ['task.*', 'agent.*', 'tool.*', 'model.*', 'verify.*', 'approval.*', 'ledger.*', 'budget.*', 'context.*', 'artifact.*', 'checkpoint.*', 'workspace.*'];
+const TOPICS = ['task.*', 'agent.*', 'tool.*', 'model.*', 'verify.*', 'approval.*', 'ledger.*', 'budget.*', 'context.*', 'artifact.*', 'checkpoint.*', 'workspace.*', 'egress.*'];
 
 /** Helix Engine (§6.2): composition root for storage, bus, gateway, tools, sandbox, and the task runtime. */
 export class Engine {
@@ -88,6 +89,8 @@ export class Engine {
   readonly runtime: TaskRuntime;
   readonly blobs: BlobStore;
   readonly mcp: McpManager;
+  /** Allowlisting HTTP/CONNECT proxy shared by every sandbox (F-SBX-3). */
+  readonly egress: EgressProxy;
   /** Resolves once configured MCP servers are connected (or failed) and their tools are registered. */
   readonly mcpReady: Promise<McpServerStatus[]>;
   private heartbeat?: NodeJS.Timeout;
@@ -110,10 +113,17 @@ export class Engine {
     this.vault = new Vault(env);
     this.ledger = new Ledger(this.db, this.bus);
     this.gateway = new ModelGateway({ adapters: opts.adapters ?? [new GeminiAdapter(), new OpenAIAdapter()], vault: this.vault, ledger: this.ledger, tracer: this.tracer, logger: this.logger, retry: opts.retry });
+    this.egress = new EgressProxy({
+      isAllowed: (host, ctx) => DEFAULT_EGRESS_ALLOWLIST.includes(host) || !!this.db.get('SELECT 1 AS ok FROM egress_allow WHERE ws = ? AND host = ?', this.runtime.workspaceFor(ctx.root).id, host),
+      onDenied: (info, ctx) => {
+        this.bus.publish({ topic: 'egress.denied', ws: this.runtime.workspaceFor(ctx.root).id, data: { ...info, sandbox: ctx.sandboxId }, persist: 'audit' });
+        this.logger.warn('egress.denied', { ...info, sandbox: ctx.sandboxId });
+      },
+    });
     const tools = builtinTools();
     this.mcp = new McpManager({ home: this.home, registry: tools, logger: this.logger, config: opts.mcpServers, toolSearchThreshold: opts.mcpToolSearchThreshold });
     this.mcpReady = opts.mcp === false ? Promise.resolve([]) : this.mcp.start();
-    this.runtime = new TaskRuntime({ db: this.db, bus: this.bus, gateway: this.gateway, ledger: this.ledger, tools, tracer: this.tracer, engineId: this.id, blobs: this.blobs, logger: this.logger, forceProcessSandbox: opts.forceProcessSandbox, taskRetryScale: opts.taskRetryScale, helixHome: this.home, indexing: opts.indexing, compaction: compactionFrom(env, opts.compaction) });
+    this.runtime = new TaskRuntime({ db: this.db, bus: this.bus, gateway: this.gateway, ledger: this.ledger, tools, tracer: this.tracer, engineId: this.id, blobs: this.blobs, logger: this.logger, forceProcessSandbox: opts.forceProcessSandbox, egress: this.egress, taskRetryScale: opts.taskRetryScale, helixHome: this.home, indexing: opts.indexing, compaction: compactionFrom(env, opts.compaction) });
 
     const now = new Date().toISOString();
     this.db.run('INSERT INTO engine_instances (id, pid, started_at, heartbeat_at) VALUES (?, ?, ?, ?)', this.id, process.pid, now, now);
@@ -263,6 +273,19 @@ export class Engine {
       return { killed: !!c };
     }));
 
+    peer.handle(Methods.egressAllow, guard<{ workspacePath: string; host: string }>((p) => {
+      const host = typeof p.host === 'string' ? p.host.trim().toLowerCase() : '';
+      if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(host) || host.length > 253) throw new Error('host must be a DNS name like example.com');
+      const ws = this.runtime.workspaceFor(this.knownWorkspace(p.workspacePath));
+      this.db.run('INSERT OR IGNORE INTO egress_allow (ws, host, at) VALUES (?, ?, ?)', ws.id, host, new Date().toISOString());
+      this.bus.publish({ topic: 'egress.allowed', ws: ws.id, data: { host, by: 'user' }, persist: 'audit' });
+      return { ok: true, host };
+    }));
+    peer.handle(Methods.egressList, guard<{ workspacePath: string }>((p) => {
+      const ws = this.runtime.workspaceFor(this.knownWorkspace(p.workspacePath));
+      return { defaults: DEFAULT_EGRESS_ALLOWLIST, workspace: this.db.all<{ host: string; at: string }>('SELECT host, at FROM egress_allow WHERE ws = ? ORDER BY host', ws.id) };
+    }));
+
     const ptys = new Map<string, ReturnType<LocalSandbox['pty']>>();
     peer.onClose(() => { ptys.forEach((p) => p.kill()); ptys.clear(); });
     peer.handle(Methods.ptyOpen, guard<{ workspacePath: string; cols?: number; rows?: number; cwd?: string }>((p) => {
@@ -306,7 +329,7 @@ export class Engine {
   private terminalSandbox(root: string): LocalSandbox {
     let s = this.terminals.get(root);
     if (!s) {
-      s = new LocalSandbox(prefixedId('term'), root, { forceProcess: this.forceProcessSandbox });
+      s = new LocalSandbox(prefixedId('term'), root, { forceProcess: this.forceProcessSandbox, egress: this.egress });
       this.terminals.set(root, s);
     }
     return s;
@@ -387,6 +410,7 @@ export class Engine {
     await this.mcp.close();
     for (const s of this.terminals.values()) s.destroy();
     this.terminals.clear();
+    this.egress.close();
     for (const c of this.wss?.clients ?? []) c.terminate();
     this.wss?.close();
     this.http?.closeAllConnections();

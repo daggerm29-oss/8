@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
-import { existsSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { FORWARDER_SOURCE, SANDBOX_PROXY_PORT, type EgressProxy } from './egress.ts';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isDeniedHostPath, Vault } from '../vault/vault.ts';
@@ -34,6 +35,8 @@ export interface SandboxInfo {
   network: boolean;
   /** True when shell commands see only the toolchain (ro), the workspace and a private /tmp (F-SBX-2). */
   fsIsolation: boolean;
+  /** True when HTTP(S) egress goes through the Engine allowlisting proxy (F-SBX-3). */
+  egressProxy?: boolean;
 }
 
 export class SandboxPathError extends Error {
@@ -123,8 +126,12 @@ export class LocalSandbox {
   private readonly newRoot: string | null;
   private readonly roPaths: string[];
   private destroyed = false;
+  /** Egress bridge (F-SBX-3): resolves to the listener's close function once the Unix socket is up. */
+  private readonly egressReady: Promise<(() => void) | null>;
+  /** Directory holding the egress socket + forwarder, as seen from inside the sandbox. */
+  private readonly egressDir: string | null = null;
 
-  constructor(id: string, root: string, opts: { forceProcess?: boolean; noMountNs?: boolean; roPaths?: string[] } = {}) {
+  constructor(id: string, root: string, opts: { forceProcess?: boolean; noMountNs?: boolean; roPaths?: string[]; egress?: EgressProxy } = {}) {
     this.id = id;
     this.root = realpathSync(resolve(root));
     this.provider = !opts.forceProcess && unshareAvailable() ? 'local-unshare' : 'local-process';
@@ -132,10 +139,28 @@ export class LocalSandbox {
     this.scratch = mkdtempSync(join(tmpdir(), 'helix-sbx-'));
     this.newRoot = this.fsIsolation ? mkdtempSync(join(tmpdir(), 'helix-root-')) : null;
     this.roPaths = [...new Set([...DEFAULT_RO_PATHS, ...(opts.roPaths ?? [])])].filter((p) => isAbsolute(p) && !isDeniedHostPath(p));
+    const nodeVisible = !this.fsIsolation || this.roPaths.some((p) => process.execPath.startsWith(p + '/'));
+    if (opts.egress && this.provider === 'local-unshare' && nodeVisible) {
+      const hostDir = join(this.scratch, '.helix');
+      mkdirSync(hostDir, { mode: 0o700 });
+      writeFileSync(join(hostDir, 'fwd.cjs'), FORWARDER_SOURCE);
+      this.egressDir = this.fsIsolation ? '/tmp/.helix' : hostDir;
+      this.egressReady = opts.egress.listen(join(hostDir, 'egress.sock'), { sandboxId: id, root: this.root }).catch(() => null);
+    } else {
+      this.egressReady = Promise.resolve(null);
+    }
   }
 
   info(): SandboxInfo {
-    return { id: this.id, provider: this.provider, root: this.root, network: this.provider === 'local-process', fsIsolation: this.fsIsolation };
+    return { id: this.id, provider: this.provider, root: this.root, network: this.provider === 'local-process', fsIsolation: this.fsIsolation, egressProxy: this.egressDir !== null };
+  }
+
+  /** Shell prelude that brings up loopback and starts the TCP→Unix forwarder to the Engine egress proxy. */
+  private egressPrelude(): string {
+    if (!this.egressDir) return '';
+    const d = this.egressDir;
+    return `PATH="$PATH:/usr/sbin:/sbin" ip link set lo up 2>/dev/null; ${process.execPath} ${d}/fwd.cjs ${d}/egress.sock ${SANDBOX_PROXY_PORT} ${d}/ready.$$ </dev/null >/dev/null 2>&1 & ` +
+      `for _helix_i in $(seq 150); do [ -e ${d}/ready.$$ ] && break; sleep 0.02; done; rm -f ${d}/ready.$$; unset _helix_i\n`;
   }
 
   /** Resolve a tool-supplied path inside the root; rejects escapes (incl. via symlinks), the host denylist, and `.git` writes. */
@@ -162,13 +187,19 @@ export class LocalSandbox {
     for (const k of PASSTHROUGH_ENV) if (process.env[k] && !secrets.has(k)) env[k] = process.env[k]!;
     const tmp = this.fsIsolation ? '/tmp' : this.scratch;
     Object.assign(env, { HOME: tmp, TMPDIR: tmp, TERM: 'dumb', CI: '1', NO_COLOR: '1', HELIX_SANDBOX: this.id });
+    if (this.egressDir) {
+      const proxy = `http://127.0.0.1:${SANDBOX_PROXY_PORT}`;
+      for (const k of ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'npm_config_proxy', 'npm_config_https_proxy']) env[k] = proxy;
+      env.NO_PROXY = env.no_proxy = 'localhost,127.0.0.1,::1';
+    }
     for (const [k, v] of Object.entries(extra)) if (!secrets.has(k)) env[k] = v;
     return env;
   }
 
-  exec(command: string, opts: ExecOptions = {}): Promise<ExecResult> {
-    if (this.destroyed) return Promise.reject(new Error(`sandbox ${this.id} is destroyed`));
+  async exec(command: string, opts: ExecOptions = {}): Promise<ExecResult> {
+    if (this.destroyed) throw new Error(`sandbox ${this.id} is destroyed`);
     const cwd = this.resolvePath(opts.cwd ?? '.', 'read');
+    if (await this.egressReady) command = this.egressPrelude() + command;
     const timeoutMs = opts.timeoutMs ?? 120_000;
     const max = opts.maxOutputBytes ?? 256 * 1024;
     const [cmd, args] = this.fsIsolation
@@ -237,7 +268,7 @@ export class LocalSandbox {
     const cwd = this.resolvePath(opts.cwd ?? '.', 'read');
     const cols = Math.min(Math.max(Math.floor(Number(opts.cols) || 100), 20), 500);
     const rows = Math.min(Math.max(Math.floor(Number(opts.rows) || 30), 5), 200);
-    const shell = `stty rows ${rows} cols ${cols} 2>/dev/null; export PS1='helix:\\W\\$ '; exec bash --noprofile --norc -i`;
+    const shell = `${this.egressPrelude()}stty rows ${rows} cols ${cols} 2>/dev/null; export PS1='helix:\\W\\$ '; exec bash --noprofile --norc -i`;
     // No --pid here: as PID-namespace init the shell never owns the PTY's foreground group, so Ctrl-C is lost.
     // /proc stays unmounted, so host processes remain invisible.
     const argv = this.fsIsolation
@@ -270,6 +301,7 @@ export class LocalSandbox {
   destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
+    void this.egressReady.then((close) => close?.());
     rmSync(this.scratch, { recursive: true, force: true });
     if (this.newRoot) rmSync(this.newRoot, { recursive: true, force: true });
   }
