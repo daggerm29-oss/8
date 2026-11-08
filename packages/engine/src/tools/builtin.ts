@@ -5,6 +5,7 @@ import { ToolRegistry, type PreviewCapture, type Tool } from './registry.ts';
 import { codeSearch, domainMap, findSymbol, impactTool } from './index-tools.ts';
 import { formatSnapshot } from '../preview/browser.ts';
 import { smokeCheck } from '../verify/testgen.ts';
+import { loadSkills, skillBody } from '../agent/skills.ts';
 
 const SKIP_DIRS = new Set(['node_modules', '.git', '.next', 'dist', 'build', '__pycache__', '.venv', 'target']);
 
@@ -287,6 +288,20 @@ const proposeTest: Tool = {
   },
 };
 
+/** Skills (F-AGT-5, §9.7): the context lists only name + description; the body loads here. */
+const useSkill: Tool = {
+  spec: {
+    name: 'use_skill',
+    description: 'Load the full instructions of a workspace skill listed under "Skills" in your context (skills/<name>/SKILL.md). Returns its body and any helper scripts.',
+    inputSchema: { type: 'object', properties: { name: { type: 'string', minLength: 1 } }, required: ['name'], additionalProperties: false },
+  },
+  async run(args, { sandbox }) {
+    const r = skillBody(sandbox.root, String(args.name));
+    if (!r) return { content: `unknown skill '${args.name}'. Available: ${loadSkills(sandbox.root).map((s) => s.name).join(', ') || '(none)'}`, isError: true };
+    return { content: `# Skill: ${r.skill.name} (${r.skill.file})\n${r.body}${r.scripts.length ? `\n\nScripts (run with run_shell):\n${r.scripts.map((s) => `- ${s}`).join('\n')}` : ''}`, summary: `use_skill ${r.skill.name}` };
+  },
+};
+
 /** Plan Mode output (F-AGT-2, §9.4). Only offered under the `plan` profile. */
 export const submitPlan: Tool = {
   spec: {
@@ -327,6 +342,6 @@ export const submitPlan: Tool = {
 
 export function builtinTools(): ToolRegistry {
   const reg = new ToolRegistry();
-  for (const t of [readFile, listDir, search, findSymbol, codeSearch, impactTool, domainMap, writeFile, editFile, runShell, startDevServerTool, previewScreenshot, previewConsole, previewSnapshot, exploreTool, proposeTest, submitPlan]) reg.register(t);
+  for (const t of [readFile, listDir, search, findSymbol, codeSearch, impactTool, domainMap, writeFile, editFile, runShell, startDevServerTool, previewScreenshot, previewConsole, previewSnapshot, exploreTool, proposeTest, useSkill, submitPlan]) reg.register(t);
   return reg;
 }

@@ -20,6 +20,7 @@ import type { Ledger, ModelRole } from '../models/ledger.ts';
 import { MODEL_ROLES, assertUsable, loadRoleLayers, refString, resolveRoles, type ModelRef, type ResolvedRoles, type RolesInput } from '../models/roles.ts';
 import { route, type StepType } from '../models/router.ts';
 import { ToolScript, type ReplayAdapter, type SessionBundle } from '../replay/bundle.ts';
+import { formatHookRuns, loadHooks, loadSkills, runHooks, skillsContext, type Hook } from './skills.ts';
 import { buildEvidence, reverify, type ReverifyResult, type VerificationEvidence } from '../artifacts/evidence.ts';
 import type { Tracer } from '../obs/tracing.ts';
 import type { Logger } from '../util/log.ts';
@@ -447,7 +448,10 @@ export class TaskRuntime {
         if (pending.length) {
           await this.runTools(t, pending, sandbox, signal, index);
         } else if (last?.role === 'assistant') {
-          if (await this.verify(t, last, sandbox, signal, index)) return;
+          if (await this.verify(t, last, sandbox, signal, index)) {
+            await this.taskDoneHooks(id, sandbox, signal);
+            return;
+          }
         } else {
           if (t.step_count >= t.max_steps) {
             this.setStatus(id, 'failed', { error: `step limit reached (${t.max_steps})` });
@@ -478,6 +482,8 @@ export class TaskRuntime {
     }
     const instructions = loadInstructions(root, { helixHome: this.o.helixHome });
     const composed = assembleContext({ goal: t.goal, index: stats ? index : undefined, instructions, budgetTokens: this.o.contextBudgetTokens });
+    const skills = skillsContext(loadSkills(root));
+    if (skills) composed.text = composed.text ? `${composed.text}\n\n${skills}` : skills;
     this.saveArtifact(t.id, 'context', 'Composed context', composed);
     this.publish(t.id, t.ws, 'context.composed', {
       items: composed.items, usedTokens: composed.usedTokens, budgetTokens: composed.budgetTokens, warnings: composed.warnings,
@@ -789,7 +795,13 @@ export class TaskRuntime {
       const started = performance.now();
       const script = this.replays.get(t.id);
       const replayed = script?.next(call, allowed ? 'allowed' : 'denied');
-      const out: ToolOutput = replayed && allowed
+      const hooks = replayed || !allowed ? [] : this.hooksFor(sandbox.root);
+      const pre = await runHooks(sandbox, hooks, 'pre_tool', { tool: call.name, args: call.args }, signal);
+      const blocked = pre.find((r) => r.exitCode !== 0);
+      if (pre.length) this.publish(t.id, t.ws, 'hook.ran', { event: 'pre_tool', tool: call.name, runs: pre.map((r) => ({ run: r.run, exitCode: r.exitCode })) }, 'audit');
+      let out: ToolOutput = blocked
+        ? { content: `blocked by pre_tool hook \`${blocked.run}\` (exit ${blocked.exitCode})\n${formatHookRuns('pre_tool', pre)}`, isError: true, summary: `hook blocked ${call.name}`, provenance: { source: 'repo', trust: 'untrusted', taint: true, origin: 'hook:pre_tool' } }
+        : replayed && allowed
         ? replayed
         : allowed
         ? await this.o.tracer.withSpan('tool.call', { tool: call.name, 'task.id': t.id, action_class: decision.actionClass }, () =>
@@ -806,6 +818,13 @@ export class TaskRuntime {
               } : undefined,
             }))
         : { content: `denied by policy: ${decision.reason}`, isError: true, summary: `denied ${call.name}` };
+      if (!blocked && hooks.length && !signal.aborted) {
+        const post = await runHooks(sandbox, hooks, 'post_tool', { tool: call.name, args: call.args }, signal);
+        if (post.length) {
+          this.publish(t.id, t.ws, 'hook.ran', { event: 'post_tool', tool: call.name, runs: post.map((r) => ({ run: r.run, exitCode: r.exitCode })) }, 'audit');
+          out = { ...out, content: `${out.content}\n${formatHookRuns('post_tool', post)}`, provenance: { source: out.provenance?.source ?? 'builtin', trust: 'untrusted', taint: true, origin: 'hook:post_tool' } };
+        }
+      }
       if (signal.aborted) return;
       const durationMs = Math.round(performance.now() - started);
       this.o.db.transaction(() => {
@@ -816,6 +835,24 @@ export class TaskRuntime {
       });
       this.publish(t.id, t.ws, 'tool.result', { tool: call.name, callId: call.id, actionClass: decision.actionClass, verdict: allowed ? 'allow' : 'deny', isError: Boolean(out.isError), summary: out.summary, durationMs }, allowed ? 'log' : 'audit');
     }
+  }
+
+  /** `.helix/hooks.json` (F-AGT-5); an invalid file is reported once per call and treated as no hooks. */
+  private hooksFor(root: string): Hook[] {
+    try {
+      return loadHooks(root);
+    } catch (error) {
+      this.o.logger?.warn('invalid hooks file; hooks disabled', { root, error: (error as Error).message });
+      return [];
+    }
+  }
+
+  private async taskDoneHooks(id: string, sandbox: LocalSandbox, signal: AbortSignal): Promise<void> {
+    const t = this.row(id);
+    const runs = await runHooks(sandbox, this.hooksFor(sandbox.root), 'task_done', { status: t.status }, signal);
+    if (!runs.length) return;
+    this.saveArtifact(id, 'hook_output', 'task_done hooks', { event: 'task_done', status: t.status, runs, provenance: { source: 'repo', trust: 'untrusted', taint: true } });
+    this.publish(id, t.ws, 'hook.ran', { event: 'task_done', status: t.status, runs: runs.map((r) => ({ run: r.run, exitCode: r.exitCode })) }, 'audit');
   }
 
   private checkpoint(t: TaskRow, sandbox: LocalSandbox, abs: string, previous: string | null): void {
