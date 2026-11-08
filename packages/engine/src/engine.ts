@@ -28,6 +28,7 @@ import { DEFAULT_EGRESS_ALLOWLIST, EgressProxy } from './sandbox/egress.ts';
 import { DevServers } from './preview/devserver.ts';
 import { PreviewBrowser } from './preview/browser.ts';
 import { listWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile } from './workspace/files.ts';
+import { gitCommit, gitDiff, gitStageAll, gitStatus } from './workspace/git.ts';
 import { WorkspaceIndex } from './index/index.ts';
 import { parseDiagnostics } from './diagnostics/parsers.ts';
 
@@ -300,6 +301,10 @@ export class Engine {
 
     peer.handle(Methods.previewStart, guard<{ workspacePath: string }>((p) => this.devServers.start(this.knownWorkspace(p.workspacePath))));
     peer.handle(Methods.previewStop, guard<{ workspacePath: string }>((p) => ({ stopped: this.devServers.stop(this.knownWorkspace(p.workspacePath)) })));
+    peer.handle(Methods.gitStatus, guard<{ workspacePath: string }>((p) => gitStatus(this.knownWorkspace(p.workspacePath))));
+    peer.handle(Methods.gitDiff, guard<{ workspacePath: string }>((p) => gitDiff(this.knownWorkspace(p.workspacePath))));
+    peer.handle(Methods.gitStageAll, guard<{ workspacePath: string }>((p) => gitStageAll(this.knownWorkspace(p.workspacePath))));
+    peer.handle(Methods.gitCommit, guard<{ workspacePath: string; message: string }>((p) => gitCommit(this.knownWorkspace(p.workspacePath), p.message)));
 
     const ptys = new Map<string, ReturnType<LocalSandbox['pty']>>();
     peer.onClose(() => { ptys.forEach((p) => p.kill()); ptys.clear(); });

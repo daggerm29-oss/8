@@ -144,6 +144,11 @@ export const Methods = {
   /* F-PRV-1 dev server */
   previewStart: 'preview.start',
   previewStop: 'preview.stop',
+  /* F-GIT-1 minimal Git panel */
+  gitStatus: 'git.status',
+  gitDiff: 'git.diff',
+  gitStageAll: 'git.stageAll',
+  gitCommit: 'git.commit',
 } as const;
 
 export const Notifications = {

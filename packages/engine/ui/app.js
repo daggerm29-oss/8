@@ -593,6 +593,41 @@ function reloadPreview() {
   if (frame.dataset.url) frame.src = frame.dataset.url;
 }
 
+/* ---------------- git (F-GIT-1 minimal) ---------------- */
+function patchView(title, patch) {
+  if (!patch) return null;
+  return h('div', { class: 'file' }, h('div', { class: 'file-head' }, h('span', {}, title)),
+    h('pre', { class: 'patch mono' }, patch.split('\n').map((l) => h('span', { class: l.startsWith('@@') ? 'h' : l.startsWith('+') && !l.startsWith('+++') ? 'a' : l.startsWith('-') && !l.startsWith('---') ? 'd' : '' }, l || ' '))));
+}
+
+async function renderGit() {
+  const ws = selectedWorkspace();
+  if (!ws) return;
+  const st = await rpc.call('git.status', { workspacePath: ws });
+  if (!st.isRepo) {
+    $('git-branch').textContent = 'Not a git repository.';
+    $('git-files').replaceChildren();
+    $('git-diff').replaceChildren();
+    $('git-stage').disabled = $('git-commit').disabled = true;
+    return;
+  }
+  $('git-branch').textContent = `${st.branch ?? '(detached)'}${st.head ? ` @ ${st.head}` : ''} · ${st.files.length} changed`;
+  $('git-files').replaceChildren(...(st.files.length ? st.files.map((f) => h('li', {}, h('span', { class: 'st' }, `${f.index}${f.worktree}`), h('span', {}, f.path)))
+    : [h('li', { class: 'note' }, 'Working tree clean.')]));
+  const staged = st.files.some((f) => f.index !== ' ' && f.index !== '?');
+  $('git-stage').disabled = !st.files.some((f) => f.worktree !== ' ');
+  $('git-commit').disabled = !staged;
+  const d = await rpc.call('git.diff', { workspacePath: ws });
+  $('git-diff').replaceChildren(...[patchView('Staged', d.staged), patchView('Unstaged', d.unstaged)].filter(Boolean));
+}
+
+async function gitAction(fn) {
+  $('git-result').className = 'note';
+  try { $('git-result').textContent = await fn(); }
+  catch (err) { $('git-result').className = 'note err'; $('git-result').textContent = String(err.message ?? err); }
+  await renderGit();
+}
+
 async function renderTab() {
   if (!state.selected) return;
   try {
@@ -606,6 +641,7 @@ async function renderTab() {
     else if (state.tab === 'files') await renderFiles();
     else if (state.tab === 'terminal') renderTerminal();
     else if (state.tab === 'preview') renderPreview();
+    else if (state.tab === 'git') await renderGit();
   } catch (err) { console.error('[helix] render failed', err); }
 }
 
@@ -771,6 +807,19 @@ function setStatus(text, ok) {
 function bindUi() {
   $('preview-start').addEventListener('click', startPreview);
   $('preview-reload').addEventListener('click', reloadPreview);
+  $('git-refresh').addEventListener('click', () => gitAction(async () => ''));
+  $('git-stage').addEventListener('click', () => gitAction(async () => {
+    const st = await rpc.call('git.stageAll', { workspacePath: selectedWorkspace() });
+    return `Staged ${st.files.length} file(s).`;
+  }));
+  $('git-commit-form').addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    gitAction(async () => {
+      const c = await rpc.call('git.commit', { workspacePath: selectedWorkspace(), message: $('git-message').value });
+      $('git-message').value = '';
+      return `Committed ${c.sha}: ${c.subject}`;
+    });
+  });
   $('refresh').addEventListener('click', () => { refreshTasks(); if (!state.selected) loadMonitor(); });
   $('show-monitor').addEventListener('click', showMonitor);
   $('batch-approve').addEventListener('click', () => batchRespond(true));
