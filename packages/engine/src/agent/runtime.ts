@@ -20,6 +20,7 @@ import type { Ledger, ModelRole } from '../models/ledger.ts';
 import { MODEL_ROLES, assertUsable, loadRoleLayers, refString, resolveRoles, type ModelRef, type ResolvedRoles, type RolesInput } from '../models/roles.ts';
 import { route, type StepType } from '../models/router.ts';
 import { ToolScript, type ReplayAdapter, type SessionBundle } from '../replay/bundle.ts';
+import type { DepGate } from '../policy/depgate.ts';
 import { formatHookRuns, loadHooks, loadSkills, runHooks, skillsContext, type Hook } from './skills.ts';
 import { buildEvidence, reverify, type ReverifyResult, type VerificationEvidence } from '../artifacts/evidence.ts';
 import type { Tracer } from '../obs/tracing.ts';
@@ -72,6 +73,8 @@ export interface RuntimeOptions {
   compaction?: CompactionOptions;
   /** Recorded-turn provider for deterministic session replay (F-OBS-2). */
   replay?: ReplayAdapter;
+  /** OSV dependency gate for shell package installs (F-REV-3). */
+  depGate?: DepGate;
 }
 
 export interface ReplayReport {
@@ -792,6 +795,16 @@ export class TaskRuntime {
       const decision = evaluate({ tool: call.name, args: call.args, profile: t.policy_profile, preapprove, sandboxHasNetwork: sandbox.info().network, tainted });
       let allowed = decision.verdict === 'allow';
       if (decision.verdict === 'ask') allowed = await this.ask(t, call, decision.actionClass, signal);
+      let denyReason = decision.reason;
+      if (allowed && call.name === 'run_shell' && this.o.depGate && !this.replays.has(t.id)) {
+        const dep = await this.o.depGate.decide(String((call.args as { command?: unknown }).command ?? ''), sandbox.root);
+        if (dep) {
+          this.publish(t.id, t.ws, 'deps.checked', { callId: call.id, verdict: dep.verdict, findings: dep.findings }, 'audit');
+          if (dep.verdict === 'deny' || (dep.verdict === 'ask' && t.policy_profile === 'headless')) allowed = false;
+          else if (dep.verdict === 'ask') allowed = await this.ask(t, call, 'dependency', signal);
+          if (!allowed) denyReason = dep.reason;
+        }
+      }
       const started = performance.now();
       const script = this.replays.get(t.id);
       const replayed = script?.next(call, allowed ? 'allowed' : 'denied');
@@ -817,7 +830,7 @@ export class TaskRuntime {
                 return artId;
               } : undefined,
             }))
-        : { content: `denied by policy: ${decision.reason}`, isError: true, summary: `denied ${call.name}` };
+        : { content: `denied by policy: ${denyReason}`, isError: true, summary: `denied ${call.name}` };
       if (!blocked && hooks.length && !signal.aborted) {
         const post = await runHooks(sandbox, hooks, 'post_tool', { tool: call.name, args: call.args }, signal);
         if (post.length) {
