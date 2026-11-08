@@ -11,15 +11,15 @@
 
 > These are **checklist completion** numbers (ticked items with recorded evidence ÷ all items). They are not a measure of product quality or release readiness; human launch gates in `docs/roadmap.md` are not counted.
 
-**Overall checklist completion: 63%** (56/89 roadmap items)  
+**Overall checklist completion: 64%** (57/89 roadmap items)  
 **Current milestone:** M2 Precision and efficiency  
-**Next task:** Electron desktop shell + OS keychain (F-AUTH-1) (deferred from M1)
+**Next task:** Windows support
 
 | Milestone | Progress | Items | Status |
 | --- | --- | --- | --- |
 | M0 Foundations | ██████████ 100% | 11/11 | Done |
 | M1 MVP, grounded single agent | ██████████ 100% | 26/26 | Done |
-| M2 Precision and efficiency | █████████░ 86% | 19/22 | In progress |
+| M2 Precision and efficiency | █████████░ 91% | 20/22 | In progress |
 | M3 Parallel and background | ░░░░░░░░░░ 0% | 0/12 | Not started |
 | M4 Team and ecosystem | ░░░░░░░░░░ 0% | 0/9 | Not started |
 | M5 Platform | ░░░░░░░░░░ 0% | 0/5 | Not started |
@@ -28,7 +28,7 @@
 
 ## Current task notes (overwrite when the task changes)
 
-- Next: M2 "Electron desktop shell + OS keychain (F-AUTH-1)" — not started; write its Accept line first. No display in the VM: scope to a minimal `packages/desktop` main process that starts the Engine + loads the workbench, testable headless (xvfb unavailable?) — check `electron` install via egress first.
+- Next: M2 "Windows support" — not started; write its Accept line first. No Windows host in the VM: scope to platform seams testable on Linux (path handling, process sandbox fallback, Windows Credential Manager keychain via PowerShell shim, CRLF) with `process.platform` injection.
 
 ## Ideas parking lot (one line each, max 15 — do not implement)
 
@@ -50,6 +50,7 @@
 - Full engine suite (end of task only, ~5–8 min, timeout ≥ 600 s): same command with `"test/**/*.test.ts"` (`pnpm test` can hang in the v0 VM)
 - CLI tests: `pnpm --filter @helix/cli test`
 - Workbench (service `helix-workbench`, port 4100): `bash -lc "set -a; . ./.env.development.local; set +a; exec node --disable-warning=ExperimentalWarning packages/engine/src/main.ts --ws 4100 --ui --host 0.0.0.0 --allow-host '*' --no-auth"`
+- Desktop: `pnpm --filter @helix/desktop setup` (fetch Electron), test `cd packages/desktop && node --test test/desktop.test.mjs`
 - Live model: env `GEMINI_API`, model `gemini-3.5-flash-lite` (free tier ~20 req/day per model)
 
 ## Environment notes

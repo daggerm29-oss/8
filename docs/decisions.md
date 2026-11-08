@@ -57,3 +57,4 @@
 - Session replay: model turns served by a hidden 'replay' provider keyed per replay (model id = key); tools never run during replay, policy is still evaluated so allowed↔denied changes surface as divergence.
 - 2026-11-08 F-AGT-5: hooks file is `.helix/hooks.json` (JSON, not YAML as in §9.7) to avoid a YAML dependency; hook output is always tainted/untrusted; hooks skipped on replay.
 - F-REV-3 dep gate: only shell installs the agent runs are checked (no sandboxd shell-wrapper yet); OSV unreachable fails to ask, not allow.
+- F-AUTH-1: keychain via OS CLIs (`security -i` stdin / libsecret `secret-tool` stdin), no native addon and no plaintext fallback; Electron binary is not fetched by workspace installs (`allowBuilds.electron: false`, run `pnpm --filter @helix/desktop setup`); headless smoke uses offscreen windows (native windows segfault under `--ozone-platform=headless`).
