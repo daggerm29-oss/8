@@ -143,13 +143,16 @@ export class EgressProxy {
 }
 
 /**
- * In-sandbox TCP→Unix forwarder, run with the toolchain's node inside the sandbox network namespace.
- * argv: socketPath port readyFile. Exits when its parent shell exits (reparenting changes ppid).
+ * In-sandbox bridge forwarder, run with the toolchain's node inside the sandbox network namespace.
+ * argv: mode sock port readyFile. `tcp`: listen on 127.0.0.1:port → unix sock (egress). `unix`: listen on sock →
+ * 127.0.0.1:port (exposed port). Exits when its parent shell exits (reparenting changes ppid).
  */
 export const FORWARDER_SOURCE = `const net = require('net'); const fs = require('fs');
-const [sock, port, ready] = process.argv.slice(2);
+const [mode, sock, port, ready] = process.argv.slice(2);
 const ppid = process.ppid;
-net.createServer((c) => { const u = net.connect(sock); c.pipe(u); u.pipe(c); const k = () => { c.destroy(); u.destroy(); }; c.on('error', k); u.on('error', k); c.on('close', k); u.on('close', k); })
-  .listen(Number(port), '127.0.0.1', () => fs.writeFileSync(ready, ''));
-setInterval(() => { if (process.ppid !== ppid) process.exit(0); }, 300);
+const pipe = (c) => { const u = mode === 'tcp' ? net.connect(sock) : net.connect(Number(port), '127.0.0.1'); c.pipe(u); u.pipe(c); const k = () => { c.destroy(); u.destroy(); }; c.on('error', k); u.on('error', k); c.on('close', k); u.on('close', k); };
+const srv = net.createServer(pipe);
+const done = () => fs.writeFileSync(ready, '');
+if (mode === 'tcp') srv.listen(Number(port), '127.0.0.1', done); else { try { fs.unlinkSync(sock); } catch {} srv.listen(sock, done); }
+setInterval(() => { if (process.ppid !== ppid) { try { if (mode !== 'tcp') fs.unlinkSync(sock); } catch {} process.exit(0); } }, 300);
 `;

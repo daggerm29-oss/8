@@ -11,6 +11,8 @@ export interface ToolContext {
   submitArtifact?: (kind: string, title: string, data: unknown) => string;
   /** Called with the previous content (null = new file) before any write, for checkpoints (§20.3). */
   beforeWrite?: (absPath: string, previous: string | null) => void;
+  /** Start (or reuse) the workspace dev server (F-PRV-1); resolves once it answers HTTP. */
+  startDevServer?: () => Promise<{ url: string; command: string; port: number }>;
 }
 
 export interface ToolOutput {

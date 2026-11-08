@@ -23,6 +23,7 @@ import type { Logger } from '../util/log.ts';
 import type { ToolRegistry } from '../tools/registry.ts';
 import { LocalSandbox } from '../sandbox/sandbox.ts';
 import type { EgressProxy } from '../sandbox/egress.ts';
+import type { DevServers } from '../preview/devserver.ts';
 import { evaluate, type PolicyProfile } from '../policy/policy.ts';
 import { prefixedId } from '../util/ids.ts';
 import { globalRedactor } from '../util/redact.ts';
@@ -51,6 +52,8 @@ export interface RuntimeOptions {
   forceProcessSandbox?: boolean;
   /** Engine egress proxy bridged into task sandboxes (F-SBX-3). */
   egress?: EgressProxy;
+  /** Workspace dev servers (F-PRV-1) for the `start_dev_server` tool. */
+  devServers?: DevServers;
   /** Multiplier for task-level backoff delays (tests use a tiny value). */
   taskRetryScale?: number;
   /** Helix home, for user-level `HELIX.md` instructions (§13.5). */
@@ -654,6 +657,7 @@ export class TaskRuntime {
         ? await this.o.tracer.withSpan('tool.call', { tool: call.name, 'task.id': t.id, action_class: decision.actionClass }, () =>
             this.o.tools.run(call.name, call.args, {
               sandbox, signal, index,
+              startDevServer: this.o.devServers ? () => this.o.devServers!.start(sandbox.root) : undefined,
               beforeWrite: (abs, prev) => this.checkpoint(t, sandbox, abs, prev),
               submitArtifact: t.policy_profile === 'plan' ? (kind, title, data) => {
                 const artId = this.saveArtifact(t.id, kind, title, data);

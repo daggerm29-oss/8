@@ -141,6 +141,24 @@ const runShell: Tool = {
   },
 };
 
+/** Dev server start (F-PRV-1, §17.2). The server keeps running after the call; its URL is on the host loopback. */
+const startDevServerTool: Tool = {
+  spec: {
+    name: 'start_dev_server',
+    description: 'Start the workspace web dev server (package.json "dev" or "start" script) in the sandbox, or reuse the running one. Returns its preview URL once it answers HTTP. Install dependencies first with run_shell.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  async run(_args, { startDevServer }) {
+    if (!startDevServer) return { content: 'dev servers are not available in this context', isError: true, summary: 'start_dev_server unavailable' };
+    try {
+      const s = await startDevServer();
+      return { content: `dev server running: ${s.url} (command: ${s.command}, sandbox port ${s.port})`, summary: `dev server → ${s.url}` };
+    } catch (e) {
+      return { content: `dev server failed: ${(e as Error).message}`, isError: true, summary: 'dev server failed' };
+    }
+  },
+};
+
 /** Plan Mode output (F-AGT-2, §9.4). Only offered under the `plan` profile. */
 export const submitPlan: Tool = {
   spec: {
@@ -171,6 +189,6 @@ export const submitPlan: Tool = {
 
 export function builtinTools(): ToolRegistry {
   const reg = new ToolRegistry();
-  for (const t of [readFile, listDir, search, findSymbol, codeSearch, impactTool, writeFile, editFile, runShell, submitPlan]) reg.register(t);
+  for (const t of [readFile, listDir, search, findSymbol, codeSearch, impactTool, writeFile, editFile, runShell, startDevServerTool, submitPlan]) reg.register(t);
   return reg;
 }

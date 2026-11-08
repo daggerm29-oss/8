@@ -141,6 +141,9 @@ export const Methods = {
   /* F-SBX-3 egress allowlist */
   egressAllow: 'egress.allow',
   egressList: 'egress.list',
+  /* F-PRV-1 dev server */
+  previewStart: 'preview.start',
+  previewStop: 'preview.stop',
 } as const;
 
 export const Notifications = {
