@@ -1,4 +1,7 @@
+import { preciseReferences } from '../index/precise.ts';
 import type { Tool } from './registry.ts';
+
+const TS_JS = /\.(c|m)?(t|j)sx?$/;
 
 /** Index-backed read tools (F-IDX-1/F-IDX-4). They return nothing useful if the task has no index. */
 export const findSymbol: Tool = {
@@ -48,10 +51,17 @@ export const impactTool: Tool = {
   async run(args, { index }) {
     if (!index) return { content: 'code index unavailable for this task; use search', isError: true };
     index.update();
-    const r = index.impact(String(args.target), { depth: args.depth === undefined ? 2 : Number(args.depth) });
+    let r = index.impact(String(args.target), { depth: args.depth === undefined ? 2 : Number(args.depth) });
     if (r.kind === 'unknown') return { content: `no symbol or indexed file named '${args.target}'`, summary: `impact ${args.target}: unknown` };
+    const tsDefs = r.kind === 'symbol' && r.definitions.length <= 8 && r.definitions.every((d) => TS_JS.test(d.path));
+    if (tsDefs) {
+      const refs = await preciseReferences(index.root, r.definitions.map((d) => ({ path: d.path, line: d.line, name: d.name })));
+      if (refs) r = index.withPreciseCallers(r, refs);
+    }
     const out = [
-      `Impact of ${r.kind} ${r.target} (heuristic, name-based call edges):`,
+      r.precision === 'precise'
+        ? `Impact of ${r.kind} ${r.target} (precise, TypeScript language service references; direct callers only, run impact on a caller to go deeper):`
+        : `Impact of ${r.kind} ${r.target} (heuristic, name-based call edges):`,
       `definitions: ${r.definitions.slice(0, 10).map((d) => `${d.qualifiedName} @ ${d.path}:${d.line}`).join(', ') || '(none)'}`,
       `callers (${r.callers.length}):`,
       ...r.callers.slice(0, 40).map((c) => `  ${'  '.repeat(c.depth - 1)}${c.path}:${c.line} in ${c.caller || '(top level)'} -> ${c.calls}`),

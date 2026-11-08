@@ -49,7 +49,7 @@ export interface ImpactReport {
   /** Files that may need changes or re-verification, most direct first (excludes the definition files). */
   affectedFiles: string[];
   tests: string[];
-  precision: 'heuristic';
+  precision: 'heuristic' | 'precise';
 }
 
 export interface IndexStats {
@@ -260,6 +260,44 @@ export class WorkspaceIndex {
     report.affectedFiles = [...files].filter((f) => !isTestPath(f));
     report.tests = [...testSet];
     return report;
+  }
+
+  /**
+   * Replaces the heuristic callers of a symbol report with precise depth-1 references (F-IDX-2):
+   * `refs[i]` belongs to `report.definitions[i]`; a null entry keeps that definition's heuristic callers.
+   */
+  withPreciseCallers(report: ImpactReport, refs: Array<Array<{ path: string; line: number; isDefinition: boolean }> | null>): ImpactReport {
+    if (report.kind !== 'symbol' || !refs.some(Boolean)) return report;
+    const callers: ImpactCaller[] = [];
+    report.definitions.forEach((d, i) => {
+      const own = refs[i];
+      const calls = `${d.qualifiedName} (${d.path}:${d.line})`;
+      if (!own) {
+        callers.push(...report.callers.filter((c) => c.depth === 1 && c.calls === d.qualifiedName).map((c) => ({ ...c, calls })));
+        return;
+      }
+      for (const r of own) {
+        if (r.isDefinition || (r.path === d.path && r.line === d.line)) continue;
+        if (callers.some((c) => c.path === r.path && c.line === r.line && c.calls === calls)) continue;
+        callers.push({ path: r.path, line: r.line, caller: this.enclosing(r.path, r.line), calls, depth: 1 });
+      }
+    });
+    const defFiles = new Set(report.definitions.map((d) => d.path));
+    const files = new Set(callers.map((c) => c.path).filter((p) => !defFiles.has(p)));
+    const tests = new Set<string>();
+    for (const p of [...defFiles, ...files]) {
+      if (isTestPath(p)) tests.add(p);
+      for (const t of this.coveringTests(p)) tests.add(t);
+    }
+    return { ...report, callers, affectedFiles: [...files].filter((f) => !isTestPath(f)), tests: [...tests], precision: 'precise' };
+  }
+
+  /** Innermost indexed symbol containing `line` ('' = top level). */
+  private enclosing(path: string, line: number): string {
+    return this.db.get<{ q: string }>(
+      `SELECT qualified_name AS q FROM idx_symbols WHERE ws = ? AND path = ? AND kind != 'heading' AND line <= ? AND end_line >= ? ORDER BY end_line - line ASC LIMIT 1`,
+      this.ws, path, line, line,
+    )?.q ?? '';
   }
 
   /** Test files that import a file (static `tests` edges heuristic, §11.5). */
