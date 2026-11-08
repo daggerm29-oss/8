@@ -102,7 +102,8 @@ Launch gates (human, not counted): O1/O2 benchmarks, 10-user usability study, or
   - Evidence: legacy, built in sessions 1–16 before evidence rule (see docs/history/progress-sessions-1-16.md)
 - [x] Change-based test selection (F-TST-1)
   - Evidence: legacy, built in sessions 1–16 before evidence rule (see docs/history/progress-sessions-1-16.md)
-- [ ] Precise references via SCIP/LSP (F-IDX-2) [§11.4]
+- [x] Precise references via SCIP/LSP (F-IDX-2) [§11.4]
+  - Evidence: `node --test test/precise.test.ts test/graph.test.ts` → 4/4 pass (language service in sandbox: a.ts format refs = alias.ts:1,3 + both.ts:1,4; b.ts format = both.ts:4 only; impact output `precise` with alias `total` caller found and `B.format` attributed to b.ts, heuristic mode differs); tsc 0 errors; commit 0606cae
   - Minimal tier 2: TypeScript language service (`findReferences`, workspace or Engine `typescript`) runs in its own contained sandbox for TS/JS definitions; `impact` uses it for depth-1 callers (`precision: 'precise'`), heuristic fallback otherwise. No SCIP, no cache. Accept: new `test/precise.test.ts` on a fixture with two unrelated `format` functions, a namespace call `B.format()` and an aliased import shows precise callers = exactly the true references (alias found, `B.format` excluded) while heuristic mode differs.
 - [ ] Impact Report attached to Plan Mode artifacts [§11.5]
 - [ ] tree-sitter parser swap for the symbol index [§11.2] (deferred from M1)
