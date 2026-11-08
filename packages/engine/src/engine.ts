@@ -26,6 +26,7 @@ import { TaskRuntime } from './agent/runtime.ts';
 import { LocalSandbox, unshareAvailable } from './sandbox/sandbox.ts';
 import { DEFAULT_EGRESS_ALLOWLIST, EgressProxy } from './sandbox/egress.ts';
 import { DevServers } from './preview/devserver.ts';
+import { PreviewBrowser } from './preview/browser.ts';
 import { listWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile } from './workspace/files.ts';
 import { WorkspaceIndex } from './index/index.ts';
 import { parseDiagnostics } from './diagnostics/parsers.ts';
@@ -94,6 +95,8 @@ export class Engine {
   readonly egress: EgressProxy;
   /** Managed workspace dev servers (F-PRV-1). */
   readonly devServers: DevServers;
+  /** Lazily launched headless Chrome for agent browser tools (F-PRV-5). */
+  readonly browser: PreviewBrowser;
   /** Resolves once configured MCP servers are connected (or failed) and their tools are registered. */
   readonly mcpReady: Promise<McpServerStatus[]>;
   private heartbeat?: NodeJS.Timeout;
@@ -128,10 +131,11 @@ export class Engine {
       onReady: (root, info) => this.bus.publish({ topic: 'preview.ready', ws: this.runtime.workspaceFor(root).id, data: { ...info, workspacePath: root } }),
       onExit: (root, info, code) => this.bus.publish({ topic: 'preview.exited', ws: this.runtime.workspaceFor(root).id, data: { ...info, workspacePath: root, exitCode: code } }),
     });
+    this.browser = new PreviewBrowser({ outDir: join(this.home, 'screenshots') });
     const tools = builtinTools();
     this.mcp = new McpManager({ home: this.home, registry: tools, logger: this.logger, config: opts.mcpServers, toolSearchThreshold: opts.mcpToolSearchThreshold });
     this.mcpReady = opts.mcp === false ? Promise.resolve([]) : this.mcp.start();
-    this.runtime = new TaskRuntime({ db: this.db, bus: this.bus, gateway: this.gateway, ledger: this.ledger, tools, tracer: this.tracer, engineId: this.id, blobs: this.blobs, logger: this.logger, forceProcessSandbox: opts.forceProcessSandbox, egress: this.egress, devServers: this.devServers, taskRetryScale: opts.taskRetryScale, helixHome: this.home, indexing: opts.indexing, compaction: compactionFrom(env, opts.compaction) });
+    this.runtime = new TaskRuntime({ db: this.db, bus: this.bus, gateway: this.gateway, ledger: this.ledger, tools, tracer: this.tracer, engineId: this.id, blobs: this.blobs, logger: this.logger, forceProcessSandbox: opts.forceProcessSandbox, egress: this.egress, devServers: this.devServers, browser: this.browser, taskRetryScale: opts.taskRetryScale, helixHome: this.home, indexing: opts.indexing, compaction: compactionFrom(env, opts.compaction) });
 
     const now = new Date().toISOString();
     this.db.run('INSERT INTO engine_instances (id, pid, started_at, heartbeat_at) VALUES (?, ?, ?, ?)', this.id, process.pid, now, now);
@@ -422,6 +426,7 @@ export class Engine {
     for (const s of this.terminals.values()) s.destroy();
     this.terminals.clear();
     await this.devServers.closeAll();
+    await this.browser.close();
     this.egress.close();
     for (const c of this.wss?.clients ?? []) c.terminate();
     this.wss?.close();

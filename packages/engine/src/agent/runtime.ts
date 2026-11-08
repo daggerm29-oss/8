@@ -20,10 +20,11 @@ import type { Ledger, ModelRole } from '../models/ledger.ts';
 import { assertUsable, loadRoleLayers, refString, resolveRoles, type ModelRef, type ResolvedRoles, type RolesInput } from '../models/roles.ts';
 import type { Tracer } from '../obs/tracing.ts';
 import type { Logger } from '../util/log.ts';
-import type { ToolRegistry } from '../tools/registry.ts';
+import type { ToolContext, ToolRegistry } from '../tools/registry.ts';
 import { LocalSandbox } from '../sandbox/sandbox.ts';
 import type { EgressProxy } from '../sandbox/egress.ts';
 import type { DevServers } from '../preview/devserver.ts';
+import type { PreviewBrowser } from '../preview/browser.ts';
 import { evaluate, type PolicyProfile } from '../policy/policy.ts';
 import { prefixedId } from '../util/ids.ts';
 import { globalRedactor } from '../util/redact.ts';
@@ -54,6 +55,8 @@ export interface RuntimeOptions {
   egress?: EgressProxy;
   /** Workspace dev servers (F-PRV-1) for the `start_dev_server` tool. */
   devServers?: DevServers;
+  /** Headless browser for `preview_screenshot` / `preview_console` (F-PRV-5). */
+  browser?: PreviewBrowser;
   /** Multiplier for task-level backoff delays (tests use a tiny value). */
   taskRetryScale?: number;
   /** Helix home, for user-level `HELIX.md` instructions (§13.5). */
@@ -281,7 +284,9 @@ export class TaskRuntime {
       const run = this.running.get(id);
       if (run) {
         const remaining = deadline - Date.now();
-        await (remaining === Infinity ? run.done : Promise.race([run.done, new Promise((r) => setTimeout(r, remaining))]));
+        let timer: NodeJS.Timeout | undefined;
+        await (remaining === Infinity ? run.done : Promise.race([run.done, new Promise((r) => { timer = setTimeout(r, remaining); })]));
+        clearTimeout(timer);
       } else if (TERMINAL.includes(this.row(id).status)) break;
       else await new Promise((r) => setTimeout(r, 200));
       if (TERMINAL.includes(this.row(id).status)) break;
@@ -644,6 +649,20 @@ export class TaskRuntime {
     this.publish(t.id, t.ws, 'agent.message', { stepId, text, toolCalls: result.message.parts.filter((p) => p.type === 'tool_call').map((p) => (p as { name: string }).name), costUsd: result.costUsd });
   }
 
+  /** Browser tools only ever navigate to this workspace's own dev server (never arbitrary URLs). */
+  private previewBrowserFor(root: string): ToolContext['previewBrowser'] {
+    const { browser, devServers } = this.o;
+    if (!browser || !devServers || !browser.available()) return undefined;
+    const urlFor = (path = '/') => {
+      const info = devServers.get(root);
+      if (!info) throw new Error('no dev server is running for this workspace; call start_dev_server first');
+      const target = new URL(path, info.url);
+      if (target.origin !== new URL(info.url).origin) throw new Error(`path must stay on the dev server (${info.url})`);
+      return target.href;
+    };
+    return { screenshot: (path) => browser.screenshot(urlFor(path)), console: (path) => browser.console(urlFor(path)) };
+  }
+
   private async runTools(t: TaskRow, calls: Array<Extract<Part, { type: 'tool_call' }>>, sandbox: LocalSandbox, signal: AbortSignal, index?: WorkspaceIndex): Promise<void> {
     const preapprove = parseJson<string[]>(t.preapprove_json, []);
     let tainted = this.transcript(t.id).some((m) => m.parts.some((p) => p.type === 'tool_result' && p.provenance?.taint));
@@ -658,6 +677,7 @@ export class TaskRuntime {
             this.o.tools.run(call.name, call.args, {
               sandbox, signal, index,
               startDevServer: this.o.devServers ? () => this.o.devServers!.start(sandbox.root) : undefined,
+              previewBrowser: this.previewBrowserFor(sandbox.root),
               beforeWrite: (abs, prev) => this.checkpoint(t, sandbox, abs, prev),
               submitArtifact: t.policy_profile === 'plan' ? (kind, title, data) => {
                 const artId = this.saveArtifact(t.id, kind, title, data);

@@ -139,7 +139,9 @@ export class PreviewBrowser {
         const onLoad = new Promise<void>((r) => { loaded = r; });
         const offLoad = cdp.on('Page.loadEventFired', () => loaded());
         await cdp.send('Page.navigate', { url });
-        const status = await Promise.race([onLoad.then(() => 'loaded' as const), new Promise<'timeout'>((r) => setTimeout(() => r('timeout'), timeoutMs))]);
+        let timer: NodeJS.Timeout | undefined;
+        const status = await Promise.race([onLoad.then(() => 'loaded' as const), new Promise<'timeout'>((r) => { timer = setTimeout(() => r('timeout'), timeoutMs); })]);
+        clearTimeout(timer);
         offLoad();
         await new Promise((r) => setTimeout(r, 400));
         const info = await cdp.send<{ result: { value: { title: string; text: string; url: string } } }>('Runtime.evaluate', {

@@ -13,6 +13,19 @@ export interface ToolContext {
   beforeWrite?: (absPath: string, previous: string | null) => void;
   /** Start (or reuse) the workspace dev server (F-PRV-1); resolves once it answers HTTP. */
   startDevServer?: () => Promise<{ url: string; command: string; port: number }>;
+  /** Headless browser bound to the workspace's running dev server (F-PRV-5); `path` is relative to its URL. */
+  previewBrowser?: {
+    screenshot: (path?: string) => Promise<PreviewCapture & { path: string; bytes: number }>;
+    console: (path?: string) => Promise<PreviewCapture>;
+  };
+}
+
+export interface PreviewCapture {
+  url: string;
+  title: string;
+  text: string;
+  console: Array<{ level: string; text: string; source: string; url?: string; line?: number }>;
+  status: 'loaded' | 'timeout';
 }
 
 export interface ToolOutput {

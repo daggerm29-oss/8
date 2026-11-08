@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { ToolRegistry, type Tool } from './registry.ts';
+import { ToolRegistry, type PreviewCapture, type Tool } from './registry.ts';
 import { codeSearch, findSymbol, impactTool } from './index-tools.ts';
 
 const SKIP_DIRS = new Set(['node_modules', '.git', '.next', 'dist', 'build', '__pycache__', '.venv', 'target']);
@@ -159,6 +159,53 @@ const startDevServerTool: Tool = {
   },
 };
 
+const previewPathSchema = { type: 'object', properties: { path: { type: 'string', description: 'Page path on the dev server, e.g. "/" or "/about" (default "/")' } }, additionalProperties: false } as const;
+
+function formatConsole(entries: PreviewCapture['console']): string {
+  if (!entries.length) return '(no console messages)';
+  return entries.slice(0, 50).map((e) => `[${e.level}] ${e.text}${e.url ? ` (${e.url}${e.line !== undefined ? `:${e.line + 1}` : ''})` : ''}`).join('\n');
+}
+
+/** Browser tools, minimal (F-PRV-5, §18.5): headless Chrome against the running dev server. */
+const previewScreenshot: Tool = {
+  spec: {
+    name: 'preview_screenshot',
+    description: 'Load a page of the running dev server in a headless browser and take a screenshot. Returns the PNG path, page title, visible text excerpt and console errors. Start the server with start_dev_server first.',
+    inputSchema: previewPathSchema,
+  },
+  async run(args, { previewBrowser }) {
+    if (!previewBrowser) return { content: 'browser tools are not available in this context', isError: true, summary: 'preview_screenshot unavailable' };
+    try {
+      const s = await previewBrowser.screenshot((args as { path?: string }).path);
+      const errors = s.console.filter((e) => e.level === 'error');
+      return {
+        content: `screenshot saved: ${s.path} (${s.bytes} bytes)\nurl: ${s.url}\ntitle: ${s.title}\nload: ${s.status}\nvisible text:\n${s.text.slice(0, 1500)}\nconsole errors:\n${formatConsole(errors)}`,
+        summary: `screenshot ${s.url} · ${errors.length} console error(s)`,
+      };
+    } catch (e) {
+      return { content: `screenshot failed: ${(e as Error).message}`, isError: true, summary: 'preview_screenshot failed' };
+    }
+  },
+};
+
+const previewConsole: Tool = {
+  spec: {
+    name: 'preview_console',
+    description: 'Load a page of the running dev server in a headless browser and return its console messages and uncaught exceptions. Start the server with start_dev_server first.',
+    inputSchema: previewPathSchema,
+  },
+  async run(args, { previewBrowser }) {
+    if (!previewBrowser) return { content: 'browser tools are not available in this context', isError: true, summary: 'preview_console unavailable' };
+    try {
+      const c = await previewBrowser.console((args as { path?: string }).path);
+      const errors = c.console.filter((e) => e.level === 'error').length;
+      return { content: `url: ${c.url}\nload: ${c.status}\nconsole:\n${formatConsole(c.console)}`, summary: `console ${c.url} · ${c.console.length} message(s), ${errors} error(s)` };
+    } catch (e) {
+      return { content: `console capture failed: ${(e as Error).message}`, isError: true, summary: 'preview_console failed' };
+    }
+  },
+};
+
 /** Plan Mode output (F-AGT-2, §9.4). Only offered under the `plan` profile. */
 export const submitPlan: Tool = {
   spec: {
@@ -189,6 +236,6 @@ export const submitPlan: Tool = {
 
 export function builtinTools(): ToolRegistry {
   const reg = new ToolRegistry();
-  for (const t of [readFile, listDir, search, findSymbol, codeSearch, impactTool, writeFile, editFile, runShell, startDevServerTool, submitPlan]) reg.register(t);
+  for (const t of [readFile, listDir, search, findSymbol, codeSearch, impactTool, writeFile, editFile, runShell, startDevServerTool, previewScreenshot, previewConsole, submitPlan]) reg.register(t);
   return reg;
 }
