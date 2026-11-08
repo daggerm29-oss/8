@@ -1,0 +1,63 @@
+{
+  "at": "2026-11-08T13:54:12.923Z",
+  "pass": true,
+  "provider": "gemini",
+  "model": "gemini-3.5-flash-lite",
+  "status": "done",
+  "steps": 7,
+  "verifyAttempts": 1,
+  "seconds": 9,
+  "checks": {
+    "taskDone": true,
+    "depsInstalledViaProxy": true,
+    "devServerStarted": true,
+    "headingEdited": true,
+    "screenshotConfirms": true,
+    "gatesPassed": true,
+    "committedFromGitPanel": true
+  },
+  "toolsUsed": [
+    "run_shell",
+    "start_dev_server",
+    "read_file",
+    "edit_file",
+    "preview_screenshot"
+  ],
+  "shellCommands": [
+    "npm install",
+    "npm test"
+  ],
+  "screenshots": [
+    "screenshot saved: /tmp/helix-eval-m1-mISUrd/screenshots/shot_01m6xq09b9z2jds2s9b5j10bg9.png (10485 bytes)\nurl: http://127.0.0.1:35487/\ntitle: Web Hello\nload: loaded\nvisible text:\nHello Helix\n\nA tiny fixture app for the Helix M1 demo.\nconsole errors:\n(no console messages)"
+  ],
+  "gates": [
+    {
+      "gate": "verify",
+      "kind": "test",
+      "command": "npm test",
+      "required": true,
+      "exitCode": 0,
+      "attempt": 1,
+      "passed": true,
+      "durationMs": 514,
+      "diagnostics": []
+    }
+  ],
+  "commit": {
+    "sha": "6adc651",
+    "log": "6adc651 Change heading to Hello Helix",
+    "files": [
+      "package-lock.json",
+      "src/page.js"
+    ]
+  },
+  "commitError": null,
+  "artifact": "evals/results/m1-demo-2026-11-08T13-54-03-813Z.png",
+  "ledger": {
+    "calls": 7,
+    "inputTokens": 18624,
+    "outputTokens": 216,
+    "costUsd": 0
+  },
+  "error": null
+}

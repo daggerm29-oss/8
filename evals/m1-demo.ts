@@ -51,7 +51,8 @@ const parts = engine.runtime.transcript(task.id).flatMap((m) => m.parts as Part[
 const shellCommands = parts.filter((p) => p.type === 'tool_call' && p.name === 'run_shell').map((p) => p.args?.command ?? '');
 const toolsUsed = [...new Set(parts.filter((p) => p.type === 'tool_call').map((p) => p.name))];
 const shots = parts.filter((p) => p.type === 'tool_result' && p.name === 'preview_screenshot' && p.content?.startsWith('screenshot saved:'));
-const confirmingShot = shots.reverse().find((p) => /Hello Helix/.test(p.content!));
+const screenshots = parts.filter((p) => p.type === 'tool_result' && p.name === 'preview_screenshot').map((p) => p.content!.slice(0, 400));
+const confirmingShot = [...shots].reverse().find((p) => /Hello Helix/.test(p.content!));
 const shotPath = confirmingShot?.content!.match(/^screenshot saved: (\S+)/)?.[1];
 let artifact: string | null = null;
 if (shotPath && existsSync(shotPath)) {
@@ -93,7 +94,7 @@ await engine.close();
 const pass = Object.values(checks).every(Boolean);
 const result = {
   at: new Date().toISOString(), pass, provider: values.provider, model: done.model, status: done.status, steps: done.stepCount, verifyAttempts: done.verifyAttempts,
-  seconds: Math.round((Date.now() - started) / 1000), checks, toolsUsed, shellCommands, gates, commit, commitError, artifact,
+  seconds: Math.round((Date.now() - started) / 1000), checks, toolsUsed, shellCommands, screenshots, gates, commit, commitError, artifact,
   ledger: { calls: done.ledger.calls, inputTokens: done.ledger.inputTokens, outputTokens: done.ledger.outputTokens, costUsd: done.ledger.costUsd },
   error: done.error ?? null,
 };
