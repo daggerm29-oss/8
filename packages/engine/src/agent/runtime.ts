@@ -20,6 +20,7 @@ import type { Ledger, ModelRole } from '../models/ledger.ts';
 import { MODEL_ROLES, assertUsable, loadRoleLayers, refString, resolveRoles, type ModelRef, type ResolvedRoles, type RolesInput } from '../models/roles.ts';
 import { route, type StepType } from '../models/router.ts';
 import { ToolScript, type ReplayAdapter, type SessionBundle } from '../replay/bundle.ts';
+import { buildEvidence, reverify, type ReverifyResult, type VerificationEvidence } from '../artifacts/evidence.ts';
 import type { Tracer } from '../obs/tracing.ts';
 import type { Logger } from '../util/log.ts';
 import type { ToolContext, ToolOutput, ToolRegistry } from '../tools/registry.ts';
@@ -532,6 +533,20 @@ export class TaskRuntime {
     }
   }
 
+  /** Re-run a verification evidence artifact's assertions in a fresh sandbox of its workspace (F-UI-4). */
+  async reverifyArtifact(artifactId: string): Promise<ReverifyResult> {
+    const row = this.o.db.get<{ task: string; kind: string; data_json: string }>('SELECT task, kind, data_json FROM artifacts WHERE id = ?', artifactId);
+    if (!row) throw new Error(`unknown artifact ${artifactId}`);
+    if (row.kind !== 'verification_evidence') throw new Error(`artifact ${artifactId} is ${row.kind}, not verification_evidence`);
+    const root = this.wsPath(this.row(row.task).ws);
+    const sandbox = new LocalSandbox(prefixedId('sbx'), root, { forceProcess: this.o.forceProcessSandbox, egress: this.o.egress });
+    try {
+      return await reverify(artifactId, parseJson<VerificationEvidence>(row.data_json, { assertions: [] } as unknown as VerificationEvidence), (command) => sandbox.exec(command, { timeoutMs: 300_000 }));
+    } finally {
+      sandbox.destroy();
+    }
+  }
+
   saveArtifact(task: string, kind: string, title: string, data: unknown): string {
     const id = prefixedId('art');
     this.o.db.run('INSERT INTO artifacts (id, task, kind, title, data_json, at) VALUES (?, ?, ?, ?, ?, ?)', id, task, kind, title, json(data), new Date().toISOString());
@@ -950,6 +965,13 @@ export class TaskRuntime {
       command, exitCode: failed[0]?.exitCode ?? 0, attempt, passed: failed.length === 0, diagnostics: allDiagnostics,
       gates: results.map((x) => ({ name: x.gate.name, kind: x.gate.kind, required: x.gate.required, passed: x.passed, exitCode: x.exitCode, durationMs: x.durationMs, ...(tolerated.includes(x) ? { preexistingOnly: true } : {}) })),
     }, 'audit');
+    const evidence = buildEvidence({
+      attempt, passed: failed.length === 0,
+      gates: results.map((x) => ({ name: x.gate.name, command: x.command, required: x.gate.required, exitCode: x.exitCode, passed: x.passed, diagnostics: x.diagnostics.length })),
+      changedFiles: this.changeset(t.id).map((p) => (p.startsWith(`${sandbox.root}/`) ? p.slice(sandbox.root.length + 1) : p)),
+    });
+    const evidenceId = this.saveArtifact(t.id, 'verification_evidence', `Verification evidence (attempt ${attempt})`, evidence);
+    this.publish(t.id, t.ws, 'artifact.created', { artifactId: evidenceId, kind: 'verification_evidence', title: `Verification evidence (attempt ${attempt})` });
     if (!failed.length) {
       const warn = results.filter((x) => !x.passed && !tolerated.includes(x)).map((x) => x.gate.name);
       const notes = [

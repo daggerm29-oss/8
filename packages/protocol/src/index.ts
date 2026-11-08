@@ -151,6 +151,8 @@ export const Methods = {
   previewInspect: 'preview.inspect',
   previewLocate: 'preview.locate',
   previewInstruct: 'preview.instruct',
+  /* F-UI-4 verification evidence */
+  artifactReverify: 'artifact.reverify',
   /* F-OBS-2 session replay */
   taskBundle: 'task.bundle',
   taskReplay: 'task.replay',

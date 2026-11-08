@@ -238,6 +238,10 @@ export class Engine {
     }));
     peer.handle(Methods.checkpointList, guard<{ task: string }>((p) => this.runtime.checkpoints(p.task)));
     peer.handle(Methods.checkpointRestore, guard<{ task: string; checkpoint?: string }>((p) => this.runtime.restore(p.task, p.checkpoint)));
+    peer.handle(Methods.artifactReverify, guard<{ id: string }>((p) => {
+      if (typeof p.id !== 'string' || !p.id) throw new Error('id is required');
+      return this.runtime.reverifyArtifact(p.id);
+    }));
     peer.handle(Methods.artifactList, guard<{ task: string; kind?: string }>((p) => this.runtime.artifacts(p.task, p.kind)));
     peer.handle(Methods.diagnosticsParse, guard<{ command: string; output: string }>((p) => parseDiagnostics(p.command, p.output)));
     peer.handle(Methods.checkpointDiff, guard<{ task: string; checkpoint?: string }>((p) => this.runtime.diff(p.task, p.checkpoint)));

@@ -240,9 +240,41 @@ async function renderImpact(target) {
   } catch (err) { box.replaceChildren(h('p', { class: 'form-error' }, err.message)); }
 }
 
+/* Verification evidence (F-UI-4): structured assertions + re-verify. */
+function evidenceView(a) {
+  const e = a.data;
+  const result = h('div', { class: 'evidence-result', 'aria-live': 'polite' });
+  const btn = h('button', { type: 'button' }, 'Re-verify');
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    result.replaceChildren(h('p', { class: 'note' }, 'Re-running assertions…'));
+    try {
+      const r = await rpc.call('artifact.reverify', { id: a.id });
+      result.replaceChildren(
+        h('p', { class: r.allPassed && r.hashOk ? 'ev-pass' : 'ev-fail' }, `${r.allPassed ? 'All assertions pass now' : 'Some assertions fail now'} · hash ${r.hashOk ? 'intact' : 'MISMATCH'} · ${r.matchesRecorded ? 'matches recording' : 'differs from recording'}`),
+        h('table', { class: 'table' }, h('thead', {}, h('tr', {}, h('th', {}, 'Check'), h('th', {}, 'Recorded'), h('th', {}, 'Now'))),
+          h('tbody', {}, r.assertions.map((x) => h('tr', {}, h('td', {}, x.check), h('td', { class: 'mono' }, String(x.recorded)), h('td', { class: `mono ${x.passed ? 'ev-pass' : 'ev-fail'}` }, `${x.now} ${x.passed ? 'pass' : 'fail'}`))))),
+      );
+    } catch (err) { result.replaceChildren(h('p', { class: 'form-error' }, err.message)); }
+    btn.disabled = false;
+  });
+  return h('div', { class: 'part' },
+    h('p', { class: e.passed ? 'ev-pass' : 'ev-fail' }, `${e.passed ? 'Passed' : 'Failed'} · attempt ${e.attempt} · ${e.assertions.length} assertion${e.assertions.length === 1 ? '' : 's'}`),
+    h('table', { class: 'table evidence-table' },
+      h('thead', {}, h('tr', {}, h('th', {}, 'Check'), h('th', {}, 'Command'), h('th', {}, 'Expected'), h('th', {}, 'Actual'), h('th', {}, 'Result'))),
+      h('tbody', {}, e.assertions.map((x) => h('tr', {},
+        h('td', {}, x.check), h('td', { class: 'mono' }, x.command), h('td', { class: 'mono' }, `exit ${x.expected}`), h('td', { class: 'mono' }, `exit ${x.actual}`),
+        h('td', { class: x.passed ? 'ev-pass' : 'ev-fail' }, x.passed ? 'pass' : `fail${x.required ? '' : ' (optional)'}`))))),
+    e.changedFiles.length ? h('p', { class: 'note mono' }, `Changed: ${e.changedFiles.join(', ')}`) : '',
+    h('p', { class: 'note mono' }, e.hash),
+    h('div', { class: 'row' }, btn), result,
+  );
+}
+
 async function renderArtifacts() {
   const arts = await rpc.call('artifact.list', { task: state.selected });
-  $('artifacts').replaceChildren(...arts.map((a) => h('div', { class: 'msg' }, h('div', { class: 'role' }, `${a.kind} · ${a.title}`), h('div', { class: 'part' }, h('pre', { class: 'mono' }, typeof a.data === 'string' ? a.data : JSON.stringify(a.data, null, 2))))));
+  $('artifacts').replaceChildren(...arts.map((a) => h('div', { class: 'msg' }, h('div', { class: 'role' }, `${a.kind} · ${a.title}`),
+    a.kind === 'verification_evidence' && a.data?.assertions ? evidenceView(a) : h('div', { class: 'part' }, h('pre', { class: 'mono' }, typeof a.data === 'string' ? a.data : JSON.stringify(a.data, null, 2))))));
   if (!arts.length) $('artifacts').append(h('p', { class: 'note' }, 'No artifacts.'));
 }
 

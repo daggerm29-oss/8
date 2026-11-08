@@ -236,3 +236,7 @@ dialog label { display: flex; flex-direction: column; gap: 4px; font-size: 12px;
 .inspect-chip-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .chip { padding: 2px 8px; border-radius: 999px; background: #ddf4ff; color: #0550ae; font-size: 12px; }
 .preview-frame { width: 100%; height: 60vh; min-height: 320px; border: 1px solid var(--border, #d0d7de); border-radius: 6px; background: #fff; }
+.ev-pass { color: var(--accent); font-weight: 600; }
+.ev-fail { color: var(--danger); font-weight: 600; }
+.evidence-table td.mono { word-break: break-all; }
+.evidence-result { margin-top: 8px; }
