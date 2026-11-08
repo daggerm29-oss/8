@@ -1,5 +1,5 @@
 import { homedir } from 'node:os';
-import { resolve, sep } from 'node:path';
+import { posix, win32 } from 'node:path';
 import type { AuthContext } from '@helix/protocol';
 import { globalRedactor } from '../util/redact.ts';
 import { helixHome } from '../util/log.ts';
@@ -9,19 +9,32 @@ import { NoKeychain, type Keychain } from './keychain.ts';
  * Host paths the Engine never reads on behalf of tools (§25.5), explicitly including the Codex
  * credential cache (§7.4, ADR-020) and Helix's own state directory.
  */
-export function hostPathDenylist(): string[] {
-  const home = homedir();
+export function hostPathDenylist(platform: NodeJS.Platform = process.platform, home: string = homedir()): string[] {
+  const p = platform === 'win32' ? win32 : posix;
   const rel = [
     '.codex', '.ssh', '.aws', '.azure', '.gnupg', '.netrc', '.npmrc', '.pypirc', '.git-credentials', '.docker', '.kube',
     '.config/gcloud', '.config/gh', '.config/google-chrome', '.config/chromium', '.mozilla', '.password-store',
     'Library/Keychains', 'Library/Application Support/Google/Chrome', 'Library/Application Support/Firefox', 'Library/Cookies',
+    ...(platform === 'win32' ? WINDOWS_DENY : []),
   ];
-  return [...rel.map((r) => resolve(home, r)), resolve(helixHome())];
+  return [...rel.map((r) => p.resolve(home, r)), p.resolve(home, helixHome())];
 }
 
-export function isDeniedHostPath(absPath: string): boolean {
-  const target = resolve(absPath);
-  return hostPathDenylist().some((denied) => target === denied || target.startsWith(denied + sep));
+/** Windows credential stores, DPAPI master keys, and browser profiles (relative to the user profile). */
+const WINDOWS_DENY = [
+  'AppData/Roaming/Microsoft/Credentials', 'AppData/Local/Microsoft/Credentials', 'AppData/Roaming/Microsoft/Protect',
+  'AppData/Roaming/Microsoft/Vault', 'AppData/Local/Microsoft/Vault', 'AppData/Local/Google/Chrome/User Data',
+  'AppData/Local/Microsoft/Edge/User Data', 'AppData/Roaming/Mozilla', 'AppData/Roaming/GitHub CLI', 'AppData/Roaming/gcloud',
+];
+
+export function isDeniedHostPath(absPath: string, platform: NodeJS.Platform = process.platform, home: string = homedir()): boolean {
+  const p = platform === 'win32' ? win32 : posix;
+  const norm = (s: string) => (platform === 'win32' ? s.toLowerCase() : s);
+  const target = norm(p.resolve(absPath));
+  return hostPathDenylist(platform, home).some((d) => {
+    const denied = norm(d);
+    return target === denied || target.startsWith(denied + p.sep);
+  });
 }
 
 interface ProviderEnv {
