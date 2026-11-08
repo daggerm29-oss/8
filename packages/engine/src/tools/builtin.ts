@@ -127,7 +127,7 @@ const editFile: Tool = {
 const runShell: Tool = {
   spec: {
     name: 'run_shell',
-    description: 'Run a bash command in the workspace sandbox (no network). Returns exit code, stdout, and stderr. Use it to run tests.',
+    description: 'Run a bash command in the workspace sandbox (network only to allowlisted hosts such as registry.npmjs.org, via the Helix proxy). Returns exit code, stdout, and stderr. Use it to run tests.',
     inputSchema: { type: 'object', properties: { command: { type: 'string', minLength: 1 }, cwd: { type: 'string' }, timeoutMs: { type: 'integer', minimum: 1000, maximum: 600_000 } }, required: ['command'] },
   },
   async run(args, { sandbox, signal }) {

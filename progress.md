@@ -11,14 +11,14 @@
 
 > These are **checklist completion** numbers (ticked items with recorded evidence ÷ all items). They are not a measure of product quality or release readiness; human launch gates in `docs/roadmap.md` are not counted.
 
-**Overall checklist completion: 39%** (35/89 roadmap items)  
+**Overall checklist completion: 40%** (36/89 roadmap items)  
 **Current milestone:** M1 MVP, grounded single agent  
-**Next task:** T1 Egress proxy (F-SBX-3) [§16.5]
+**Next task:** T2 Dev server start (F-PRV-1) [§17.2]
 
 | Milestone | Progress | Items | Status |
 | --- | --- | --- | --- |
 | M0 Foundations | ██████████ 100% | 11/11 | Done |
-| M1 MVP, grounded single agent | ███████░░░ 73% | 19/26 | In progress |
+| M1 MVP, grounded single agent | ████████░░ 77% | 20/26 | In progress |
 | M2 Precision and efficiency | ██░░░░░░░░ 23% | 5/22 | Partly built early |
 | M3 Parallel and background | ░░░░░░░░░░ 0% | 0/12 | Not started |
 | M4 Team and ecosystem | ░░░░░░░░░░ 0% | 0/9 | Not started |
@@ -28,7 +28,7 @@
 
 ## Current task notes (overwrite when the task changes)
 
-- No task in progress yet. Start with the "Next task" shown above.
+- T2 Dev server start: `packages/engine/src/preview/devserver.ts` (DevServers + detectDevServer) and `test/devserver.test.ts` written; next: sandbox `exposePorts`/`connectPort`, engine `preview.start/stop` RPC, `start_dev_server` tool.
 
 ## Ideas parking lot (one line each, max 15 — do not implement)
 
@@ -54,5 +54,4 @@
 
 ## Last session (overwrite each session, max 5 lines)
 
-- 2026-11-08: Added `docs/roadmap.md` (M0–M6 checklist), `scripts/progress.mjs` (computed checklist completion), milestone-agnostic `AGENTS.md`.
-- Review fixes: session batches (many tasks, one draft PR per session, resume open PR branch, never self-merge); ticks only count with an `Evidence:` line (35 pre-existing ticks marked legacy); deferred-from-M1 items tagged; percentages labeled as checklist completion.
+- 2026-11-08 (session PR #16): T1 egress proxy (F-SBX-3) done: `sandbox/egress.ts`, in-sandbox forwarder, `egress.allow`/`egress.list` RPC, migration v4.
