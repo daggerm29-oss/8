@@ -11,15 +11,15 @@
 
 > These are **checklist completion** numbers (ticked items with recorded evidence ÷ all items). They are not a measure of product quality or release readiness; human launch gates in `docs/roadmap.md` are not counted.
 
-**Overall checklist completion: 54%** (48/89 roadmap items)  
+**Overall checklist completion: 55%** (49/89 roadmap items)  
 **Current milestone:** M2 Precision and efficiency  
-**Next task:** Element→source + select-and-instruct in preview [§17]
+**Next task:** Credential masking via TLS-terminating proxy (F-SBX-4) [§16.6]
 
 | Milestone | Progress | Items | Status |
 | --- | --- | --- | --- |
 | M0 Foundations | ██████████ 100% | 11/11 | Done |
 | M1 MVP, grounded single agent | ██████████ 100% | 26/26 | Done |
-| M2 Precision and efficiency | █████░░░░░ 50% | 11/22 | In progress |
+| M2 Precision and efficiency | ██████░░░░ 55% | 12/22 | In progress |
 | M3 Parallel and background | ░░░░░░░░░░ 0% | 0/12 | Not started |
 | M4 Team and ecosystem | ░░░░░░░░░░ 0% | 0/9 | Not started |
 | M5 Platform | ░░░░░░░░░░ 0% | 0/5 | Not started |
@@ -28,8 +28,8 @@
 
 ## Current task notes (overwrite when the task changes)
 
-- Next: M2 "Element→source + select-and-instruct in preview" [§17, §18.6] — not started; write its Accept line first.
-- Suggested split: (a) engine RPC `preview.locate {x,y}` → CDP `DOM.getNodeForLocation` on the headless page → element card (role, name, classes) + source via `data-helix-loc` attr else index text/className search (confidence); (b) Preview tab "Inspect" mode over a CDP screenshot (iframe is cross-origin) → chip `file:line` → instruction creates a task with the element card as context.
+- Next: M2 "Credential masking via TLS-terminating proxy (F-SBX-4)" [§16.6] — not started; write its Accept line first.
+- Plan: no openssl in VM → minimal DER/X.509 builder on node:crypto (P-256 CA + per-host leaf); proxy terminates TLS only for hosts with secret bindings; sentinel `helix_sntl_…` in sandbox env, substituted only for `injectHosts`, else block + `secret.exfil_attempt`.
 
 ## Ideas parking lot (one line each, max 15 — do not implement)
 
