@@ -113,6 +113,7 @@
           <button role="tab" aria-selected="false" data-tab="artifacts">Artifacts</button>
           <button role="tab" aria-selected="false" data-tab="files">Files</button>
           <button role="tab" aria-selected="false" data-tab="terminal">Terminal</button>
+          <button role="tab" aria-selected="false" data-tab="preview">Preview</button>
         </div>
 
         <div class="panel" role="tabpanel" data-panel="activity"><ol id="activity" class="activity"></ol></div>
@@ -158,6 +159,19 @@
               <textarea id="file-editor" class="code mono editor" spellcheck="false" autocomplete="off" hidden></textarea>
             </div>
           </div>
+        </div>
+        <div class="panel" role="tabpanel" data-panel="preview" hidden>
+          <section class="preview" aria-label="Dev server preview">
+            <div class="pty-bar">
+              <strong>Preview</strong>
+              <span id="preview-status" class="sub" aria-live="polite">No dev server running.</span>
+              <button type="button" class="primary" id="preview-start">Start dev server</button>
+              <button type="button" class="ghost" id="preview-reload" hidden>Reload</button>
+              <a id="preview-open" class="sub" href="#" target="_blank" rel="noopener" hidden>Open in new tab</a>
+            </div>
+            <iframe id="preview-frame" class="preview-frame" title="Dev server preview" hidden></iframe>
+            <p class="note">Runs the workspace's package.json "dev" (or "start") script in a sandbox and shows it here.</p>
+          </section>
         </div>
         <div class="panel" role="tabpanel" data-panel="terminal" hidden>
           <section class="pty" aria-label="Interactive shell">

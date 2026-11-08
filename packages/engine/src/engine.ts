@@ -125,8 +125,8 @@ export class Engine {
     });
     this.devServers = new DevServers({
       egress: this.egress, forceProcess: opts.forceProcessSandbox,
-      onReady: (root, info) => this.bus.publish({ topic: 'preview.ready', ws: this.runtime.workspaceFor(root).id, data: info }),
-      onExit: (root, info, code) => this.bus.publish({ topic: 'preview.exited', ws: this.runtime.workspaceFor(root).id, data: { ...info, exitCode: code } }),
+      onReady: (root, info) => this.bus.publish({ topic: 'preview.ready', ws: this.runtime.workspaceFor(root).id, data: { ...info, workspacePath: root } }),
+      onExit: (root, info, code) => this.bus.publish({ topic: 'preview.exited', ws: this.runtime.workspaceFor(root).id, data: { ...info, workspacePath: root, exitCode: code } }),
     });
     const tools = builtinTools();
     this.mcp = new McpManager({ home: this.home, registry: tools, logger: this.logger, config: opts.mcpServers, toolSearchThreshold: opts.mcpToolSearchThreshold });
@@ -397,7 +397,7 @@ export class Engine {
       if (!file) { res.writeHead(404).end('not found'); return; }
       res.writeHead(200, {
         'content-type': file.type, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer',
-        'content-security-policy': "default-src 'self'; connect-src 'self' ws: wss:; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; frame-ancestors *",
+        'content-security-policy': "default-src 'self'; connect-src 'self' ws: wss:; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; frame-src http://127.0.0.1:* http://localhost:*; frame-ancestors *",
       }).end(readFileSync(file.name));
     });
     this.wss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024 });
