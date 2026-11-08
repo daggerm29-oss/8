@@ -55,4 +55,4 @@
 ## Last session (overwrite each session, max 5 lines)
 
 - 2026-11-08: Added `docs/roadmap.md` (M0–M6 checklist), `scripts/progress.mjs` (computed checklist completion), milestone-agnostic `AGENTS.md`.
-- Review fixes: one task per PR then stop; open-PR check before starting; ticks only count with an `Evidence:` line (35 pre-existing ticks marked legacy); deferred-from-M1 items tagged; percentages labeled as checklist completion.
+- Review fixes: session batches (many tasks, one draft PR per session, resume open PR branch, never self-merge); ticks only count with an `Evidence:` line (35 pre-existing ticks marked legacy); deferred-from-M1 items tagged; percentages labeled as checklist completion.
