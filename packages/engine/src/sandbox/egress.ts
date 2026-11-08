@@ -2,6 +2,28 @@ import { createServer, request as httpRequest, type IncomingMessage, type Server
 import { connect, isIP, type Socket } from 'node:net';
 import { lookup } from 'node:dns';
 import { rmSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { request as httpsRequest } from 'node:https';
+import { TLSSocket } from 'node:tls';
+import { CertAuthority } from './x509.ts';
+
+/** A secret the sandbox only sees as a sentinel; the proxy swaps in the value for `injectHosts` (F-SBX-4, §16.6). */
+export interface SecretBinding {
+  name: string;
+  injectHosts: string[];
+  sentinel: string;
+  value: string;
+}
+
+/** Request bodies with these content types are scanned (and substituted); others pass unscanned. */
+const SCANNED_BODY = /json|x-www-form-urlencoded|^text\/|xml|graphql/i;
+const MAX_SCANNED_BODY = 4 * 1024 * 1024;
+
+/** Test seam: route intercepted upstream requests elsewhere and trust an extra CA. */
+export interface UpstreamOverride {
+  resolve: (host: string, port: number) => { host: string; port: number };
+  ca?: string;
+}
 
 /** Hosts reachable from every sandbox without approval (§16.5 defaults, M1 subset). */
 export const DEFAULT_EGRESS_ALLOWLIST = ['registry.npmjs.org', 'pypi.org', 'files.pythonhosted.org', 'github.com', 'codeload.github.com'];
@@ -18,6 +40,8 @@ export interface EgressContext {
 export interface EgressPolicy {
   isAllowed(host: string, ctx: EgressContext): boolean;
   onDenied(info: { host: string; port: number; method: string; reason: string }, ctx: EgressContext): void;
+  /** A sentinel was sent somewhere its secret may not go; the request was blocked. */
+  onExfil?(info: { secret: string; host: string; where: string }, ctx: EgressContext): void;
 }
 
 /** RFC1918, loopback, link-local (incl. cloud metadata), CGNAT, ULA: always blocked (§16.5). */
@@ -61,9 +85,111 @@ export class EgressProxy {
   private readonly servers = new Set<Server>();
 
   private readonly policy: EgressPolicy;
+  private readonly upstream?: UpstreamOverride;
+  /** Secret bindings per real workspace root (in memory only, like Vault v0). */
+  private readonly bindings = new Map<string, SecretBinding[]>();
+  /** Per-sandbox CA, trusted only inside that sandbox (via its CA bundle env). */
+  private readonly cas = new Map<string, CertAuthority>();
+  private readonly mitmMeta = new WeakMap<object, { host: string; port: number; ctx: EgressContext }>();
+  private readonly mitm: Server;
 
-  constructor(policy: EgressPolicy) {
+  constructor(policy: EgressPolicy, opts: { upstream?: UpstreamOverride } = {}) {
     this.policy = policy;
+    this.upstream = opts.upstream;
+    this.mitm = createServer((req, res) => this.relay(req, res));
+    this.mitm.on('clientError', (_e, s) => s.destroy());
+  }
+
+  /** Bind (or rebind) a secret for a workspace; returns its sentinel. The real value never enters a sandbox. */
+  bind(root: string, b: { name: string; value: string; injectHosts: string[] }): SecretBinding {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(b.name)) throw new Error(`invalid secret name: ${b.name}`);
+    if (!b.value) throw new Error(`secret ${b.name} has no value`);
+    const hosts = [...new Set(b.injectHosts.map((h) => h.trim().toLowerCase()).filter(Boolean))];
+    if (!hosts.length) throw new Error('injectHosts must name at least one host');
+    const list = (this.bindings.get(root) ?? []).filter((x) => x.name !== b.name);
+    const binding: SecretBinding = { name: b.name, value: b.value, injectHosts: hosts, sentinel: `helix_sntl_${randomBytes(16).toString('hex')}` };
+    list.push(binding);
+    this.bindings.set(root, list);
+    return binding;
+  }
+
+  bindingsFor(root: string): SecretBinding[] {
+    return this.bindings.get(root) ?? [];
+  }
+
+  /** Env entries for a sandbox of `root`: each bound secret name → its sentinel. */
+  sentinelEnv(root: string): Record<string, string> {
+    return Object.fromEntries(this.bindingsFor(root).map((b) => [b.name, b.sentinel]));
+  }
+
+  caFor(sandboxId: string): CertAuthority {
+    let ca = this.cas.get(sandboxId);
+    if (!ca) { ca = new CertAuthority(`Helix sandbox CA ${sandboxId}`); this.cas.set(sandboxId, ca); }
+    return ca;
+  }
+
+  private intercepts(host: string, root: string): boolean {
+    return this.bindingsFor(root).some((b) => b.injectHosts.includes(host));
+  }
+
+  /** Terminate TLS for a bound host with a leaf cert from the sandbox CA and relay each request (§16.6). */
+  private intercept(host: string, port: number, client: Socket, head: Buffer, ctx: EgressContext): void {
+    client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+    if (head.length) client.unshift(head);
+    const leaf = this.caFor(ctx.sandboxId).leaf(host);
+    const tls = new TLSSocket(client, { isServer: true, key: leaf.key, cert: leaf.cert, ALPNProtocols: ['http/1.1'] });
+    tls.on('error', () => client.destroy());
+    this.mitmMeta.set(tls, { host, port, ctx });
+    this.mitm.emit('connection', tls);
+  }
+
+  /** Swap sentinels allowed for `host`; null (and an exfil alert) when any other sentinel is present. */
+  private substitute(s: string, host: string, where: string, ctx: EgressContext): string | null {
+    let out = s;
+    for (const b of this.bindingsFor(ctx.root)) {
+      if (!out.includes(b.sentinel)) continue;
+      if (!b.injectHosts.includes(host)) { this.policy.onExfil?.({ secret: b.name, host, where }, ctx); return null; }
+      out = out.split(b.sentinel).join(b.value);
+    }
+    return out;
+  }
+
+  private relay(req: IncomingMessage, res: ServerResponse): void {
+    const meta = this.mitmMeta.get(req.socket);
+    if (!meta) { res.writeHead(500).end(); return; }
+    const { host, port, ctx } = meta;
+    const deny = () => res.writeHead(403, { 'X-Helix-Egress': 'secret-blocked', 'Content-Type': 'text/plain' }).end(`helix: secret not allowed for ${host}\n`);
+    const path = this.substitute(req.url ?? '/', host, 'url', ctx);
+    if (path === null) { req.resume(); deny(); return; }
+    const headers: Record<string, string | string[]> = {};
+    for (let i = 0; i < req.rawHeaders.length; i += 2) {
+      const k = req.rawHeaders[i].toLowerCase();
+      if (k === 'proxy-connection' || k === 'proxy-authorization' || k === 'content-length' || k === 'transfer-encoding') continue;
+      const v = this.substitute(req.rawHeaders[i + 1], host, `header ${k}`, ctx);
+      if (v === null) { req.resume(); deny(); return; }
+      const prev = headers[k];
+      headers[k] = prev === undefined ? v : Array.isArray(prev) ? [...prev, v] : [prev, v];
+    }
+    const chunks: Buffer[] = [];
+    let size = 0;
+    req.on('data', (c: Buffer) => { size += c.length; if (size <= MAX_SCANNED_BODY) chunks.push(c); });
+    req.on('end', () => {
+      if (size > MAX_SCANNED_BODY) { res.writeHead(413).end('helix: request body too large for the masking proxy\n'); return; }
+      let body = Buffer.concat(chunks);
+      if (body.length && SCANNED_BODY.test(String(headers['content-type'] ?? ''))) {
+        const s = this.substitute(body.toString('utf8'), host, 'body', ctx);
+        if (s === null) { deny(); return; }
+        body = Buffer.from(s, 'utf8');
+      }
+      if (body.length || !['GET', 'HEAD'].includes(req.method ?? 'GET')) headers['content-length'] = String(body.length);
+      const target = this.upstream?.resolve(host, port) ?? { host, port };
+      const up = httpsRequest({ host: target.host, port: target.port, servername: isIP(host) ? undefined : host, method: req.method, path, headers, ...(this.upstream ? { ca: this.upstream.ca } : { lookup: safeLookup as never }) }, (r) => {
+        res.writeHead(r.statusCode ?? 502, r.headers);
+        r.pipe(res);
+      });
+      up.on('error', () => { if (!res.headersSent) res.writeHead(502); res.end(); });
+      up.end(body);
+    });
   }
 
   /** Listen on `socketPath` for one sandbox. Resolves with a close function. */
@@ -77,6 +203,7 @@ export class EgressProxy {
     this.servers.add(server);
     const close = () => {
       if (!this.servers.delete(server)) return;
+      this.cas.delete(ctx.sandboxId);
       server.close();
       sockets.forEach((s) => s.destroy());
       rmSync(socketPath, { force: true });
@@ -92,7 +219,7 @@ export class EgressProxy {
     if (!host) reason = 'bad target';
     else if (isIP(host) && isBlockedAddress(host)) reason = 'private address';
     else if (port !== 443 && port !== 80) reason = `port ${port} not allowed`;
-    else if (!this.policy.isAllowed(host, ctx)) reason = 'host not on allowlist';
+    else if (!this.policy.isAllowed(host, ctx) && !this.intercepts(host, ctx.root)) reason = 'host not on allowlist';
     if (reason) this.policy.onDenied({ host, port, method, reason }, ctx);
     return reason;
   }
@@ -104,6 +231,7 @@ export class EgressProxy {
       client.end(`HTTP/1.1 403 Forbidden\r\nX-Helix-Egress: denied\r\nContent-Type: text/plain\r\n\r\nhelix egress denied: ${host} (${denied})\n`);
       return;
     }
+    if (this.intercepts(host, ctx.root)) { this.intercept(host, port, client, head, ctx); return; }
     const upstream = connect({ host, port, lookup: safeLookup as never });
     upstream.once('connect', () => {
       client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
@@ -125,6 +253,12 @@ export class EgressProxy {
     const port = url.port ? Number(url.port) : 80;
     const denied = this.check(host, port, req.method ?? 'GET', ctx);
     if (denied) { res.writeHead(403, { 'X-Helix-Egress': 'denied', 'Content-Type': 'text/plain' }).end(`helix egress denied: ${host} (${denied})\n`); return; }
+    const leaked = this.bindingsFor(ctx.root).find((b) => (req.url ?? '').includes(b.sentinel) || req.rawHeaders.some((h) => h.includes(b.sentinel)));
+    if (leaked) {
+      this.policy.onExfil?.({ secret: leaked.name, host, where: 'plain http' }, ctx);
+      res.writeHead(403, { 'X-Helix-Egress': 'secret-blocked', 'Content-Type': 'text/plain' }).end(`helix: secrets are never sent over plain http (${host})\n`);
+      return;
+    }
     const headers = { ...req.headers };
     delete headers['proxy-connection'];
     delete headers['proxy-authorization'];

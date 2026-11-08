@@ -17,6 +17,7 @@ import { EventBus } from './events/bus.ts';
 import { Tracer } from './obs/tracing.ts';
 import { Logger, helixHome } from './util/log.ts';
 import { prefixedId, randomToken } from './util/ids.ts';
+import { globalRedactor } from './util/redact.ts';
 import { Vault } from './vault/vault.ts';
 import { Ledger } from './models/ledger.ts';
 import { ModelGateway } from './models/gateway.ts';
@@ -24,7 +25,7 @@ import { builtinTools } from './tools/builtin.ts';
 import { McpManager, type McpServerConfig, type McpServerStatus } from './mcp/manager.ts';
 import { TaskRuntime } from './agent/runtime.ts';
 import { LocalSandbox, unshareAvailable } from './sandbox/sandbox.ts';
-import { DEFAULT_EGRESS_ALLOWLIST, EgressProxy } from './sandbox/egress.ts';
+import { DEFAULT_EGRESS_ALLOWLIST, EgressProxy, type UpstreamOverride } from './sandbox/egress.ts';
 import { DevServers } from './preview/devserver.ts';
 import { PreviewBrowser } from './preview/browser.ts';
 import { elementContext, mapElementToSource, parseLoc } from './preview/locate.ts';
@@ -50,6 +51,8 @@ export interface EngineOptions {
   env?: NodeJS.ProcessEnv;
   adapters?: ProviderAdapter[];
   forceProcessSandbox?: boolean;
+  /** Test seam for the masking proxy (F-SBX-4): where intercepted requests really go. */
+  egressUpstream?: UpstreamOverride;
   retry?: { maxRetries?: number; baseDelayMs?: number; maxDelayMs?: number };
   taskRetryScale?: number;
   /** Resume interrupted tasks on open (default true). */
@@ -77,7 +80,7 @@ function compactionFrom(env: NodeJS.ProcessEnv, opts?: CompactionOptions): Compa
   };
 }
 
-const TOPICS = ['task.*', 'agent.*', 'tool.*', 'model.*', 'verify.*', 'approval.*', 'ledger.*', 'budget.*', 'context.*', 'artifact.*', 'checkpoint.*', 'workspace.*', 'egress.*', 'preview.*'];
+const TOPICS = ['task.*', 'agent.*', 'tool.*', 'model.*', 'verify.*', 'approval.*', 'ledger.*', 'budget.*', 'context.*', 'artifact.*', 'checkpoint.*', 'workspace.*', 'egress.*', 'preview.*', 'secret.*'];
 
 /** Helix Engine (§6.2): composition root for storage, bus, gateway, tools, sandbox, and the task runtime. */
 export class Engine {
@@ -99,6 +102,8 @@ export class Engine {
   readonly devServers: DevServers;
   /** Lazily launched headless Chrome for agent browser tools (F-PRV-5). */
   readonly browser: PreviewBrowser;
+  /** Where `secrets.bind` reads a value from when the caller passes only a name. */
+  private readonly secretSource: NodeJS.ProcessEnv;
   /** Resolves once configured MCP servers are connected (or failed) and their tools are registered. */
   readonly mcpReady: Promise<McpServerStatus[]>;
   private heartbeat?: NodeJS.Timeout;
@@ -127,7 +132,12 @@ export class Engine {
         this.bus.publish({ topic: 'egress.denied', ws: this.runtime.workspaceFor(ctx.root).id, data: { ...info, sandbox: ctx.sandboxId }, persist: 'audit' });
         this.logger.warn('egress.denied', { ...info, sandbox: ctx.sandboxId });
       },
-    });
+      onExfil: (info, ctx) => {
+        this.bus.publish({ topic: 'secret.exfil_attempt', ws: this.runtime.workspaceFor(ctx.root).id, data: { ...info, sandbox: ctx.sandboxId }, persist: 'audit' });
+        this.logger.warn('secret.exfil_attempt', { ...info, sandbox: ctx.sandboxId });
+      },
+    }, { upstream: opts.egressUpstream });
+    this.secretSource = env;
     this.devServers = new DevServers({
       egress: this.egress, forceProcess: opts.forceProcessSandbox,
       onReady: (root, info) => this.bus.publish({ topic: 'preview.ready', ws: this.runtime.workspaceFor(root).id, data: { ...info, workspacePath: root } }),
@@ -295,6 +305,17 @@ export class Engine {
       this.bus.publish({ topic: 'egress.allowed', ws: ws.id, data: { host, by: 'user' }, persist: 'audit' });
       return { ok: true, host };
     }));
+    peer.handle(Methods.secretsBind, guard<{ workspacePath: string; name: string; injectHosts: string[]; value?: string }>((p) => {
+      const root = this.knownWorkspace(p.workspacePath);
+      const value = p.value ?? this.secretSource[p.name];
+      if (!value) throw new Error(`no value for ${p.name}: pass value or set it in the Engine environment`);
+      globalRedactor.register(value);
+      const b = this.egress.bind(root, { name: p.name, value, injectHosts: Array.isArray(p.injectHosts) ? p.injectHosts : [] });
+      const ws = this.runtime.workspaceFor(root);
+      this.bus.publish({ topic: 'secret.bound', ws: ws.id, data: { name: b.name, injectHosts: b.injectHosts }, persist: 'audit' });
+      return { name: b.name, injectHosts: b.injectHosts, sentinel: b.sentinel };
+    }));
+    peer.handle(Methods.secretsList, guard<{ workspacePath: string }>((p) => this.egress.bindingsFor(this.knownWorkspace(p.workspacePath)).map((b) => ({ name: b.name, injectHosts: b.injectHosts }))));
     peer.handle(Methods.egressList, guard<{ workspacePath: string }>((p) => {
       const ws = this.runtime.workspaceFor(this.knownWorkspace(p.workspacePath));
       return { defaults: DEFAULT_EGRESS_ALLOWLIST, workspace: this.db.all<{ host: string; at: string }>('SELECT host, at FROM egress_allow WHERE ws = ? ORDER BY host', ws.id) };

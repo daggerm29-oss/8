@@ -1,7 +1,9 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { FORWARDER_SOURCE, SANDBOX_PROXY_PORT, type EgressProxy } from './egress.ts';
+
+const SYSTEM_CA_BUNDLES = ['/etc/ssl/certs/ca-certificates.crt', '/etc/pki/tls/certs/ca-bundle.crt', '/etc/ssl/cert.pem'];
 import { tmpdir } from 'node:os';
 import { connect, type Socket } from 'node:net';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -135,6 +137,7 @@ export class LocalSandbox {
   private readonly bridgeDir: string | null = null;
   private readonly hostBridgeDir: string | null = null;
   private readonly egressOn: boolean = false;
+  private readonly egress?: EgressProxy;
 
   constructor(id: string, root: string, opts: { forceProcess?: boolean; noMountNs?: boolean; roPaths?: string[]; egress?: EgressProxy } = {}) {
     this.id = id;
@@ -154,6 +157,11 @@ export class LocalSandbox {
     }
     if (opts.egress && this.hostBridgeDir) {
       this.egressOn = true;
+      this.egress = opts.egress;
+      const ca = opts.egress.caFor(id).cert;
+      const system = SYSTEM_CA_BUNDLES.find((p) => existsSync(p));
+      writeFileSync(join(this.hostBridgeDir, 'helix-ca.pem'), ca);
+      writeFileSync(join(this.hostBridgeDir, 'ca-bundle.pem'), `${system ? readFileSync(system, 'utf8') : ''}\n${ca}`);
       this.egressReady = opts.egress.listen(join(this.hostBridgeDir, 'egress.sock'), { sandboxId: id, root: this.root }).catch(() => null);
     } else {
       this.egressReady = Promise.resolve(null);
@@ -213,8 +221,11 @@ export class LocalSandbox {
       const proxy = `http://127.0.0.1:${SANDBOX_PROXY_PORT}`;
       for (const k of ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'npm_config_proxy', 'npm_config_https_proxy']) env[k] = proxy;
       env.NO_PROXY = env.no_proxy = 'localhost,127.0.0.1,::1';
+      const bundle = `${this.bridgeDir}/ca-bundle.pem`;
+      Object.assign(env, { SSL_CERT_FILE: bundle, CURL_CA_BUNDLE: bundle, REQUESTS_CA_BUNDLE: bundle, GIT_SSL_CAINFO: bundle, NODE_EXTRA_CA_CERTS: `${this.bridgeDir}/helix-ca.pem` });
     }
     for (const [k, v] of Object.entries(extra)) if (!secrets.has(k)) env[k] = v;
+    if (this.egress) Object.assign(env, this.egress.sentinelEnv(this.root));
     return env;
   }
 

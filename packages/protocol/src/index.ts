@@ -141,6 +141,9 @@ export const Methods = {
   /* F-SBX-3 egress allowlist */
   egressAllow: 'egress.allow',
   egressList: 'egress.list',
+  /* F-SBX-4 credential masking */
+  secretsBind: 'secrets.bind',
+  secretsList: 'secrets.list',
   /* F-PRV-1 dev server */
   previewStart: 'preview.start',
   previewStop: 'preview.stop',
