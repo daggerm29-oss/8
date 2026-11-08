@@ -28,7 +28,8 @@
 
 ## Current task notes (overwrite when the task changes)
 
-- Next: M2 "Element→source + select-and-instruct in preview" [§17] — write its Accept line first.
+- Next: M2 "Element→source + select-and-instruct in preview" [§17, §18.6] — not started; write its Accept line first.
+- Suggested split: (a) engine RPC `preview.locate {x,y}` → CDP `DOM.getNodeForLocation` on the headless page → element card (role, name, classes) + source via `data-helix-loc` attr else index text/className search (confidence); (b) Preview tab "Inspect" mode over a CDP screenshot (iframe is cross-origin) → chip `file:line` → instruction creates a task with the element card as context.
 
 ## Ideas parking lot (one line each, max 15 — do not implement)
 
@@ -55,6 +56,6 @@
 
 ## Last session (overwrite each session, max 5 lines)
 
-- 2026-11-08 (PR #16): M1 T1–T7 done (T7 live Gemini demo PASS, evals/results/m1-demo-*); M1 100%.
-- M2: precise TS/JS references via TypeScript LS in sandbox (F-IDX-2); Impact Report artifact linked from Plan Mode plans.
-- Full engine suite 84/84 at session end. Next: tree-sitter parser swap (write its Accept line first).
+- 2026-11-08 (PR #17): M2 tree-sitter symbols (`@vscode/tree-sitter-wasm`), local hash embeddings + `vector` retriever, domain extractors + `domain_map`, CDP telemetry + `preview_snapshot`.
+- Migrations v5 (embeddings) and v6 (domain tables) clear index rows, so the first index after upgrade fully re-extracts.
+- Full engine suite 91/91 at session end. Next: Element→source (see Current task notes).
