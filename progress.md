@@ -11,15 +11,15 @@
 
 > These are **checklist completion** numbers (ticked items with recorded evidence ÷ all items). They are not a measure of product quality or release readiness; human launch gates in `docs/roadmap.md` are not counted.
 
-**Overall checklist completion: 58%** (52/89 roadmap items)  
+**Overall checklist completion: 60%** (53/89 roadmap items)  
 **Current milestone:** M2 Precision and efficiency  
-**Next task:** Artifacts view v2 with structured evidence (F-UI-4) (deferred from M1)
+**Next task:** Test generation (F-TST) [§19]
 
 | Milestone | Progress | Items | Status |
 | --- | --- | --- | --- |
 | M0 Foundations | ██████████ 100% | 11/11 | Done |
 | M1 MVP, grounded single agent | ██████████ 100% | 26/26 | Done |
-| M2 Precision and efficiency | ███████░░░ 68% | 15/22 | In progress |
+| M2 Precision and efficiency | ███████░░░ 73% | 16/22 | In progress |
 | M3 Parallel and background | ░░░░░░░░░░ 0% | 0/12 | Not started |
 | M4 Team and ecosystem | ░░░░░░░░░░ 0% | 0/9 | Not started |
 | M5 Platform | ░░░░░░░░░░ 0% | 0/5 | Not started |
@@ -28,8 +28,8 @@
 
 ## Current task notes (overwrite when the task changes)
 
-- Next: M2 "Artifacts view v2 with structured evidence (F-UI-4)" [§5.6] — not started; write its Accept line first.
-- Existing: `artifacts` table (kinds roles/context/plan/impact/compaction/replay/…), gate results in `verify` events; workbench has a tasks/steps/diff UI (`packages/engine/ui/`).
+- Next: M2 "Test generation (F-TST)" [arch §9.6 "Test generation" bullet; §19 bracket is terminal, not tests] — in progress.
+- Plan: tool `propose_test {path, content, target}` → write test in scratch copy, run it (must pass), then mutation smoke check (flip a condition/return in target file copy) must make it fail; else reject as vacuous.
 
 ## Ideas parking lot (one line each, max 15 — do not implement)
 
