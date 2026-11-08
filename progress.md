@@ -11,16 +11,16 @@
 
 > These are **checklist completion** numbers (ticked items with recorded evidence ÷ all items). They are not a measure of product quality or release readiness; human launch gates in `docs/roadmap.md` are not counted.
 
-**Overall checklist completion: 67%** (60/89 roadmap items)  
+**Overall checklist completion: 69%** (61/89 roadmap items)  
 **Current milestone:** M3 Parallel and background  
-**Next task:** Write leases + worktrees + merge agent (F-ORC-3) [§10.4]
+**Next task:** Cloud sandbox provider (+ self-hosted Firecracker option) [§16]
 
 | Milestone | Progress | Items | Status |
 | --- | --- | --- | --- |
 | M0 Foundations | ██████████ 100% | 11/11 | Done |
 | M1 MVP, grounded single agent | ██████████ 100% | 26/26 | Done |
 | M2 Precision and efficiency | ██████████ 100% | 22/22 | Done |
-| M3 Parallel and background | █░░░░░░░░░ 8% | 1/12 | In progress |
+| M3 Parallel and background | ██░░░░░░░░ 17% | 2/12 | In progress |
 | M4 Team and ecosystem | ░░░░░░░░░░ 0% | 0/9 | Not started |
 | M5 Platform | ░░░░░░░░░░ 0% | 0/5 | Not started |
 | M6 Collaboration | ░░░░░░░░░░ 0% | 0/4 | Not started |
@@ -28,7 +28,7 @@
 
 ## Current task notes (overwrite when the task changes)
 
-- Next: M3 "Write leases + worktrees + merge agent (F-ORC-3)" [§10.4] — not started; write its Accept line first. Build on `dag/scheduler.ts` (nodes already carry `writeSet`): enforce it as a lease, run each node in its own git worktree, merge back.
+- Next: M3 "Cloud sandbox provider (+ self-hosted Firecracker option)" [§16] — not started; write its Accept line first. No cloud credentials in this VM: build behind a provider seam testable with a local fake (like the WSL shim approach).
 
 ## Ideas parking lot (one line each, max 15 — do not implement)
 
