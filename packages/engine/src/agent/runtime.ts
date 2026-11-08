@@ -32,6 +32,7 @@ import type { DevServers } from '../preview/devserver.ts';
 import type { PreviewBrowser } from '../preview/browser.ts';
 import { evaluate, type PolicyProfile } from '../policy/policy.ts';
 import { prefixedId } from '../util/ids.ts';
+import { inWriteSet } from '../dag/lease.ts';
 import { globalRedactor } from '../util/redact.ts';
 import { unifiedDiff, type FileDiff } from '../util/diff.ts';
 
@@ -145,6 +146,8 @@ export class TaskRuntime {
   private readonly demoted = new Map<string, Set<string>>();
   /** Replay tasks: recorded tool results served instead of running tools. */
   private readonly replays = new Map<string, ToolScript>();
+  /** Per task: write-lease globs (F-ORC-3); write tools outside them fail. Set by the DAG scheduler. */
+  readonly writeLeases = new Map<string, string[]>();
 
   constructor(opts: RuntimeOptions) {
     this.o = opts;
@@ -825,7 +828,12 @@ export class TaskRuntime {
               startDevServer: this.o.devServers ? () => this.o.devServers!.start(sandbox.root) : undefined,
               previewBrowser: this.previewBrowserFor(sandbox.root),
               explore: (question) => this.explore(t, question, sandbox, signal, index),
-              beforeWrite: (abs, prev) => this.checkpoint(t, sandbox, abs, prev),
+              beforeWrite: (abs, prev) => {
+                const lease = this.writeLeases.get(t.id);
+                const rel = sandbox.relative(abs);
+                if (lease && !inWriteSet(lease, rel)) throw new Error(`lease violation: ${rel} is outside this task's write lease (${lease.join(', ')})`);
+                this.checkpoint(t, sandbox, abs, prev);
+              },
               submitArtifact: t.policy_profile === 'plan' ? (kind, title, data) => {
                 const artId = this.saveArtifact(t.id, kind, title, data);
                 this.publish(t.id, t.ws, 'artifact.created', { artifactId: artId, kind, title });

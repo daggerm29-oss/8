@@ -104,4 +104,10 @@ export const MIGRATIONS: string[] = [
   CREATE TABLE dag_nodes (dag TEXT NOT NULL, id TEXT NOT NULL, goal TEXT NOT NULL, deps_json TEXT NOT NULL, write_set_json TEXT NOT NULL, priority INTEGER NOT NULL,
     status TEXT NOT NULL, task TEXT, result TEXT, error TEXT, started_at TEXT, finished_at TEXT, PRIMARY KEY (dag, id));
   `,
+  /* v8: write leases + per-node worktrees and merge results (F-ORC-3, §10.4). */ `
+  CREATE TABLE leases (id TEXT PRIMARY KEY, holder TEXT NOT NULL, globs_json TEXT NOT NULL, mode TEXT NOT NULL, heartbeat_at INTEGER NOT NULL, expires_at INTEGER NOT NULL);
+  ALTER TABLE dags ADD COLUMN branch TEXT;
+  ALTER TABLE dag_nodes ADD COLUMN branch TEXT;
+  ALTER TABLE dag_nodes ADD COLUMN merge_json TEXT;
+  `,
 ];
