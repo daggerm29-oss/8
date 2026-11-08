@@ -1,10 +1,12 @@
 /**
- * Heuristic symbol + import extractor (F-IDX-1 v0, IMPL-ADR-014). Line-oriented regexes per language
- * produce the §11.3 symbol model (kind, name, qualified name, range, signature). Ranges come from brace
- * matching (C-like languages) or indentation (Python). The tree-sitter "tags" extractor replaces this
- * behind the same interface; callers never depend on how symbols were found.
+ * Symbol + import extractor (F-IDX-1, §12.1). Symbols for TS/JS/Python/Go/Rust/Java come from tree-sitter
+ * (`treesitter.ts`); other languages, or a missing WASM runtime, use the heuristic line-oriented regexes below
+ * (IMPL-ADR-014), with ranges from brace matching or indentation. Imports always use the regexes. Both produce
+ * the §11.3 symbol model; callers never depend on how symbols were found.
  */
-export type Lang = 'ts' | 'js' | 'py' | 'go' | 'rs' | 'java' | 'md' | 'json' | 'yaml' | 'css' | 'html' | 'sh' | 'text';
+import { treeSitterSymbols } from './treesitter.ts';
+
+export type Lang = 'ts' | 'js' | 'py' | 'go' | 'rs' | 'java' | 'kt' | 'md' | 'json' | 'yaml' | 'css' | 'html' | 'sh' | 'text';
 
 export interface ExtractedSymbol {
   kind: 'function' | 'class' | 'method' | 'interface' | 'type' | 'enum' | 'const' | 'struct' | 'trait' | 'heading';
@@ -19,10 +21,11 @@ export interface ExtractedSymbol {
 export interface Extraction {
   symbols: ExtractedSymbol[];
   imports: string[];
+  parser: 'tree-sitter' | 'heuristic';
 }
 
 const EXT: Record<string, Lang> = {
-  ts: 'ts', tsx: 'ts', mts: 'ts', cts: 'ts', js: 'js', jsx: 'js', mjs: 'js', cjs: 'js', py: 'py', go: 'go', rs: 'rs', java: 'java', kt: 'java',
+  ts: 'ts', tsx: 'ts', mts: 'ts', cts: 'ts', js: 'js', jsx: 'js', mjs: 'js', cjs: 'js', py: 'py', go: 'go', rs: 'rs', java: 'java', kt: 'kt',
   md: 'md', mdx: 'md', json: 'json', yaml: 'yaml', yml: 'yaml', toml: 'yaml', css: 'css', scss: 'css', html: 'html', sh: 'sh', bash: 'sh', sql: 'text', txt: 'text',
 };
 
@@ -83,6 +86,7 @@ const RULES: Partial<Record<Lang, Rule[]>> = {
   ],
 };
 RULES.js = RULES.ts;
+RULES.kt = RULES.java;
 
 const IMPORT_RES: Partial<Record<Lang, RegExp[]>> = {
   ts: [/\bfrom\s+['"]([^'"]+)['"]/g, /\bimport\s+['"]([^'"]+)['"]/g, /\brequire\(\s*['"]([^'"]+)['"]\s*\)/g, /\bimport\(\s*['"]([^'"]+)['"]\s*\)/g],
@@ -92,6 +96,7 @@ const IMPORT_RES: Partial<Record<Lang, RegExp[]>> = {
   java: [/^\s*import\s+([\w.]+);/gm],
 };
 IMPORT_RES.js = IMPORT_RES.ts;
+IMPORT_RES.kt = IMPORT_RES.java;
 
 function braceEnd(lines: string[], start: number): number {
   let depth = 0;
@@ -120,6 +125,17 @@ function indentEnd(lines: string[], start: number): number {
 }
 
 export function extract(lang: Lang, text: string): Extraction {
+  const tree = treeSitterSymbols(lang, text);
+  return tree ? { symbols: tree, imports: extractImports(lang, text), parser: 'tree-sitter' } : extractHeuristic(lang, text);
+}
+
+function extractImports(lang: Lang, text: string): string[] {
+  const imports = new Set<string>();
+  for (const re of IMPORT_RES[lang] ?? []) for (const m of text.matchAll(re)) imports.add(m[1]);
+  return [...imports];
+}
+
+export function extractHeuristic(lang: Lang, text: string): Extraction {
   const lines = text.split('\n');
   const symbols: ExtractedSymbol[] = [];
   if (lang === 'md') {
@@ -128,7 +144,7 @@ export function extract(lang: Lang, text: string): Extraction {
       if (m) symbols.push({ kind: 'heading', name: m[2].trim(), qualifiedName: m[2].trim(), line: i + 1, endLine: i + 1, signature: l.trim(), exported: true });
     });
     for (let s = 0; s < symbols.length; s++) symbols[s].endLine = (symbols[s + 1]?.line ?? lines.length + 1) - 1;
-    return { symbols, imports: [] };
+    return { symbols, imports: [], parser: 'heuristic' };
   }
   const rules = RULES[lang];
   if (rules) {
@@ -158,7 +174,5 @@ export function extract(lang: Lang, text: string): Extraction {
       }
     }
   }
-  const imports = new Set<string>();
-  for (const re of IMPORT_RES[lang] ?? []) for (const m of text.matchAll(re)) imports.add(m[1]);
-  return { symbols, imports: [...imports] };
+  return { symbols, imports: extractImports(lang, text), parser: 'heuristic' };
 }
