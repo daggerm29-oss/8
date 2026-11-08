@@ -11,14 +11,14 @@
 
 > These are **checklist completion** numbers (ticked items with recorded evidence ÷ all items). They are not a measure of product quality or release readiness; human launch gates in `docs/roadmap.md` are not counted.
 
-**Overall checklist completion: 44%** (39/89 roadmap items)  
+**Overall checklist completion: 45%** (40/89 roadmap items)  
 **Current milestone:** M1 MVP, grounded single agent  
-**Next task:** T5 Git panel, minimal (F-GIT-1, F-GIT-5) [§20.1, §20.6]
+**Next task:** T6 Explore subagent (F-ORC-1) [§10.2]
 
 | Milestone | Progress | Items | Status |
 | --- | --- | --- | --- |
 | M0 Foundations | ██████████ 100% | 11/11 | Done |
-| M1 MVP, grounded single agent | █████████░ 88% | 23/26 | In progress |
+| M1 MVP, grounded single agent | █████████░ 92% | 24/26 | In progress |
 | M2 Precision and efficiency | ██░░░░░░░░ 23% | 5/22 | Partly built early |
 | M3 Parallel and background | ░░░░░░░░░░ 0% | 0/12 | Not started |
 | M4 Team and ecosystem | ░░░░░░░░░░ 0% | 0/9 | Not started |
@@ -28,7 +28,7 @@
 
 ## Current task notes (overwrite when the task changes)
 
-- T5 Git panel: not started. Next: workbench "Git" tab (status/diff/stage all/commit RPCs) + policy deny for agent `git push --force` / push to main.
+- T6 Explore subagent: not started. Next: tool `explore {question}` in `tools/` running a read-only sub-loop (find_symbol, code_search, read_file) via the gateway; fake-model test.
 
 ## Ideas parking lot (one line each, max 15 — do not implement)
 
