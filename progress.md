@@ -11,14 +11,14 @@
 
 > These are **checklist completion** numbers (ticked items with recorded evidence ÷ all items). They are not a measure of product quality or release readiness; human launch gates in `docs/roadmap.md` are not counted.
 
-**Overall checklist completion: 40%** (36/89 roadmap items)  
+**Overall checklist completion: 42%** (37/89 roadmap items)  
 **Current milestone:** M1 MVP, grounded single agent  
-**Next task:** T2 Dev server start (F-PRV-1) [§17.2]
+**Next task:** T3 Preview panel (F-PRV-2) [§17.1, §17.3]
 
 | Milestone | Progress | Items | Status |
 | --- | --- | --- | --- |
 | M0 Foundations | ██████████ 100% | 11/11 | Done |
-| M1 MVP, grounded single agent | ████████░░ 77% | 20/26 | In progress |
+| M1 MVP, grounded single agent | ████████░░ 81% | 21/26 | In progress |
 | M2 Precision and efficiency | ██░░░░░░░░ 23% | 5/22 | Partly built early |
 | M3 Parallel and background | ░░░░░░░░░░ 0% | 0/12 | Not started |
 | M4 Team and ecosystem | ░░░░░░░░░░ 0% | 0/9 | Not started |
@@ -28,7 +28,7 @@
 
 ## Current task notes (overwrite when the task changes)
 
-- T2 Dev server start: `packages/engine/src/preview/devserver.ts` (DevServers + detectDevServer) and `test/devserver.test.ts` written; next: sandbox `exposePorts`/`connectPort`, engine `preview.start/stop` RPC, `start_dev_server` tool.
+- T3 Preview panel: UI tab in `ui/index.html` + `renderPreview/startPreview` in `ui/app.js` written; next: CSP `frame-src` for 127.0.0.1 in `engine.ts`, `workspacePath` in `preview.ready` data, browser check.
 
 ## Ideas parking lot (one line each, max 15 — do not implement)
 
@@ -37,6 +37,7 @@
 - `--verify auto` emitting `{{tests}}` gates
 - Persist demoted model refs per workspace
 - PTY history indexing + live resize
+- Preview through an Engine origin proxy (p<port>-<ws>.localhost, §17.3) so remote workbench users can see it
 
 ## How to run
 
@@ -55,3 +56,4 @@
 ## Last session (overwrite each session, max 5 lines)
 
 - 2026-11-08 (session PR #16): T1 egress proxy (F-SBX-3) done: `sandbox/egress.ts`, in-sandbox forwarder, `egress.allow`/`egress.list` RPC, migration v4.
+- T2 dev server (F-PRV-1) done: `preview/devserver.ts`, sandbox `exposePorts`/`connectPort`, `preview.start/stop`, `start_dev_server` tool.
