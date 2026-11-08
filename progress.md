@@ -11,14 +11,14 @@
 
 > These are **checklist completion** numbers (ticked items with recorded evidence ÷ all items). They are not a measure of product quality or release readiness; human launch gates in `docs/roadmap.md` are not counted.
 
-**Overall checklist completion: 42%** (37/89 roadmap items)  
+**Overall checklist completion: 43%** (38/89 roadmap items)  
 **Current milestone:** M1 MVP, grounded single agent  
-**Next task:** T3 Preview panel (F-PRV-2) [§17.1, §17.3]
+**Next task:** T4 Browser tools, minimal (F-PRV-5) [§18.5]
 
 | Milestone | Progress | Items | Status |
 | --- | --- | --- | --- |
 | M0 Foundations | ██████████ 100% | 11/11 | Done |
-| M1 MVP, grounded single agent | ████████░░ 81% | 21/26 | In progress |
+| M1 MVP, grounded single agent | █████████░ 85% | 22/26 | In progress |
 | M2 Precision and efficiency | ██░░░░░░░░ 23% | 5/22 | Partly built early |
 | M3 Parallel and background | ░░░░░░░░░░ 0% | 0/12 | Not started |
 | M4 Team and ecosystem | ░░░░░░░░░░ 0% | 0/9 | Not started |
@@ -28,7 +28,7 @@
 
 ## Current task notes (overwrite when the task changes)
 
-- T3 Preview panel: UI tab in `ui/index.html` + `renderPreview/startPreview` in `ui/app.js` written; next: CSP `frame-src` for 127.0.0.1 in `engine.ts`, `workspacePath` in `preview.ready` data, browser check.
+- T4 Browser tools: `src/preview/browser.ts` (CDP headless Chrome) exists; next: wire `preview_screenshot`/`preview_console` tools in `tools/builtin.ts` + `test/browser.test.ts`.
 
 ## Ideas parking lot (one line each, max 15 — do not implement)
 
