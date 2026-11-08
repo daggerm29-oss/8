@@ -571,7 +571,9 @@ function renderPreview() {
   $('preview-start').disabled = preview.busy || !ws;
   $('preview-reload').hidden = !info;
   $('preview-open').hidden = !info;
-  frame.hidden = !info;
+  $('preview-inspect').hidden = !info;
+  if (!info && inspect.on) setInspect(false);
+  frame.hidden = !info || inspect.on;
   if (info) {
     $('preview-open').href = info.url;
     if (frame.dataset.url !== info.url) { frame.dataset.url = info.url; frame.src = info.url; }
@@ -586,6 +588,68 @@ async function startPreview() {
   try { preview.byWs.set(ws, await rpc.call('preview.start', { workspacePath: ws }, 120_000)); }
   catch (err) { preview.error = `Failed: ${String(err.message ?? err).split('\n')[0]}`; }
   finally { preview.busy = false; if (state.tab === 'preview') renderPreview(); }
+}
+
+/* §18.6 Inspect mode: the dev-server iframe is cross-origin, so selection happens on a CDP screenshot. */
+const inspect = { on: false, point: null };
+
+function setInspect(on) {
+  inspect.on = on; inspect.point = null;
+  $('preview-inspect').setAttribute('aria-pressed', String(on));
+  $('preview-inspect').textContent = on ? 'Exit inspect' : 'Inspect';
+  $('inspect-view').hidden = !on;
+  $('preview-frame').hidden = on || !preview.byWs.get(selectedWorkspace());
+  $('inspect-form').hidden = true;
+  $('inspect-box').hidden = true;
+  if (!on) return;
+  $('inspect-shot').removeAttribute('src');
+  rpc.call('preview.inspect', { workspacePath: selectedWorkspace() }, 60_000)
+    .then((r) => { $('inspect-shot').src = `data:image/png;base64,${r.image}`; })
+    .catch((err) => { $('inspect-error').textContent = err.message; $('inspect-form').hidden = false; });
+}
+
+async function inspectClick(ev) {
+  const img = $('inspect-shot');
+  if (!img.src) return;
+  const rect = img.getBoundingClientRect();
+  const scale = img.naturalWidth / rect.width;
+  const x = Math.round((ev.clientX - rect.left) * scale);
+  const y = Math.round((ev.clientY - rect.top) * scale);
+  $('inspect-error').textContent = '';
+  try {
+    const r = await rpc.call('preview.locate', { workspacePath: selectedWorkspace(), x, y }, 30_000);
+    inspect.point = { x, y };
+    const box = $('inspect-box');
+    Object.assign(box.style, { left: `${r.card.box.x / scale}px`, top: `${r.card.box.y / scale}px`, width: `${r.card.box.w / scale}px`, height: `${r.card.box.h / scale}px` });
+    box.hidden = false;
+    const src = r.source;
+    $('inspect-chip').textContent = src ? `${src.path}:${src.line}` : 'source unknown';
+    $('inspect-chip').title = src ? `${src.strategy}, confidence ${src.confidence}${src.chain.length > 1 ? `; ${src.chain.join(' > ')}` : ''}` : '';
+    $('inspect-card').textContent = `${r.card.tag} · ${r.card.role}${r.card.name ? ` "${r.card.name}"` : ''}${r.card.classes.length ? ` · .${r.card.classes.join('.')}` : ''}`;
+    $('inspect-confirm').hidden = !(src ? src.needsConfirm : true);
+    $('inspect-form').elements.namedItem('path').value = src ? src.path : '';
+    $('inspect-form').hidden = false;
+    $('inspect-instruction').focus();
+  } catch (err) { $('inspect-error').textContent = err.message; $('inspect-form').hidden = false; }
+}
+
+async function inspectSubmit(ev) {
+  ev.preventDefault();
+  if (!inspect.point) return;
+  const form = ev.currentTarget;
+  const instruction = $('inspect-instruction').value.trim();
+  if (!instruction) return;
+  const path = $('inspect-confirm').hidden ? undefined : String(form.elements.namedItem('path').value).trim() || undefined;
+  const btn = form.querySelector('button[type="submit"]');
+  btn.disabled = true;
+  try {
+    const r = await rpc.call('preview.instruct', { workspacePath: selectedWorkspace(), ...inspect.point, instruction, path, policyProfile: 'interactive' }, 60_000);
+    $('inspect-instruction').value = '';
+    setInspect(false);
+    await refreshTasks();
+    await select(r.task.id);
+  } catch (err) { $('inspect-error').textContent = err.message; }
+  finally { btn.disabled = false; }
 }
 
 function reloadPreview() {
@@ -807,6 +871,9 @@ function setStatus(text, ok) {
 function bindUi() {
   $('preview-start').addEventListener('click', startPreview);
   $('preview-reload').addEventListener('click', reloadPreview);
+  $('preview-inspect').addEventListener('click', () => setInspect(!inspect.on));
+  $('inspect-shot').addEventListener('click', inspectClick);
+  $('inspect-form').addEventListener('submit', inspectSubmit);
   $('git-refresh').addEventListener('click', () => gitAction(async () => ''));
   $('git-stage').addEventListener('click', () => gitAction(async () => {
     const st = await rpc.call('git.stageAll', { workspacePath: selectedWorkspace() });
