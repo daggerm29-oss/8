@@ -16,7 +16,8 @@ Do NOT read `plan.md` or `architecture.md` in full. Do NOT read `docs/history/`.
 - Do the **"Next task"** shown in the `progress.md` dashboard (= first unchecked top-level item of the current milestone in `docs/roadmap.md`). Nothing else.
 - If the task has no "Accept:" line yet (later milestones), first write a short description + one Accept line for it in `docs/roadmap.md`, then build it.
 - Build the **minimum that passes its Accept line**. No extra options, configs, UI extras, refactors, or "while I'm here" improvements.
-- If you finish early and have credits left, report the task (section 5), then continue with the next one on a new branch.
+- **One task → one PR → user merges → next task.** After opening the PR for a finished task, STOP. Do not start another task or create another branch, even with credits left.
+- Before starting work, run `gh pr list --state open`. If a `helix/*` task PR is still open, do not start anything: tell the user to merge it (section 5 block with that PR's link) and stop.
 - Never add, remove, or reword top-level roadmap items (that would fake the percentages). A big task may be split into indented sub-bullets under it; sub-bullets are not counted.
 - A good idea that is not on the roadmap → one line in "Ideas parking lot" in `progress.md`, then move on.
 - Prefer simple heuristics over the "full" architecture version (the architecture doc describes the end state).
@@ -30,8 +31,10 @@ Do NOT read `plan.md` or `architecture.md` in full. Do NOT read `docs/history/`.
 
 ## 4. Updating progress (strict)
 
-- Tick the item in `docs/roadmap.md` (`- [ ]` → `- [x]`) only when its Accept line passes.
+- Tick the item in `docs/roadmap.md` (`- [ ]` → `- [x]`) only after you have actually run the check in its Accept line and it passed. Never tick based on implementation alone.
+- Directly under the ticked item add: `  - Evidence: <command you ran> → <actual result>; commit <sha>; artifact <path, if any>`. The script does not count ticks without it.
 - Then run `node scripts/progress.mjs`. It rewrites the dashboard in `progress.md`. Never type percentages by hand.
+- Never delete roadmap items, "(deferred from M1)" tags, or human launch gates. Percentages are checklist completion, not product quality or release readiness; say so if you report them.
 - In `progress.md`, **replace, never append**: overwrite "Current task notes" and "Last session" (max 5 lines each). No per-session sections, logs, or test-count tables. Keep it under 120 lines.
 - New decisions or bugs → one line in `docs/decisions.md`.
 
@@ -41,10 +44,11 @@ Push the branch, open a PR to `main`, run `node scripts/progress.mjs`, then end 
 
 ```
 TASK COMPLETE: <task name>            (or: TASK PARTIAL: <task name> — <what is left>)
+Evidence: <command> → <result>
 ACTION NEEDED: Merge this PR into main before starting the next session: <PR URL>
 Safe to merge: yes                   (or: no — <reason>)
-Progress (see progress.md): Overall <x>% | M1 <x>% | M2 <x>% | M3 <x>% | M4 <x>% | M5 <x>% | M6 <x>%
-Next task: <next task name>
+Checklist completion (progress.md): Overall <x>% | M0 <x>% | M1 <x>% | M2 <x>% | M3 <x>% | M4 <x>% | M5 <x>% | M6 <x>%
+Next task (after you merge): <next task name>
 ```
 
-Copy the percentages from the script output. If the task is partial, leave the box unticked and write exactly where to resume in "Current task notes".
+Copy the percentages from the script output. If the task is partial, leave the box unticked and write exactly where to resume in "Current task notes". Then stop; do not start the next task.
