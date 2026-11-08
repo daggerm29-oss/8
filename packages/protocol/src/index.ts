@@ -157,6 +157,9 @@ export const Methods = {
   previewInstruct: 'preview.instruct',
   /* F-UI-4 verification evidence */
   artifactReverify: 'artifact.reverify',
+  /* F-ORC-2 task DAG scheduler */
+  dagRun: 'dag.run',
+  dagStatus: 'dag.status',
   /* F-OBS-2 session replay */
   taskBundle: 'task.bundle',
   taskReplay: 'task.replay',

@@ -99,4 +99,9 @@ export const MIGRATIONS: string[] = [
   CREATE INDEX idx_config_path ON idx_config(ws, path);
   DELETE FROM idx_files; DELETE FROM idx_symbols; DELETE FROM idx_imports; DELETE FROM idx_chunks; DELETE FROM idx_refs; DELETE FROM idx_vectors;
   `,
+  /* v7: task DAG scheduler (F-ORC-2, §10.3): DAGs and their nodes (each node runs as a child task). */ `
+  CREATE TABLE dags (id TEXT PRIMARY KEY, ws TEXT NOT NULL, status TEXT NOT NULL, concurrency INTEGER NOT NULL, options_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+  CREATE TABLE dag_nodes (dag TEXT NOT NULL, id TEXT NOT NULL, goal TEXT NOT NULL, deps_json TEXT NOT NULL, write_set_json TEXT NOT NULL, priority INTEGER NOT NULL,
+    status TEXT NOT NULL, task TEXT, result TEXT, error TEXT, started_at TEXT, finished_at TEXT, PRIMARY KEY (dag, id));
+  `,
 ];
