@@ -137,7 +137,7 @@ export class ModelGateway {
   }
 
   providers(): Array<{ id: string; configured: boolean; defaultModel: string }> {
-    return [...this.adapters.values()].map((a) => ({ id: a.id, configured: this.vault.isConfigured(a.id), defaultModel: a.defaultModel }));
+    return [...this.adapters.values()].filter((a) => a.id !== 'replay').map((a) => ({ id: a.id, configured: this.vault.isConfigured(a.id), defaultModel: a.defaultModel }));
   }
 
   defaultProvider(): string {

@@ -17,11 +17,12 @@ import type { BlobStore } from '../storage/blobs.ts';
 import type { EventBus } from '../events/bus.ts';
 import type { GatewayCall, GatewayResult, ModelGateway } from '../models/gateway.ts';
 import type { Ledger, ModelRole } from '../models/ledger.ts';
-import { assertUsable, loadRoleLayers, refString, resolveRoles, type ModelRef, type ResolvedRoles, type RolesInput } from '../models/roles.ts';
+import { MODEL_ROLES, assertUsable, loadRoleLayers, refString, resolveRoles, type ModelRef, type ResolvedRoles, type RolesInput } from '../models/roles.ts';
 import { route, type StepType } from '../models/router.ts';
+import { ToolScript, type ReplayAdapter, type SessionBundle } from '../replay/bundle.ts';
 import type { Tracer } from '../obs/tracing.ts';
 import type { Logger } from '../util/log.ts';
-import type { ToolContext, ToolRegistry } from '../tools/registry.ts';
+import type { ToolContext, ToolOutput, ToolRegistry } from '../tools/registry.ts';
 import { LocalSandbox } from '../sandbox/sandbox.ts';
 import type { EgressProxy } from '../sandbox/egress.ts';
 import type { DevServers } from '../preview/devserver.ts';
@@ -67,6 +68,19 @@ export interface RuntimeOptions {
   contextBudgetTokens?: number;
   /** Transcript compaction (F-CTX-2, §13.4). */
   compaction?: CompactionOptions;
+  /** Recorded-turn provider for deterministic session replay (F-OBS-2). */
+  replay?: ReplayAdapter;
+}
+
+export interface ReplayReport {
+  task: string;
+  source: string;
+  status: string;
+  identical: boolean;
+  modelTurns: { recorded: number; replayed: number };
+  toolCalls: { recorded: number; replayed: number };
+  finalTextMatches: boolean;
+  divergence: string | null;
 }
 
 export interface CheckpointInfo {
@@ -124,9 +138,54 @@ export class TaskRuntime {
   private readonly approvals = new Map<string, (approved: boolean) => void>();
   /** Per task: `provider/model` refs that failed permanently (F-MDL-4 fallback), in memory only. */
   private readonly demoted = new Map<string, Set<string>>();
+  /** Replay tasks: recorded tool results served instead of running tools. */
+  private readonly replays = new Map<string, ToolScript>();
 
   constructor(opts: RuntimeOptions) {
     this.o = opts;
+  }
+
+  /**
+   * Deterministic replay (F-OBS-2, §26.4): a new task runs the current harness (policy, loop, context,
+   * router) against the recording — model turns from `ReplayAdapter`, tool results from the bundle, no
+   * verification gates — and reports the first divergence.
+   */
+  async replay(bundle: SessionBundle, workspacePath = bundle.task.workspacePath, timeoutMs = 120_000): Promise<ReplayReport> {
+    const adapter = this.o.replay;
+    if (!adapter) throw new Error('replay is not available in this engine');
+    if (bundle?.version !== 1 || !Array.isArray(bundle.models) || !Array.isArray(bundle.tools)) throw new Error('invalid session bundle');
+    if (bundle.task.policyProfile === 'plan') throw new Error('plan-mode sessions cannot be replayed yet');
+    const key = prefixedId('rpl');
+    adapter.load(key, bundle.models);
+    const script = new ToolScript(bundle.tools);
+    const ref = `replay/${key}`;
+    let taskId: string | undefined;
+    try {
+      const t = this.create({
+        workspacePath, goal: bundle.task.goal, title: `Replay of ${bundle.task.id}`, provider: 'replay', model: key,
+        roles: Object.fromEntries(MODEL_ROLES.map((r) => [r, ref])), policyProfile: 'headless', preapprove: bundle.task.preapprove, start: false,
+      });
+      taskId = t.id;
+      this.replays.set(t.id, script);
+      this.start(t.id);
+      const s = await this.wait(t.id, timeoutMs);
+      const replayedTurns = adapter.served(key);
+      const finalTextMatches = (s.result ?? null) === (bundle.task.result ?? null);
+      let divergence = s.status === 'done' ? null : s.error ?? `replay ended ${s.status}`;
+      if (!divergence && replayedTurns < bundle.models.length) divergence = `replay finished after ${replayedTurns} of ${bundle.models.length} recorded model turns`;
+      if (!divergence && script.remaining) divergence = `${script.remaining} recorded tool calls were not replayed`;
+      if (!divergence && !finalTextMatches) divergence = 'final result text differs from the recording';
+      const report: ReplayReport = {
+        task: t.id, source: bundle.task.id, status: s.status, identical: divergence === null,
+        modelTurns: { recorded: bundle.models.length, replayed: replayedTurns }, toolCalls: { recorded: bundle.tools.length, replayed: script.served.length },
+        finalTextMatches, divergence,
+      };
+      this.saveArtifact(t.id, 'replay', `Replay of ${bundle.task.id}`, report);
+      return report;
+    } finally {
+      adapter.unload(key);
+      if (taskId) this.replays.delete(taskId);
+    }
   }
 
   private workspace(path: string): { id: string; path: string } {
@@ -713,7 +772,11 @@ export class TaskRuntime {
       let allowed = decision.verdict === 'allow';
       if (decision.verdict === 'ask') allowed = await this.ask(t, call, decision.actionClass, signal);
       const started = performance.now();
-      const out = allowed
+      const script = this.replays.get(t.id);
+      const replayed = script?.next(call, allowed ? 'allowed' : 'denied');
+      const out: ToolOutput = replayed && allowed
+        ? replayed
+        : allowed
         ? await this.o.tracer.withSpan('tool.call', { tool: call.name, 'task.id': t.id, action_class: decision.actionClass }, () =>
             this.o.tools.run(call.name, call.args, {
               sandbox, signal, index,

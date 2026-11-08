@@ -21,6 +21,7 @@ import { globalRedactor } from './util/redact.ts';
 import { Vault } from './vault/vault.ts';
 import { Ledger } from './models/ledger.ts';
 import { ModelGateway } from './models/gateway.ts';
+import { ReplayAdapter, exportBundle, type SessionBundle } from './replay/bundle.ts';
 import { builtinTools } from './tools/builtin.ts';
 import { McpManager, type McpServerConfig, type McpServerStatus } from './mcp/manager.ts';
 import { TaskRuntime } from './agent/runtime.ts';
@@ -93,6 +94,7 @@ export class Engine {
   readonly vault: Vault;
   readonly ledger: Ledger;
   readonly gateway: ModelGateway;
+  readonly replay: ReplayAdapter;
   readonly runtime: TaskRuntime;
   readonly blobs: BlobStore;
   readonly mcp: McpManager;
@@ -125,7 +127,8 @@ export class Engine {
     this.blobs = new BlobStore(join(this.home, 'blobs'), this.db);
     this.vault = new Vault(env);
     this.ledger = new Ledger(this.db, this.bus);
-    this.gateway = new ModelGateway({ adapters: opts.adapters ?? [new GeminiAdapter(), new OpenAIAdapter()], vault: this.vault, ledger: this.ledger, tracer: this.tracer, logger: this.logger, retry: opts.retry });
+    this.replay = new ReplayAdapter();
+    this.gateway = new ModelGateway({ adapters: [...(opts.adapters ?? [new GeminiAdapter(), new OpenAIAdapter()]), this.replay], vault: this.vault, ledger: this.ledger, tracer: this.tracer, logger: this.logger, retry: opts.retry });
     this.egress = new EgressProxy({
       isAllowed: (host, ctx) => DEFAULT_EGRESS_ALLOWLIST.includes(host) || !!this.db.get('SELECT 1 AS ok FROM egress_allow WHERE ws = ? AND host = ?', this.runtime.workspaceFor(ctx.root).id, host),
       onDenied: (info, ctx) => {
@@ -147,7 +150,7 @@ export class Engine {
     const tools = builtinTools();
     this.mcp = new McpManager({ home: this.home, registry: tools, logger: this.logger, config: opts.mcpServers, toolSearchThreshold: opts.mcpToolSearchThreshold });
     this.mcpReady = opts.mcp === false ? Promise.resolve([]) : this.mcp.start();
-    this.runtime = new TaskRuntime({ db: this.db, bus: this.bus, gateway: this.gateway, ledger: this.ledger, tools, tracer: this.tracer, engineId: this.id, blobs: this.blobs, logger: this.logger, forceProcessSandbox: opts.forceProcessSandbox, egress: this.egress, devServers: this.devServers, browser: this.browser, taskRetryScale: opts.taskRetryScale, helixHome: this.home, indexing: opts.indexing, compaction: compactionFrom(env, opts.compaction) });
+    this.runtime = new TaskRuntime({ db: this.db, bus: this.bus, gateway: this.gateway, ledger: this.ledger, tools, tracer: this.tracer, engineId: this.id, blobs: this.blobs, logger: this.logger, forceProcessSandbox: opts.forceProcessSandbox, egress: this.egress, devServers: this.devServers, browser: this.browser, taskRetryScale: opts.taskRetryScale, helixHome: this.home, replay: this.replay, indexing: opts.indexing, compaction: compactionFrom(env, opts.compaction) });
 
     const now = new Date().toISOString();
     this.db.run('INSERT INTO engine_instances (id, pid, started_at, heartbeat_at) VALUES (?, ?, ?, ?)', this.id, process.pid, now, now);
@@ -248,6 +251,15 @@ export class Engine {
     peer.handle(Methods.modelsRoles, guard<{ workspacePath?: string; task?: string; provider?: string; model?: string; roles?: TaskCreateParams['roles']; policyProfile?: string }>((p) => {
       if (p.task) return this.runtime.artifacts(p.task, 'roles').at(-1)?.data ?? null;
       return this.runtime.resolveTaskRoles(this.runtime.workspaceFor(p.workspacePath ?? process.cwd()).path, p as never);
+    }));
+    peer.handle(Methods.taskBundle, guard<{ task: string }>((p) => {
+      if (typeof p.task !== 'string' || !p.task) throw new Error('task is required');
+      return exportBundle(this.db, p.task);
+    }));
+    peer.handle(Methods.taskReplay, guard<{ task?: string; bundle?: SessionBundle; workspacePath?: string }>((p) => {
+      const bundle = p.bundle ?? (typeof p.task === 'string' && p.task ? exportBundle(this.db, p.task) : undefined);
+      if (!bundle) throw new Error('task or bundle is required');
+      return this.runtime.replay(bundle, p.workspacePath ? this.knownWorkspace(p.workspacePath) : undefined);
     }));
     peer.handle(Methods.modelsUsage, guard<{ task: string }>((p) => {
       if (typeof p.task !== 'string' || !p.task) throw new Error('task is required');

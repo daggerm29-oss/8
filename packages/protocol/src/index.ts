@@ -151,6 +151,9 @@ export const Methods = {
   previewInspect: 'preview.inspect',
   previewLocate: 'preview.locate',
   previewInstruct: 'preview.instruct',
+  /* F-OBS-2 session replay */
+  taskBundle: 'task.bundle',
+  taskReplay: 'task.replay',
   /* F-GIT-1 minimal Git panel */
   gitStatus: 'git.status',
   gitDiff: 'git.diff',
