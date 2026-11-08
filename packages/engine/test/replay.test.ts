@@ -51,10 +51,12 @@ test('session bundle + deterministic replay: identical run offline, no side effe
     assert.equal(readFileSync(join(dir, 'src/calc.js'), 'utf8'), original, 'replay did not touch the workspace');
     assert.equal(engine.runtime.artifacts(report.task, 'replay').length, 1);
 
-    // Harness change: policy no longer pre-approves writes → divergence at tool call 2.
-    const policy = await engine.runtime.replay({ ...bundle, task: { ...bundle.task, preapprove: ['exec'] } } as SessionBundle);
+    // Policy differs from the recording's harness (edit_file was denied there, allowed now) → divergence at tool call 2.
+    const stricter = { ...bundle, tools: bundle.tools.map((x) => (x.index === 1 ? { ...x, status: 'denied' } : x)) } as SessionBundle;
+    const policy = await engine.runtime.replay(stricter);
     assert.equal(policy.identical, false);
-    assert.match(policy.divergence ?? '', /tool call 2: edit_file was ok in the recording but is denied now/);
+    assert.match(policy.divergence ?? '', /tool call 2: edit_file was denied in the recording but is allowed now/);
+    assert.equal(readFileSync(join(dir, 'src/calc.js'), 'utf8'), original, 'divergence stops before any tool runs');
 
     // Truncated recording: the loop asks for a 4th model turn that does not exist.
     const short = await engine.runtime.replay({ ...bundle, models: bundle.models.slice(0, 3) });
