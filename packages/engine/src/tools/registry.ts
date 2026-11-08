@@ -13,6 +13,8 @@ export interface ToolContext {
   beforeWrite?: (absPath: string, previous: string | null) => void;
   /** Start (or reuse) the workspace dev server (F-PRV-1); resolves once it answers HTTP. */
   startDevServer?: () => Promise<{ url: string; command: string; port: number }>;
+  /** Run the read-only explore subagent (F-ORC-1) on a question; resolves to its short summary. */
+  explore?: (question: string) => Promise<string>;
   /** Headless browser bound to the workspace's running dev server (F-PRV-5); `path` is relative to its URL. */
   previewBrowser?: {
     screenshot: (path?: string) => Promise<PreviewCapture & { path: string; bytes: number }>;

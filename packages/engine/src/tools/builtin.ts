@@ -206,6 +206,26 @@ const previewConsole: Tool = {
   },
 };
 
+/** Explore subagent (F-ORC-1, §10.2): a read-only sub-loop that answers a codebase question with a short summary. */
+const exploreTool: Tool = {
+  spec: {
+    name: 'explore',
+    description: 'Delegate a codebase question to a read-only explore subagent (find_symbol, code_search, read_file). Returns a short summary with path:line evidence. Use it for open-ended "where/how is X done" questions to keep your own context small.',
+    inputSchema: { type: 'object', properties: { question: { type: 'string', description: 'The specific question to answer about the codebase' } }, required: ['question'], additionalProperties: false },
+  },
+  async run(args, { explore }) {
+    const question = String((args as { question?: unknown }).question ?? '').trim();
+    if (!question) return { content: 'question is required', isError: true };
+    if (!explore) return { content: 'the explore subagent is not available in this context', isError: true, summary: 'explore unavailable' };
+    try {
+      const summary = await explore(question);
+      return { content: summary, summary: `explore → ${summary.length} chars` };
+    } catch (e) {
+      return { content: `explore failed: ${(e as Error).message}`, isError: true, summary: 'explore failed' };
+    }
+  },
+};
+
 /** Plan Mode output (F-AGT-2, §9.4). Only offered under the `plan` profile. */
 export const submitPlan: Tool = {
   spec: {
@@ -236,6 +256,6 @@ export const submitPlan: Tool = {
 
 export function builtinTools(): ToolRegistry {
   const reg = new ToolRegistry();
-  for (const t of [readFile, listDir, search, findSymbol, codeSearch, impactTool, writeFile, editFile, runShell, startDevServerTool, previewScreenshot, previewConsole, submitPlan]) reg.register(t);
+  for (const t of [readFile, listDir, search, findSymbol, codeSearch, impactTool, writeFile, editFile, runShell, startDevServerTool, previewScreenshot, previewConsole, exploreTool, submitPlan]) reg.register(t);
   return reg;
 }

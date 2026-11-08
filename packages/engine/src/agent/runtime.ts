@@ -75,6 +75,9 @@ export interface CheckpointInfo {
   files: Array<{ path: string; created: boolean }>;
 }
 
+const EXPLORE_TOOLS = ['find_symbol', 'code_search', 'read_file'];
+const EXPLORE_MAX_STEPS = 6;
+const EXPLORE_MAX_CHARS = 6000;
 const PLAN_TOOLS = ['read_file', 'list_dir', 'search', 'find_symbol', 'code_search', 'impact', 'submit_plan'];
 
 export function summarizeRoles(roles: ResolvedRoles): Record<string, string> {
@@ -649,6 +652,39 @@ export class TaskRuntime {
     this.publish(t.id, t.ws, 'agent.message', { stepId, text, toolCalls: result.message.parts.filter((p) => p.type === 'tool_call').map((p) => (p as { name: string }).name), costUsd: result.costUsd });
   }
 
+  /**
+   * Explore subagent (F-ORC-1 minimal, §10.2): fresh brief (the question only, not the parent transcript),
+   * explorer role, read-only tools, a step cap, and a summary truncated to ~1.5k tokens.
+   */
+  private async explore(t: TaskRow, question: string, sandbox: LocalSandbox, signal: AbortSignal, index?: WorkspaceIndex): Promise<string> {
+    const tools = this.o.tools.specs((name) => EXPLORE_TOOLS.includes(name));
+    const system = 'You are a read-only code explorer subagent. Answer the question about the workspace using find_symbol, code_search and read_file. '
+      + 'You cannot modify files or run commands. Finish with a short plain-text summary (max ~200 words) of findings, each with path:line evidence, then a list of suggested files.';
+    const messages: Message[] = [{ role: 'user', parts: [{ type: 'text', text: question }] }];
+    this.publish(t.id, t.ws, 'agent.subagent', { kind: 'explore', question: question.slice(0, 300), tools: tools.map((s) => s.name) });
+    for (let step = 0; step < EXPLORE_MAX_STEPS; step++) {
+      const res = await this.callRole(t, 'explorer', {
+        ws: t.ws, task: t.id, agent: 'explore', signal,
+        request: { system, messages, tools, toolChoice: step === EXPLORE_MAX_STEPS - 1 ? 'none' : 'auto', maxOutputTokens: 2048 },
+      });
+      messages.push(res.message);
+      const calls = res.message.parts.filter((p): p is Extract<Part, { type: 'tool_call' }> => p.type === 'tool_call');
+      if (!calls.length) {
+        const text = res.message.parts.flatMap((p) => (p.type === 'text' ? [p.text] : [])).join('').trim() || '(the explore subagent returned no summary)';
+        return text.length > EXPLORE_MAX_CHARS ? `${text.slice(0, EXPLORE_MAX_CHARS)}\n[truncated]` : text;
+      }
+      const results: Part[] = [];
+      for (const call of calls) {
+        const out = EXPLORE_TOOLS.includes(call.name)
+          ? await this.o.tools.run(call.name, call.args, { sandbox, signal, index })
+          : { content: `tool '${call.name}' is not available to the read-only explore subagent`, isError: true };
+        results.push({ type: 'tool_result', callId: call.id, name: call.name, content: out.content.slice(0, 20_000), isError: out.isError, provenance: { source: 'builtin', trust: 'trusted', taint: false } });
+      }
+      messages.push({ role: 'tool', parts: results });
+    }
+    return `explore subagent stopped after ${EXPLORE_MAX_STEPS} steps without a summary`;
+  }
+
   /** Browser tools only ever navigate to this workspace's own dev server (never arbitrary URLs). */
   private previewBrowserFor(root: string): ToolContext['previewBrowser'] {
     const { browser, devServers } = this.o;
@@ -678,6 +714,7 @@ export class TaskRuntime {
               sandbox, signal, index,
               startDevServer: this.o.devServers ? () => this.o.devServers!.start(sandbox.root) : undefined,
               previewBrowser: this.previewBrowserFor(sandbox.root),
+              explore: (question) => this.explore(t, question, sandbox, signal, index),
               beforeWrite: (abs, prev) => this.checkpoint(t, sandbox, abs, prev),
               submitArtifact: t.policy_profile === 'plan' ? (kind, title, data) => {
                 const artId = this.saveArtifact(t.id, kind, title, data);
