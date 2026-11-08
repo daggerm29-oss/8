@@ -11,15 +11,15 @@
 
 > These are **checklist completion** numbers (ticked items with recorded evidence ÷ all items). They are not a measure of product quality or release readiness; human launch gates in `docs/roadmap.md` are not counted.
 
-**Overall checklist completion: 52%** (46/89 roadmap items)  
+**Overall checklist completion: 53%** (47/89 roadmap items)  
 **Current milestone:** M2 Precision and efficiency  
-**Next task:** Domain extractors (F-IDX-5) [§11.7]
+**Next task:** Runtime telemetry via CDP + Environment Snapshot (F-PRV-3/4) [§18.3] (deferred from M1)
 
 | Milestone | Progress | Items | Status |
 | --- | --- | --- | --- |
 | M0 Foundations | ██████████ 100% | 11/11 | Done |
 | M1 MVP, grounded single agent | ██████████ 100% | 26/26 | Done |
-| M2 Precision and efficiency | ████░░░░░░ 41% | 9/22 | In progress |
+| M2 Precision and efficiency | █████░░░░░ 45% | 10/22 | In progress |
 | M3 Parallel and background | ░░░░░░░░░░ 0% | 0/12 | Not started |
 | M4 Team and ecosystem | ░░░░░░░░░░ 0% | 0/9 | Not started |
 | M5 Platform | ░░░░░░░░░░ 0% | 0/5 | Not started |
@@ -28,7 +28,7 @@
 
 ## Current task notes (overwrite when the task changes)
 
-- Next: M2 "Domain extractors (F-IDX-5)" [§11.7] — write its Accept line first.
+- Next: M2 "Runtime telemetry via CDP + Environment Snapshot (F-PRV-3/4)" [§18.3] — write its Accept line first.
 
 ## Ideas parking lot (one line each, max 15 — do not implement)
 
