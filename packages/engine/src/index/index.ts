@@ -52,6 +52,22 @@ export interface ImpactReport {
   precision: 'heuristic' | 'precise';
 }
 
+export interface PlanImpactReport {
+  changedFiles: string[];
+  changedSymbols: string[];
+  directDependents: string[];
+  transitiveDependents: { depth: number; count: number; top: string[] };
+  coveringTests: string[];
+  uncoveredChangedFiles: string[];
+  /** Dependent files (depth ≤ 2) that the plan does not list; candidates the plan may have missed. */
+  dependentsNotInPlan: string[];
+  riskScore: number;
+  riskTerms: Array<{ term: string; value: number; weight: number; contribution: number }>;
+  precision: 'heuristic';
+}
+
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
 export interface IndexStats {
   files: number;
   indexed: number;
@@ -290,6 +306,55 @@ export class WorkspaceIndex {
       for (const t of this.coveringTests(p)) tests.add(t);
     }
     return { ...report, callers, affectedFiles: [...files].filter((f) => !isTestPath(f)), tests: [...tests], precision: 'precise' };
+  }
+
+  /**
+   * Impact Report for a plan's change set (§11.5, minimal): changed symbols, reverse-import dependents (depth 1
+   * and 2), covering tests, uncovered files, and an explainable risk score
+   * `1·log2(1+dependents) + 1·publicApiChange + 2·uncoveredRatio`. Paths not in the index are ignored.
+   */
+  planImpact(paths: string[]): PlanImpactReport {
+    const changed = [...new Set(paths)].filter((p) => this.db.get('SELECT 1 AS ok FROM idx_files WHERE ws = ? AND path = ?', this.ws, p));
+    const changedSet = new Set(changed);
+    const changedSymbols = this.db.all<{ q: string; path: string; exported: number }>(
+      `SELECT qualified_name AS q, path, exported FROM idx_symbols WHERE ws = ? AND kind != 'heading' AND (exported = 1 OR kind IN ('class','function')) AND path IN (${changed.map(() => '?').join(',') || "''"}) ORDER BY path, line`,
+      this.ws, ...changed,
+    );
+    const direct = new Set<string>();
+    for (const p of changed) for (const d of this.dependents(p)) if (!changedSet.has(d)) direct.add(d);
+    const second = new Set<string>();
+    for (const p of direct) for (const d of this.dependents(p)) if (!changedSet.has(d) && !direct.has(d)) second.add(d);
+    const covering = new Map<string, string[]>();
+    for (const p of changed) {
+      if (isTestPath(p)) { covering.set(p, [p]); continue; }
+      const closure = new Set([p, ...this.dependents(p)]);
+      for (const d of [...closure]) for (const dd of this.dependents(d)) closure.add(dd);
+      const t = new Set<string>();
+      for (const c of closure) { if (isTestPath(c)) t.add(c); for (const x of this.coveringTests(c)) t.add(x); }
+      covering.set(p, [...t]);
+    }
+    const tests = new Set<string>([...covering.values()].flat());
+    for (const p of [...direct, ...second]) if (isTestPath(p)) tests.add(p);
+    const nonTest = changed.filter((p) => !isTestPath(p));
+    const uncovered = nonTest.filter((p) => !covering.get(p)!.length);
+    const dependents = [...direct, ...second].filter((p) => !isTestPath(p));
+    const terms = [
+      { term: 'log2(1+dependents)', value: Math.log2(1 + dependents.length), weight: 1 },
+      { term: 'publicApiChange', value: changedSymbols.some((s) => s.exported) ? 1 : 0, weight: 1 },
+      { term: 'uncoveredRatio', value: nonTest.length ? uncovered.length / nonTest.length : 0, weight: 2 },
+    ].map((t) => ({ ...t, value: round2(t.value), contribution: round2(t.value * t.weight) }));
+    return {
+      changedFiles: changed,
+      changedSymbols: changedSymbols.slice(0, 40).map((s) => `${s.q} (${s.path})`),
+      directDependents: [...direct].filter((p) => !isTestPath(p)),
+      transitiveDependents: { depth: 2, count: dependents.length, top: dependents.slice(0, 20) },
+      coveringTests: [...tests],
+      uncoveredChangedFiles: uncovered,
+      dependentsNotInPlan: dependents,
+      riskScore: round2(terms.reduce((s, t) => s + t.contribution, 0)),
+      riskTerms: terms,
+      precision: 'heuristic',
+    };
   }
 
   /** Innermost indexed symbol containing `line` ('' = top level). */

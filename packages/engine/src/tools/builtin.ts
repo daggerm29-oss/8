@@ -245,12 +245,22 @@ export const submitPlan: Tool = {
       required: ['goal', 'affectedFiles', 'steps', 'verification'],
     },
   },
-  async run(args, { submitArtifact, sandbox }) {
+  async run(args, { submitArtifact, sandbox, index }) {
     if (!submitArtifact) return { content: 'submit_plan is only available in Plan Mode', isError: true };
     const files = (args.affectedFiles as Array<{ path: string }>) ?? [];
     const missing = files.filter((f) => { try { sandbox.resolvePath(f.path); return !existsSync(sandbox.resolvePath(f.path)); } catch { return true; } }).map((f) => f.path);
-    const id = submitArtifact('plan', String(args.goal).slice(0, 120), { ...args, unverifiedPaths: missing });
-    return { content: `plan saved as ${id}${missing.length ? `; note: these paths do not exist yet (new files?): ${missing.join(', ')}` : ''}. Now reply with a one-paragraph summary and stop.`, summary: `plan ${id}: ${(args.steps as unknown[]).length} steps` };
+    let impactArtifactId: string | undefined;
+    let impactNote = '';
+    if (index) {
+      index.update();
+      const planned = new Set(files.map((f) => f.path));
+      const report = index.planImpact(files.map((f) => f.path).filter((p) => !missing.includes(p)));
+      report.dependentsNotInPlan = report.dependentsNotInPlan.filter((p) => !planned.has(p));
+      impactArtifactId = submitArtifact('impact', 'Impact Report', report);
+      impactNote = `\nImpact Report ${impactArtifactId}: risk ${report.riskScore} (${report.riskTerms.map((t) => `${t.term}=${t.value}×${t.weight}`).join(' + ')}); dependents ${report.transitiveDependents.count}; tests ${report.coveringTests.join(', ') || 'none'}${report.dependentsNotInPlan.length ? `; dependents not in the plan: ${report.dependentsNotInPlan.join(', ')}` : ''}`;
+    }
+    const id = submitArtifact('plan', String(args.goal).slice(0, 120), { ...args, unverifiedPaths: missing, ...(impactArtifactId ? { impactArtifactId } : {}) });
+    return { content: `plan saved as ${id}${missing.length ? `; note: these paths do not exist yet (new files?): ${missing.join(', ')}` : ''}.${impactNote}\nNow reply with a one-paragraph summary and stop.`, summary: `plan ${id}: ${(args.steps as unknown[]).length} steps` };
   },
 };
 
