@@ -11,16 +11,16 @@
 
 > These are **checklist completion** numbers (ticked items with recorded evidence ÷ all items). They are not a measure of product quality or release readiness; human launch gates in `docs/roadmap.md` are not counted.
 
-**Overall checklist completion: 65%** (58/89 roadmap items)  
-**Current milestone:** M2 Precision and efficiency  
-**Next task:** M2 eval: cost vs baseline, MCP tokens ≤ 3k/turn at 200 tools, element→source ≥ 95% on fixtures
+**Overall checklist completion: 66%** (59/89 roadmap items)  
+**Current milestone:** M3 Parallel and background  
+**Next task:** General subagents + task DAG scheduler (F-ORC-2) [§10.3]
 
 | Milestone | Progress | Items | Status |
 | --- | --- | --- | --- |
 | M0 Foundations | ██████████ 100% | 11/11 | Done |
 | M1 MVP, grounded single agent | ██████████ 100% | 26/26 | Done |
-| M2 Precision and efficiency | ██████████ 95% | 21/22 | In progress |
-| M3 Parallel and background | ░░░░░░░░░░ 0% | 0/12 | Not started |
+| M2 Precision and efficiency | ██████████ 100% | 22/22 | Done |
+| M3 Parallel and background | ░░░░░░░░░░ 0% | 0/12 | In progress |
 | M4 Team and ecosystem | ░░░░░░░░░░ 0% | 0/9 | Not started |
 | M5 Platform | ░░░░░░░░░░ 0% | 0/5 | Not started |
 | M6 Collaboration | ░░░░░░░░░░ 0% | 0/4 | Not started |
@@ -28,7 +28,7 @@
 
 ## Current task notes (overwrite when the task changes)
 
-- Next: M2 "M2 eval: cost vs baseline, MCP tokens ≤ 3k/turn at 200 tools, element→source ≥ 95% on fixtures" — not started; write its Accept line first. Prefer offline (fake-model/fixture) measurements; live Gemini calls are rate-limited (~20/day).
+- Next: M3 "General subagents + task DAG scheduler (F-ORC-2)" [§10.3] — not started; write its Accept line first. Reuse the T6 explore subagent plumbing (`explore` tool) for general subagents.
 
 ## Ideas parking lot (one line each, max 15 — do not implement)
 
