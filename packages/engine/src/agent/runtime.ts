@@ -18,6 +18,7 @@ import type { EventBus } from '../events/bus.ts';
 import type { GatewayCall, GatewayResult, ModelGateway } from '../models/gateway.ts';
 import type { Ledger, ModelRole } from '../models/ledger.ts';
 import { assertUsable, loadRoleLayers, refString, resolveRoles, type ModelRef, type ResolvedRoles, type RolesInput } from '../models/roles.ts';
+import { route, type StepType } from '../models/router.ts';
 import type { Tracer } from '../obs/tracing.ts';
 import type { Logger } from '../util/log.ts';
 import type { ToolContext, ToolRegistry } from '../tools/registry.ts';
@@ -446,19 +447,22 @@ export class TaskRuntime {
   }
 
   /**
-   * Call a role's chain: the primary first, then each fallback when the gateway gives up with a
-   * non-cancel provider error (its own quick retries are exhausted or the breaker is open).
+   * Call a role's chain in router order (F-MDL-5): the routed pick first, then each next ref when the
+   * gateway gives up with a non-cancel provider error (its own quick retries are exhausted or the breaker is open).
    */
-  private async callRole(t: TaskRow, role: ModelRole, c: Omit<GatewayCall, 'provider' | 'model' | 'role'>): Promise<GatewayResult & { ref: ModelRef }> {
+  private async callRole(t: TaskRow, role: ModelRole, step: StepType, c: Omit<GatewayCall, 'provider' | 'model' | 'role'>): Promise<GatewayResult & { ref: ModelRef }> {
     const chain = this.roles(t)[role]?.chain ?? [];
     const all = chain.length ? chain : [{ provider: t.provider, model: t.model }];
     const demoted = this.demoted.get(t.id) ?? new Set<string>();
     // Refs that failed permanently are skipped for the rest of the task (the last one is always kept).
-    const refs = all.filter((r, i) => i === all.length - 1 || !demoted.has(refString(r)));
+    const kept = all.filter((r, i) => i === all.length - 1 || !demoted.has(refString(r)));
+    const gateFailures = this.o.db.get<{ n: number }>('SELECT verify_attempts AS n FROM tasks WHERE id = ?', t.id)?.n ?? 0;
+    const decision = route({ step, chain: kept, gateFailures, isOpen: (r) => this.o.gateway.isOpen(r.provider, r.model) });
+    const refs = decision.refs;
     for (let i = 0; ; i++) {
       const ref = refs[i];
       try {
-        return { ...(await this.o.gateway.call({ ...c, provider: ref.provider, model: ref.model, role })), ref };
+        return { ...(await this.o.gateway.call({ ...c, provider: ref.provider, model: ref.model, role, routerReason: i === 0 ? decision.reason : `${decision.reason}; fallback to ${refString(ref)}` })), ref };
       } catch (error) {
         const next = refs[i + 1];
         if (!next || !(error instanceof ProviderError) || error.kind === 'cancelled' || c.signal?.aborted) throw error;
@@ -589,7 +593,7 @@ export class TaskRuntime {
     let summary: CompactionSummary | null = null;
     let error: string | undefined;
     try {
-      const res = await this.callRole(t, 'summarizer', {
+      const res = await this.callRole(t, 'summarizer', 'summarize', {
         ws: t.ws, task: t.id, agent: 'primary', step: stepId, signal,
         request: { system: SUMMARIZER_SYSTEM, messages: [{ role: 'user', parts: [{ type: 'text', text: summarizerPrompt(slice, current) }] }], toolChoice: 'none', maxOutputTokens: 2048 },
       });
@@ -623,7 +627,8 @@ export class TaskRuntime {
     const system = systemPrompt(root, this.gateSummary(root, t.verify_command), t.policy_profile, context);
     const compaction = await this.maybeCompact(t, messages, system, tools, stepId, signal);
     const view = this.requestMessages(compactedView(messages, compaction));
-    const call = () => this.callRole(t, t.policy_profile === 'plan' ? 'planner' : 'coder', {
+    const plan = t.policy_profile === 'plan';
+    const call = () => this.callRole(t, plan ? 'planner' : 'coder', plan ? 'plan' : 'edit', {
       ws: t.ws, task: t.id, agent: 'primary', step: stepId, signal,
       request: { system, messages: view, tools, toolChoice: 'auto', maxOutputTokens: 8192 },
       onEvent: (e) => { if (e.type === 'text_delta') this.publish(t.id, t.ws, 'model.delta', { stepId, text: e.text }, 'none'); },
@@ -663,7 +668,7 @@ export class TaskRuntime {
     const messages: Message[] = [{ role: 'user', parts: [{ type: 'text', text: question }] }];
     this.publish(t.id, t.ws, 'agent.subagent', { kind: 'explore', question: question.slice(0, 300), tools: tools.map((s) => s.name) });
     for (let step = 0; step < EXPLORE_MAX_STEPS; step++) {
-      const res = await this.callRole(t, 'explorer', {
+      const res = await this.callRole(t, 'explorer', 'explore', {
         ws: t.ws, task: t.id, agent: 'explore', signal,
         request: { system, messages, tools, toolChoice: step === EXPLORE_MAX_STEPS - 1 ? 'none' : 'auto', maxOutputTokens: 2048 },
       });
