@@ -26,7 +26,7 @@ Do NOT read `plan.md` or `architecture.md` in full. Do NOT read `docs/history/`.
 - **Start of session:** run `gh pr list --state open`.
   - If an open `helix/session-*` PR exists, the user has not merged it yet: check out that branch, `git pull`, and continue on it. Never start from `main` while unmerged work exists.
   - Otherwise create `helix/session-<YYYY-MM-DD>-<next-task-short-name>` from the latest `main`.
-- **After the first completed task:** open ONE **draft** PR to `main` for the session branch. Later tasks push to the same branch/PR. Never open a PR per task.
+- **Immediately after your first push** (even if the first task is still unfinished): open ONE **draft** PR to `main` for the session branch. The next session finds unfinished work only through an open PR, so never leave a pushed session branch without one. Later work pushes to the same branch/PR. Never open a PR per task.
 - Commit and push after every working step, not only at the end of a task (credits can run out at any moment).
 - **Never merge your own PR.** The user reviews and merges.
 - Tests: focused test file + `npx tsc -p tsconfig.helix.json` while working; full engine suite once at the end of each task.
