@@ -5,12 +5,15 @@ import { dirname, join, normalize, relative } from 'node:path';
 import type { Db } from '../storage/db.ts';
 import { extract, identifierTerms, isTestPath, langOf, type Lang } from './extract.ts';
 import { extractRefs } from './graph.ts';
+import { extractDomain, type ConfigKey, type DbTable, type Route } from './domain.ts';
+import { dot, embed, EMBED_DIM, EMBED_MODEL, fromBlob, toBlob } from './embed.ts';
 
 const SKIP_DIRS = new Set(['node_modules', '.git', '.next', 'dist', 'build', 'out', 'coverage', '__pycache__', '.venv', 'venv', 'target', '.turbo', '.cache', 'vendor']);
 const SECRET_FILE = /(^|\/)(\.env(\.[\w-]+)?|.*\.pem|id_[a-z0-9]+|.*\.key|credentials\.json|.*secret.*\.json)$/i;
 const MAX_FILE_BYTES = 512 * 1024;
 const WINDOW = 60;
 const RRF_K = 60;
+const VECTOR_MIN_SIM = 0.08;
 
 export interface SearchHit {
   path: string;
@@ -80,13 +83,15 @@ export interface IndexStats {
 /**
  * Workspace index v0 (F-IDX-1, F-IDX-4 subset; §11.1–11.3, §11.6). Content-hash incremental: unchanged
  * files are skipped, changed files have their symbols, imports, and FTS5 chunks replaced in one
- * transaction. Retrieval fuses BM25 (FTS5), symbol-name, and path retrievers with RRF(k=60) and
+ * transaction. Retrieval fuses BM25 (FTS5), local-vector, symbol-name, and path retrievers with RRF(k=60) and
  * returns symbol-aligned slices with `why[]` provenance.
  */
 export class WorkspaceIndex {
   private readonly db: Db;
   readonly ws: string;
   readonly root: string;
+  /** New embedding rows written by this instance (dedupe check). */
+  embedded = 0;
 
   constructor(db: Db, ws: string, root: string) {
     this.db = db;
@@ -161,6 +166,8 @@ export class WorkspaceIndex {
     this.db.run('DELETE FROM idx_imports WHERE ws = ? AND path = ?', this.ws, path);
     this.db.run('DELETE FROM idx_chunks WHERE ws = ? AND path = ?', this.ws, path);
     this.db.run('DELETE FROM idx_refs WHERE ws = ? AND path = ?', this.ws, path);
+    this.db.run('DELETE FROM idx_vectors WHERE ws = ? AND path = ?', this.ws, path);
+    for (const t of ['idx_routes', 'idx_tables', 'idx_config']) this.db.run(`DELETE FROM ${t} WHERE ws = ? AND path = ?`, this.ws, path);
   }
 
   private add(path: string, hash: string, text: string, lang: Lang, size: number): number {
@@ -169,6 +176,10 @@ export class WorkspaceIndex {
     this.db.run('INSERT INTO idx_files (ws, path, hash, lang, size, lines, is_test, indexed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', this.ws, path, hash, lang, size, lines.length, isTestPath(path) ? 1 : 0, new Date().toISOString());
     for (const s of symbols) this.db.run('INSERT INTO idx_symbols (ws, path, kind, name, qualified_name, line, end_line, signature, exported) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', this.ws, path, s.kind, s.name, s.qualifiedName, s.line, s.endLine, s.signature, s.exported ? 1 : 0);
     for (const r of extractRefs(lang, text, symbols)) this.db.run('INSERT INTO idx_refs (ws, path, line, name, caller) VALUES (?, ?, ?, ?, ?)', this.ws, path, r.line, r.name, r.caller);
+    const domain = extractDomain(path, lang, text);
+    for (const r of domain.routes) this.db.run('INSERT INTO idx_routes (ws, path, line, method, route, handler, framework) VALUES (?, ?, ?, ?, ?, ?, ?)', this.ws, path, r.line, r.method, r.path, r.handler, r.framework);
+    for (const t of domain.tables) this.db.run('INSERT INTO idx_tables (ws, path, line, name, source, columns_json) VALUES (?, ?, ?, ?, ?, ?)', this.ws, path, t.line, t.name, t.source, JSON.stringify(t.columns));
+    for (const c of domain.config) this.db.run('INSERT INTO idx_config (ws, path, line, key, kind) VALUES (?, ?, ?, ?, ?)', this.ws, path, c.line, c.key, c.kind);
     for (const spec of imports) this.db.run('INSERT INTO idx_imports (ws, path, spec, resolved) VALUES (?, ?, ?, ?)', this.ws, path, spec, this.resolveImport(path, spec, lang));
     // Chunks: one per top-level symbol (methods stay inside their class chunk unless the class is huge), windows for the gaps.
     const tops = symbols.filter((s) => s.kind !== 'method' || s.endLine - s.line > 80).sort((a, b) => a.line - b.line);
@@ -189,9 +200,21 @@ export class WorkspaceIndex {
         const body = lines.slice(start - 1, end).join('\n');
         if (!body.trim()) continue;
         this.db.run('INSERT INTO idx_chunks (ws, path, start_line, end_line, symbol, terms, body) VALUES (?, ?, ?, ?, ?, ?, ?)', this.ws, path, start, end, sym ?? '', `${header} ${identifierTerms(`${sym ?? ''} ${body}`)}`, body);
+        this.addVector(path, start, end, sym ?? '', body);
       }
     }
     return symbols.length;
+  }
+
+  /** Content-addressed embedding: identical (symbol, body) chunks share one vector across files and workspaces. */
+  private addVector(path: string, start: number, end: number, symbol: string, body: string): void {
+    const text = `${symbol}\n${body}`;
+    const hash = createHash('sha256').update(`${EMBED_MODEL}\0${text}`).digest('hex');
+    if (!this.db.get('SELECT 1 FROM idx_embeddings WHERE hash = ?', hash)) {
+      this.db.run('INSERT INTO idx_embeddings (hash, model, dim, vec) VALUES (?, ?, ?, ?)', hash, EMBED_MODEL, EMBED_DIM, toBlob(embed(`${identifierTerms(path)} ${text}`)));
+      this.embedded++;
+    }
+    this.db.run('INSERT INTO idx_vectors (ws, path, start_line, end_line, symbol, hash) VALUES (?, ?, ?, ?, ?, ?)', this.ws, path, start, end, symbol, hash);
   }
 
   private resolveImport(from: string, spec: string, lang: Lang): string | null {
@@ -388,6 +411,14 @@ export class WorkspaceIndex {
       );
       lists.push({ name: 'bm25', weight: isIdentifierQuery ? 0.8 : 1.2, hits: rows.map((r) => ({ key: `${r.path}:${r.start_line}`, path: r.path, start: Number(r.start_line), end: Number(r.end_line), symbol: r.symbol || null, body: r.body })) });
     }
+    if (terms.length) {
+      const q = embed(query);
+      const rows = this.db.all<{ path: string; start_line: number; end_line: number; symbol: string; vec: Uint8Array }>(
+        `SELECT v.path, v.start_line, v.end_line, v.symbol, e.vec FROM idx_vectors v JOIN idx_embeddings e ON e.hash = v.hash WHERE v.ws = ? AND v.path LIKE ? AND e.model = ?`, this.ws, prefix, EMBED_MODEL,
+      );
+      const scored = rows.map((r) => ({ r, sim: dot(q, fromBlob(r.vec)) })).filter((x) => x.sim >= VECTOR_MIN_SIM).sort((a, b) => b.sim - a.sim).slice(0, 50);
+      lists.push({ name: 'vector', weight: isIdentifierQuery ? 0.5 : 1.0, hits: scored.map(({ r }) => ({ key: `${r.path}:${r.start_line}`, path: r.path, start: Number(r.start_line), end: Number(r.end_line), symbol: r.symbol || null })) });
+    }
     if (identifiers.length) {
       const hits: (typeof lists)[number]['hits'] = [];
       for (const id of identifiers.slice(0, 8)) for (const s of this.findSymbol(id, 5)) if (s.path.startsWith(opts.pathPrefix ?? '')) hits.push({ key: `sym:${s.path}:${s.line}`, path: s.path, start: s.line, end: Math.min(s.endLine, s.line + 120), symbol: s.qualifiedName });
@@ -416,6 +447,18 @@ export class WorkspaceIndex {
       .sort((a, b) => b.score - a.score)
       .slice(0, limit)
       .map((f) => ({ path: f.path, startLine: f.start, endLine: f.end, symbol: f.symbol, score: Number(f.score.toFixed(5)), why: [...f.why], preview: this.slice(f.path, f.start, Math.min(f.end, f.start + 40)) }));
+  }
+
+  /** Domain map (§11.7): routes, DB tables, and config keys with their defining file:line. */
+  domain(): { routes: Array<Route & { file: string }>; tables: Array<DbTable & { file: string }>; config: Array<ConfigKey & { file: string }> } {
+    return {
+      routes: this.db.all<{ path: string; line: number; method: string; route: string; handler: string; framework: string }>('SELECT path, line, method, route, handler, framework FROM idx_routes WHERE ws = ? ORDER BY route, method', this.ws)
+        .map((r) => ({ file: r.path, line: Number(r.line), method: r.method, path: r.route, handler: r.handler, framework: r.framework })),
+      tables: this.db.all<{ path: string; line: number; name: string; source: string; columns_json: string }>('SELECT path, line, name, source, columns_json FROM idx_tables WHERE ws = ? ORDER BY name', this.ws)
+        .map((t) => ({ file: t.path, line: Number(t.line), name: t.name, source: t.source as DbTable['source'], columns: JSON.parse(t.columns_json) as string[] })),
+      config: this.db.all<{ path: string; line: number; key: string; kind: string }>('SELECT path, line, key, kind FROM idx_config WHERE ws = ? ORDER BY key, path', this.ws)
+        .map((c) => ({ file: c.path, line: Number(c.line), key: c.key, kind: 'env' as const })),
+    };
   }
 
   slice(path: string, start: number, end: number): string {

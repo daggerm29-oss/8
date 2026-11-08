@@ -14,7 +14,7 @@ const KEYWORDS = new Set([
 ]);
 
 const COMMENT: Partial<Record<Lang, RegExp>> = { py: /#.*$/, ts: /\/\/.*$/, js: /\/\/.*$/, go: /\/\/.*$/, rs: /\/\/.*$/, java: /\/\/.*$/, sh: /#.*$/ };
-const CODE_LANGS = new Set<Lang>(['ts', 'js', 'py', 'go', 'rs', 'java', 'sh']);
+const CODE_LANGS = new Set<Lang>(['ts', 'js', 'py', 'go', 'rs', 'java', 'kt', 'sh']);
 
 /**
  * Heuristic call-site extractor for the code graph v0 (F-IDX-3, §11.5; IMPL-ADR-016). Name-based: a

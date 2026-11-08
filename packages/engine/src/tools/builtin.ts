@@ -2,7 +2,8 @@ import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { ToolRegistry, type PreviewCapture, type Tool } from './registry.ts';
-import { codeSearch, findSymbol, impactTool } from './index-tools.ts';
+import { codeSearch, domainMap, findSymbol, impactTool } from './index-tools.ts';
+import { formatSnapshot } from '../preview/browser.ts';
 
 const SKIP_DIRS = new Set(['node_modules', '.git', '.next', 'dist', 'build', '__pycache__', '.venv', 'target']);
 
@@ -163,7 +164,7 @@ const previewPathSchema = { type: 'object', properties: { path: { type: 'string'
 
 function formatConsole(entries: PreviewCapture['console']): string {
   if (!entries.length) return '(no console messages)';
-  return entries.slice(0, 50).map((e) => `[${e.level}] ${e.text}${e.url ? ` (${e.url}${e.line !== undefined ? `:${e.line + 1}` : ''})` : ''}`).join('\n');
+  return entries.slice(0, 50).map((e) => `[${e.level}${e.count > 1 ? ` ×${e.count}` : ''}] ${e.text}${e.url ? ` (${e.url}${e.line !== undefined ? `:${e.line + 1}` : ''})` : ''}`).join('\n');
 }
 
 /** Browser tools, minimal (F-PRV-5, §18.5): headless Chrome against the running dev server. */
@@ -188,6 +189,22 @@ const previewScreenshot: Tool = {
   },
 };
 
+const previewSnapshot: Tool = {
+  spec: {
+    name: 'preview_snapshot',
+    description: 'Environment Snapshot of a dev-server page: pruned accessibility tree with stable refs (@e…), console errors (deduplicated), and failed/slow network requests. Repeat calls on the same page return only what changed (added/removed/changed refs); pass full: true for the whole tree. Cheaper than a screenshot for checking UI state.',
+    inputSchema: { type: 'object', properties: { ...previewPathSchema.properties, full: { type: 'boolean', description: 'Return the full tree instead of a diff' } } },
+  },
+  async run(args, { previewBrowser }) {
+    if (!previewBrowser) return { content: 'browser tools are not available in this context', isError: true, summary: 'preview_snapshot unavailable' };
+    try {
+      const s = await previewBrowser.snapshot((args as { path?: string }).path);
+      return { content: formatSnapshot(s, { full: Boolean(args.full) }), summary: `snapshot #${s.seq} ${s.page.url} · ${s.console.newErrors.length} error(s) · ${s.network.failed.length} failed request(s)${s.diff ? ` · diff +${s.diff.added.length}/-${s.diff.removed.length}/~${s.diff.changed.length}` : ''}` };
+    } catch (e) {
+      return { content: `snapshot failed: ${(e as Error).message}`, isError: true, summary: 'preview_snapshot failed' };
+    }
+  },
+};
 const previewConsole: Tool = {
   spec: {
     name: 'preview_console',
@@ -199,7 +216,8 @@ const previewConsole: Tool = {
     try {
       const c = await previewBrowser.console((args as { path?: string }).path);
       const errors = c.console.filter((e) => e.level === 'error').length;
-      return { content: `url: ${c.url}\nload: ${c.status}\nconsole:\n${formatConsole(c.console)}`, summary: `console ${c.url} · ${c.console.length} message(s), ${errors} error(s)` };
+      const failed = c.network.filter((n) => n.failed || (n.status ?? 0) >= 400);
+      return { content: `url: ${c.url}\nload: ${c.status}\nconsole:\n${formatConsole(c.console)}\nnetwork: ${c.network.length} request(s), ${failed.length} failed, ${c.pending} pending${failed.map((n) => `\n  ${n.method} ${n.url} → ${n.failed ?? n.status}`).join('')}`, summary: `console ${c.url} · ${c.console.length} message(s), ${errors} error(s)` };
     } catch (e) {
       return { content: `console capture failed: ${(e as Error).message}`, isError: true, summary: 'preview_console failed' };
     }
@@ -266,6 +284,6 @@ export const submitPlan: Tool = {
 
 export function builtinTools(): ToolRegistry {
   const reg = new ToolRegistry();
-  for (const t of [readFile, listDir, search, findSymbol, codeSearch, impactTool, writeFile, editFile, runShell, startDevServerTool, previewScreenshot, previewConsole, exploreTool, submitPlan]) reg.register(t);
+  for (const t of [readFile, listDir, search, findSymbol, codeSearch, impactTool, domainMap, writeFile, editFile, runShell, startDevServerTool, previewScreenshot, previewConsole, previewSnapshot, exploreTool, submitPlan]) reg.register(t);
   return reg;
 }
