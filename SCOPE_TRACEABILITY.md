@@ -1,8 +1,25 @@
 # Helix — Scope Traceability Audit
 
 **Baseline (authoritative):** `plan.md` and `architecture.md` at commit `f4742348efe912d2188dbc28a260aca32d391577`.
-**Compared against:** `main` at `1412acb` (PR #18 merged: M0–M2), plus open draft PR #19 (M3 DAG + leases, not on `main`).
-**Audit date:** 2026-11-09. **Not modified:** `plan.md`, `architecture.md`, `docs/roadmap.md`, `progress.md`.
+**Compared against:** `main` at `1412acb` (PR #18 merged: M0–M2), plus open draft PR #19 (M3 DAG + leases, base `main`, not merged).
+**Audit date:** 2026-11-09 (revision 2: re-checked against code; see §0). **Not modified:** `plan.md`, `architecture.md`, `docs/roadmap.md`, `progress.md`.
+
+## 0. Revision 2 corrections
+
+A second pass re-read the baseline, re-ran the full engine suite (`node --test --test-concurrency=1 "test/**/*.test.ts"` → **114/114 pass, 0 fail**, exit 0), and checked each claim in revision 1 against the source. Changes:
+
+| ID | Rev 1 | Rev 2 | Reason (evidence) |
+|---|---|---|---|
+| F-MDL-1 | FV | **RED** | The original AC requires conformance for streaming, tool round-trip, **structured output**, cancellation, and **rate-limit retry**. `providers/conformance/test/conformance.test.ts` covers streaming, tool round-trip, error normalization, abort, and cross-provider transcripts. It has no structured-output case, and the IR/adapters expose no structured-output (response schema) option. |
+| F-CTX-3 | NV | **RED** | `context/instructions.ts` loads only `AGENTS.md` and `HELIX.md` (global, root, nested). The **`CLAUDE.md` / `.cursor/rules` import** required by F-CTX-3 and FR-30 does not exist. |
+| F-MDL-2 | RED | RED (gap widened) | The message IR (`protocol/src/models.ts:29`) has only `text` parts, so **image input for screenshots (AC 3) is impossible**. Screenshots reach the model as a text path only (IMPL-ADR-021). |
+| FR-25, F-MCP-1 | RED | RED (gap widened) | `mcp/client.ts:8` negotiates `MCP_PROTOCOL_VERSION = '2025-06-18'`, not the **2026-07-28** revision required by FR-25. Extension negotiation is still absent. |
+| SEC-13 | RED | RED (detail) | A CSP exists (`engine.ts:499`), but it sets `frame-ancestors *` and `style-src 'unsafe-inline'`, which is not "strict". The preload exposes a frozen static object and no IPC channels, so the IPC allowlist is vacuous rather than validated. |
+| F-SBX-5, SEC-12 | — | confirmed | The legacy tracker claims "reaper on engine start". No reaper or orphan sweep exists in `sandbox/` or `engine.ts`, so classification is unchanged. |
+| F-ORC-4 | — | confirmed | The legacy tracker claims batch approve/deny in the Monitor view. `engine/ui/app.js` has per-approval buttons only, so classification is unchanged. |
+| FR-34 | — | confirmed | `apps/cli/src/main.ts` subcommands: tasks, resume, ledger, checkpoints, restore, plan, search, symbols, impact, mcp. No `helix run`. |
+
+Net effect: FV 14 → 13, RED 71 → 73, NV 13 → 12. Counts in §2.1 are updated.
 
 Baseline integrity: `architecture.md` on `main` is byte-identical to the baseline. `plan.md` on `main` differs by one added line (line 6): *"the checklist in docs/roadmap.md overrides §11, §12 and §19 for what to build"*. That line is the mechanism by which scope was reduced without changing the spec text. This audit ignores it and uses the original text.
 
@@ -12,7 +29,7 @@ Baseline integrity: `architecture.md` on `main` is byte-identical to the baselin
 
 | Code | Classification | Rule applied |
 |---|---|---|
-| **FV** | Fully implemented and independently verified | All behavior in the original requirement exists **and** an automated test or eval in this repo checks the original acceptance criterion (AC). Tests were re-run: full engine suite 114/114 pass on the tree merged to `main`. |
+| **FV** | Fully implemented and independently verified | All behavior in the original requirement exists **and** an automated test or eval in this repo checks the original acceptance criterion (AC). Tests were re-run independently in revision 2: full engine suite 114/114 pass on `main` (`1412acb`). Passing tests prove only what they assert; most assert a reduced AC. |
 | **RED** | Implemented in reduced form | Code exists, but it is narrower than the original requirement (fewer languages, backends, checks, or scopes). The reduction is listed. |
 | **NV** | Implemented but not independently verified | Code appears to cover the requirement, but no test checks the original AC (often "legacy" roadmap evidence or a metric that was never measured). |
 | **DEF(Mx)** | Deferred, with milestone | Not on `main`; a current roadmap item covers it in milestone Mx. |
@@ -33,13 +50,13 @@ Evidence shorthand: paths are relative to `packages/engine/src/` unless prefixed
 | Group | Total | FV | RED | NV | DEF | MISS | NI |
 |---|---|---|---|---|---|---|---|
 | FR-1…38 | 38 | 7 | 19 | 1 | 7 | 4 | 0 |
-| F-* (76 features) | 76 | 6 | 42 | 9 | 13 | 5 | 1 |
+| F-* (76 features) | 76 | 5 | 44 | 8 | 13 | 5 | 1 |
 | NFR-1…13 | 13 | 0 | 3 | 2 | 1 | 5 | 2 |
 | SEC-1…14 | 14 | 1 | 7 | 1 | 1 | 3 | 1 |
 | PERF-1…13 | 13 | 0 | 0 | 0 | 0 | 0 | 13 |
-| **Total** | **154** | **14 (9%)** | **71 (46%)** | **13 (8%)** | **22 (14%)** | **17 (11%)** | **17 (11%)** |
+| **Total** | **154** | **13 (8%)** | **73 (47%)** | **12 (8%)** | **22 (14%)** | **17 (11%)** | **17 (11%)** |
 
-Only 9% of numbered requirements meet the strict FV bar. 46% are implemented in reduced form. 11% have been dropped from the roadmap without a replacement item, and another 11% (all PERF budgets, plus NFR-1, NFR-5, SEC-12, F-TEAM-3) are not implemented and are not driven by any counted roadmap item. No REJ appears among numbered IDs; the three rejected items are X19–X21 (§5).
+Only 8% of numbered requirements meet the strict FV bar. 47% are implemented in reduced form. 11% have been dropped from the roadmap without a replacement item, and another 11% (all PERF budgets, plus NFR-1, NFR-5, SEC-12, F-TEAM-3) are not implemented and are not driven by any counted roadmap item. No REJ appears among numbered IDs; the three rejected items are X19–X21 (§5).
 
 ### 2.2 Most significant reductions (ranked by impact)
 
@@ -110,12 +127,12 @@ Columns: **ID** · **Original requirement (baseline)** · **Arch §** · **Curre
 | FR-22 | Console, uncaught errors, failed requests, build errors as structured events | §18.3 | `preview/browser.ts` CDP console/exceptions/network; `test/snapshot.test.ts` | M2 "Runtime telemetry" | RED | Build errors / dev-overlay detection; source-mapped stacks |
 | FR-23 | Agents navigate/click/type/select/scroll/assert by stable refs | §18.5 | Refs exist in snapshot; no interaction tools | None (T4 "minimal") | MISS | All interaction tools |
 | FR-24 | Map rendered elements to source (M2) | §18.6 | `preview/locate.ts`; `test/element-source.test.ts` | M2 "Element→source" | RED | Compiler plugins, React owner stack, source maps |
-| FR-25 | MCP stdio + Streamable HTTP, 2026-07-28 spec, extension negotiation | §14 | `mcp/client.ts`, `mcp/http.ts`; `test/mcp*.test.ts` | M1 "MCP client stdio/HTTP" | RED | Extension negotiation (Tasks, Skills over MCP, MCP Apps) |
+| FR-25 | MCP stdio + Streamable HTTP, 2026-07-28 spec, extension negotiation | §14 | `mcp/client.ts`, `mcp/http.ts`; `test/mcp*.test.ts` | M1 "MCP client stdio/HTTP" | RED | Spec revision: negotiates `2025-06-18`, not 2026-07-28 (`mcp/client.ts:8`); extension negotiation (Tasks, Skills over MCP, MCP Apps) |
 | FR-26 | Tool search; only relevant schemas in context (M2) | §14.4 | `mcp/manager.ts` search; M2 eval 240 tokens/turn at 200 tools | M2 "MCP tool search" | FV | Success-rate regression (≤ 2 pp) not measured |
 | FR-27 | Per-server permission scope, credential scope, process sandbox | §14.6 | Trust flag per server; no sandboxing | M1 "MCP permissions" | RED | Process sandbox and credential scope per server |
 | FR-28 | Status, diff, stage, commit, branch, worktree, rebase-assist, PR creation | §20 | `workspace/git.ts` status/diff/stageAll/commit; `test/git.test.ts` | M1 T5; M3 worktrees | RED | Branch, rebase-assist, PR creation (unscheduled), hunk staging |
 | FR-29 | Destructive git ops require approval | §20.6 | Force push / push to main hard-denied (`IMPL-ADR-022`); `test/git.test.ts` | M1 T5 | FV | Remote branch deletion and `reset --hard` not specifically tested |
-| FR-30 | Load AGENTS.md/HELIX.md/CLAUDE.md/.cursor/rules; typed memory with review | §13.5–13.6 | `context/instructions.ts` | M1 "Project instructions"; M3 "Fix-history / typed memory" | DEF(M3) | Typed memory (M3); CLAUDE.md/.cursor import not verified |
+| FR-30 | Load AGENTS.md/HELIX.md/CLAUDE.md/.cursor/rules; typed memory with review | §13.5–13.6 | `context/instructions.ts` | M1 "Project instructions"; M3 "Fix-history / typed memory" | DEF(M3) | Typed memory (M3); `CLAUDE.md` / `.cursor/rules` import **not implemented** and not scheduled (only AGENTS.md/HELIX.md loaded) |
 | FR-31 | Tokens (input/cached/output/reasoning) and cost per call by agent, task, tool, provider, model | §29 | `models/ledger.ts` | M0 "Ledger v0" | NV | Attribution to tool/agent and ±1% reconciliation not re-verified (legacy evidence) |
 | FR-32 | Budgets per task, session, day, org; soft and hard | §29.6 | `ledger.ts:27` `'task' \| 'day'` | M1 "Budgets" | RED | Session and org scopes |
 | FR-33 | Desktop: explorer, editor, agent panel, terminal, preview, problems, task monitor, SCM, intelligence explorer, MCP manager, model settings; dockable; command palette | §5 | `engine/ui/index.html` tabs: activity, transcript, steps, diff, files, gates, artifacts, impact, preview, git, roles, terminal | M1 "Web workbench" | RED | Monaco editor, Problems, Intelligence Explorer, MCP manager, docking, palette |
@@ -131,8 +148,8 @@ Columns: **ID** · **Original requirement (baseline)** · **Arch §** · **Curre
 
 | ID | Original requirement | Arch § | Evidence on `main` | Roadmap ref | Class | Missing |
 |---|---|---|---|---|---|---|
-| F-MDL-1 | Adapter framework + capability manifest + conformance (stream, tools, structured, cancel, retry) | §7 | `packages/providers/conformance`; `conformance.test.ts` | M0 | FV | — |
-| F-MDL-2 | Gemini: keychain key, live models + fallback manifest, multimodal, explicit caching, cache-hit in ledger, hide deprecated | §7.3 | Adapter + manifest; cached tokens in ledger | M0 | RED | Explicit context caching (`cachedContents`) not found; key validation on entry and deprecated-model hiding not verified |
+| F-MDL-1 | Adapter framework + capability manifest + conformance (stream, tools, structured, cancel, retry) | §7 | `packages/providers/conformance`; `conformance.test.ts` (stream, tool round-trip, error normalization, abort, cross-provider transcript) | M0 | RED | Structured output (no API, no conformance case); rate-limit *retry* is in the gateway, not in the conformance suite |
+| F-MDL-2 | Gemini: keychain key, live models + fallback manifest, multimodal, explicit caching, cache-hit in ledger, hide deprecated | §7.3 | Adapter + manifest; cached tokens in ledger | M0 | RED | Multimodal input (IR has text parts only, `protocol/src/models.ts:29`); explicit context caching (`cachedContents`); key validation on entry; deprecated-model hiding |
 | F-MDL-3 | OpenAI API key + SIWC (flagged); never read other apps' credentials | §7.4, §8 | API key adapter; `vault/vault.ts:15` denylists `.codex` etc. | M0; SIWC = M2 launch gate | RED | SIWC |
 | F-MDL-4 | Roles; org > user > workspace > task; fallback chain; role on every ledger row | §7.5 | `models/roles.ts`; `test/roles.test.ts` | M1 | FV | — |
 | F-MDL-5 | Rule-based router (step type, capabilities, context size, file count, failures, budget), escalation, breaker; AC ≥ 30% cost cut with ≤ 3 pp drop | §7.6 | `models/router.ts`; `test/router.test.ts`; `evals/m2-eval.ts` | M2 | RED | Only step type + failures; AC measured with fake provider, success drop not measured; learned priors M4 |
@@ -152,7 +169,7 @@ Columns: **ID** · **Original requirement (baseline)** · **Arch §** · **Curre
 | F-IDX-6 | AST-aligned chunks; provider or bundled local embedding model; lazy; cost in ledger | §12.3 | `index/embed.ts` feature hashing 512-dim | M2 | RED | Real semantic model, provider embeddings, lazy prioritization |
 | F-CTX-1 | Budgeted typed context; stable prefix ≥ 90% | §13 | `context/assembler.ts` | M1 | NV | Prefix-stability metric not measured (legacy) |
 | F-CTX-2 | Compaction to structured state; ≤ 2 pp success drop | §13.4 | `context/compaction.ts`; `test/compaction.test.ts` | M1 | NV | Long-horizon success benchmark absent |
-| F-CTX-3 | AGENTS.md, HELIX.md, nested; import CLAUDE.md/.cursor/rules; documented order | §13.5 | `context/instructions.ts` | M1 | NV | CLAUDE.md/.cursor import not covered by a visible test |
+| F-CTX-3 | AGENTS.md, HELIX.md, nested; import CLAUDE.md/.cursor/rules; documented order | §13.5 | `context/instructions.ts` (AGENTS.md, HELIX.md: global → root → nested) | M1 | RED | `CLAUDE.md` / `.cursor/rules` import not implemented |
 | F-CTX-4 | Typed memory (fact, convention, decision, fix, preference, pitfall), provenance, staleness | §13.6 | None | M3 "Fix-history / typed project memory" | DEF(M3) | All |
 
 #### Agent (AGT) and Orchestration (ORC)
@@ -196,7 +213,7 @@ Columns: **ID** · **Original requirement (baseline)** · **Arch §** · **Curre
 | F-GIT-3 | Worktree manager per parallel agent | §20.4 | PR #19 only | M3 "Write leases + worktrees" | DEF(M3) | Not on `main` |
 | F-GIT-4 | PR creation with summary, impact report, evidence (GitHub App) | §20.5 | None | None (M4 item is a *review* bot) | MISS | PR creation |
 | F-GIT-5 | Deny/ask force-push, rewrite, protected branches, large deletions; secret scan before commit; agents and CLI | §20.6 | Hard deny of force/main push | M1 T5 | RED | Large-deletion guard, history-rewrite guard, pre-commit secret scan |
-| F-MCP-1 | Scopes user/workspace/org; spawn in sandbox; health, backoff, idle shutdown; extension negotiation; conformance vs reference servers | §14 | `mcp/manager.ts`, `mcp/client.ts`, `mcp/http.ts` | M1 | RED | Sandbox spawn, org scope, extension negotiation, reference-server conformance |
+| F-MCP-1 | Scopes user/workspace/org; spawn in sandbox; health, backoff, idle shutdown; extension negotiation; conformance vs reference servers | §14 | `mcp/manager.ts`, `mcp/client.ts`, `mcp/http.ts` | M1 | RED | Sandbox spawn, org scope, 2026-07-28 spec revision (uses 2025-06-18), extension negotiation, reference-server conformance |
 | F-MCP-2 | tool_search + core set; ≤ 3k tokens at 200 tools; ≤ 2 pp success drop | §14.4, §15 | `mcp/manager.ts` search; `evals/m2-eval.ts` → 240 tokens/turn | M2 | RED | BM25 + embeddings index (keyword scoring only); success-drop measurement |
 | F-MCP-3 | Trust tiers verified / org-approved / user-added / untrusted | §14.6, §25 | `trust?: 'trusted' \| 'untrusted'` (`mcp/manager.ts:43`) | M1 | RED | Two of four tiers; network/credential scope per tier |
 | F-MCP-4 | Normalize {status, summary, data_ref, truncated}; artifact store; projection; cache by version + TTL | §15.4 | Cache with TTL (`mcp/manager.ts:245`); normalization | M2 | NV | JSONPath projection and resource-version keys not verified |
@@ -267,7 +284,7 @@ Columns: **ID** · **Original requirement (baseline)** · **Arch §** · **Curre
 | SEC-10 | RFC 8252 OAuth with PKCE; no foreign credential stores | Denylist of foreign stores (`vault/vault.ts:15`) | M4 OAuth broker | DEF(M4) | OAuth |
 | SEC-11 | Provider data handling shown; zero retention; org can restrict providers | Org restriction of models/providers only | None | MISS | Data-handling display, zero retention |
 | SEC-12 | Reaper for orphaned sandboxes; no secrets on disk in snapshots | No reaper; no snapshots | None | NI | Reaper |
-| SEC-13 | Electron: context isolation, sandboxed renderer, no nodeIntegration, strict CSP, IPC allowlist | `packages/desktop/main.cjs`, `preload.cjs`; CSP header `engine.ts:499`; `desktop.test.mjs` headless smoke | M2 | RED | IPC allowlist validation not verified; smoke test does not launch Electron in CI |
+| SEC-13 | Electron: context isolation, sandboxed renderer, no nodeIntegration, strict CSP, IPC allowlist | `packages/desktop/main.cjs`, `preload.cjs`; CSP header `engine.ts:499`; `desktop.test.mjs` headless smoke | M2 | RED | CSP is not strict (`frame-ancestors *`, `style-src 'unsafe-inline'`); no IPC channels exist, so there is no allowlist to validate; smoke test does not launch Electron in CI |
 | SEC-14 | Signed releases, SBOM, reproducible builds, pinned deps | `pnpm-lock.yaml` only | None | MISS | Signing, SBOM, reproducibility |
 
 ### 3.5 Performance requirements (plan §17)
@@ -364,6 +381,6 @@ None of these has a counted roadmap item. Adding them as top-level roadmap items
 
 **Not implemented, no counted item (17 NI):** PERF-1…13 (no benchmark harness), NFR-1, NFR-5, SEC-12, F-TEAM-3.
 
-**Unscheduled sub-capabilities of requirements classified RED:** Monaco editor, docking, command palette, Problems panel, MCP manager (FR-33, F-UI-1); browser interaction tools (F-PRV-5); local-container/gVisor backend (F-SBX-1); MCP extension negotiation and sandbox spawn (FR-25, F-MCP-1); explicit provider prompt caching (F-TOK-4, F-MDL-2); SCIP and non-TS language servers (F-IDX-2); multi-tab preview and device emulation (F-PRV-2); 14 additional tree-sitter languages (F-IDX-1); review subagent types (F-ORC-1).
+**Unscheduled sub-capabilities of requirements classified RED:** Monaco editor, docking, command palette, Problems panel, MCP manager (FR-33, F-UI-1); browser interaction tools (F-PRV-5); local-container/gVisor backend (F-SBX-1); MCP extension negotiation and sandbox spawn (FR-25, F-MCP-1); explicit provider prompt caching (F-TOK-4, F-MDL-2); multimodal image input (F-MDL-2); structured output (F-MDL-1); MCP 2026-07-28 spec revision (FR-25); `CLAUDE.md` / `.cursor/rules` import (F-CTX-3, FR-30); SCIP and non-TS language servers (F-IDX-2); multi-tab preview and device emulation (F-PRV-2); 14 additional tree-sitter languages (F-IDX-1); review subagent types (F-ORC-1).
 
 Recommended order to restore scope: (1) contain MCP servers and Chrome in the sandbox and fail closed when isolation is unavailable (SEC-1, SEC-5, F-SBX-2); (2) browser interaction tools (FR-23); (3) SAST + review agent (F-REV-1/2); (4) PERF harness on a 1M LOC fixture; (5) Monaco editor + Problems panel (FR-33).
