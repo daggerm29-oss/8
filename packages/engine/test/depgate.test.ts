@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startFakeProvider, type FakeTurn } from '@helix/provider-conformance';
 import { Engine } from '../src/engine.ts';
-import { DepGate, parseInstall } from '../src/policy/depgate.ts';
+import { DepGate, parseInstall, parseInstalls } from '../src/policy/depgate.ts';
 
 const FIXTURES = fileURLToPath(new URL('../../../fixtures/m0/', import.meta.url));
 const ADVISORIES: Record<string, Array<{ id: string; summary: string; aliases: string[] }>> = {
@@ -45,6 +45,40 @@ test('parseInstall: npm/pnpm/yarn/pip specs, flags and local paths skipped, bare
   const dir = mkdtempSync(join(tmpdir(), 'helix-dep-pkg-'));
   writeFileSync(join(dir, 'package.json'), JSON.stringify({ dependencies: { lodash: '^4.17.20' }, devDependencies: { tsx: 'latest' } }));
   assert.deepEqual(parseInstall('npm ci || npm install', dir), [{ ecosystem: 'npm', name: 'lodash', version: '4.17.20' }, { ecosystem: 'npm', name: 'tsx' }]);
+});
+
+test('parseInstalls: npm ci, chained installs, requirements files, unsupported installs fail closed', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'helix-dep-bypass-'));
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ dependencies: { lodash: '^4.17.0' } }));
+  writeFileSync(join(dir, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3, packages: { '': {}, 'node_modules/lodash': { version: '4.17.20' } } }));
+  assert.deepEqual(parseInstalls('npm ci', dir), { packages: [{ ecosystem: 'npm', name: 'lodash', version: '4.17.20' }], unsupported: [] }, 'npm ci uses lockfile versions');
+  assert.deepEqual(parseInstalls('npm install left-pad && npm install lodash@4.17.20 2>&1 | tail -1').packages.map((p) => p.name), ['left-pad', 'lodash'], 'every chained install checked');
+  writeFileSync(join(dir, 'requirements.txt'), '# deps\nrequests==2.19.0\nflask>=2  # web\n-r more.txt\n');
+  writeFileSync(join(dir, 'more.txt'), 'six==1.16.0\n');
+  assert.deepEqual(parseInstalls('pip install -r requirements.txt', dir), {
+    packages: [{ ecosystem: 'PyPI', name: 'requests', version: '2.19.0' }, { ecosystem: 'PyPI', name: 'flask' }, { ecosystem: 'PyPI', name: 'six', version: '1.16.0' }], unsupported: [],
+  });
+  assert.equal(parseInstalls('pip install -r missing.txt', dir).unsupported.length, 1);
+  assert.equal(parseInstalls('python -m pip install -e .', dir).unsupported.length, 1);
+  assert.equal(parseInstalls('npm install git+https://github.com/x/y.git', dir).unsupported.length, 1);
+  assert.equal(parseInstalls('cargo install ripgrep', dir).unsupported.length, 1);
+  assert.deepEqual(parseInstalls('ls -la && node --test', dir), { packages: [], unsupported: [] });
+});
+
+test('DepGate: vulnerable package in a requirements file is denied; unsupported installs ask', async () => {
+  const osv = await fakeOsv();
+  try {
+    const gate = new DepGate({ osvUrl: osv.url, npmRegistryUrl: osv.url, pypiUrl: osv.url });
+    const dir = mkdtempSync(join(tmpdir(), 'helix-dep-req-'));
+    writeFileSync(join(dir, 'requirements.txt'), 'requests==2.19.0\n');
+    assert.equal((await gate.decide('pip install -r requirements.txt', dir))?.verdict, 'deny');
+    assert.equal((await gate.decide('npm i left-pad && pip install requests==2.19.0', dir))?.verdict, 'deny', 'later chained install is checked');
+    const unknown = await gate.decide('pip install -r nope.txt', dir);
+    assert.equal(unknown?.verdict, 'ask');
+    assert.match(unknown!.reason, /cannot check these installs/);
+  } finally {
+    await osv.close();
+  }
 });
 
 test('DepGate: latest version resolved via registry, workspace policy, OSV outage asks', async () => {

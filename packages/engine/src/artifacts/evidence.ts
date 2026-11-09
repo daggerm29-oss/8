@@ -54,18 +54,33 @@ export interface ReverifyResult {
   hashOk: boolean;
   allPassed: boolean;
   matchesRecorded: boolean;
+  /** Set when the artifact was rejected before any command ran (bad shape or hash mismatch). */
+  rejected?: string;
   assertions: Array<{ id: string; check: string; command: string; expected: number; recorded: number | null; now: number | null; passed: boolean; recordedPassed: boolean }>;
 }
 
-/** Re-run each assertion with `exec` and compare against the expected and the recorded values. */
+function shapeError(e: unknown): string | null {
+  const v = e as Partial<VerificationEvidence> | null;
+  if (!v || typeof v !== 'object' || v.type !== 'verification_evidence') return 'not a verification_evidence artifact';
+  if (typeof v.hash !== 'string' || !Array.isArray(v.assertions) || !Array.isArray(v.changedFiles)) return 'malformed evidence body';
+  const bad = v.assertions.find((a) => !a || typeof a !== 'object' || a.kind !== 'exit_code' || typeof a.command !== 'string' || typeof a.expected !== 'number');
+  return bad ? 'malformed assertion' : null;
+}
+
+/**
+ * Re-run each assertion with `exec` and compare against the expected and the recorded values.
+ * Shape and content hash are checked first: a tampered artifact is rejected without running anything.
+ */
 export async function reverify(artifactId: string, e: VerificationEvidence, exec: (command: string) => Promise<{ exitCode: number | null }>): Promise<ReverifyResult> {
+  const invalid = shapeError(e) ?? (evidenceHash(e) === e.hash ? null : 'content hash mismatch (artifact was modified)');
+  if (invalid) return { artifactId, hashOk: false, allPassed: false, matchesRecorded: false, rejected: invalid, assertions: [] };
   const assertions: ReverifyResult['assertions'] = [];
   for (const a of e.assertions) {
     const r = await exec(a.command);
     assertions.push({ id: a.id, check: a.check, command: a.command, expected: a.expected, recorded: a.actual, now: r.exitCode, passed: r.exitCode === a.expected, recordedPassed: a.passed });
   }
   return {
-    artifactId, hashOk: evidenceHash(e) === e.hash, allPassed: assertions.every((a) => a.passed),
+    artifactId, hashOk: true, allPassed: assertions.every((a) => a.passed),
     matchesRecorded: assertions.every((a) => a.passed === a.recordedPassed), assertions,
   };
 }

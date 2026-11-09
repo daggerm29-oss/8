@@ -160,6 +160,8 @@ export class TaskRuntime {
     if (!adapter) throw new Error('replay is not available in this engine');
     if (bundle?.version !== 1 || !Array.isArray(bundle.models) || !Array.isArray(bundle.tools)) throw new Error('invalid session bundle');
     if (bundle.task.policyProfile === 'plan') throw new Error('plan-mode sessions cannot be replayed yet');
+    const policyProfile = bundle.task.policyProfile;
+    if (policyProfile !== 'headless' && policyProfile !== 'interactive') throw new Error(`cannot replay unknown policy profile '${String(policyProfile)}'`);
     const key = prefixedId('rpl');
     adapter.load(key, bundle.models);
     const script = new ToolScript(bundle.tools);
@@ -168,7 +170,7 @@ export class TaskRuntime {
     try {
       const t = this.create({
         workspacePath, goal: bundle.task.goal, title: `Replay of ${bundle.task.id}`, provider: 'replay', model: key,
-        roles: Object.fromEntries(MODEL_ROLES.map((r) => [r, ref])), policyProfile: 'headless', preapprove: bundle.task.preapprove, start: false,
+        roles: Object.fromEntries(MODEL_ROLES.map((r) => [r, ref])), policyProfile, preapprove: bundle.task.preapprove, start: false,
       });
       taskId = t.id;
       this.replays.set(t.id, script);
@@ -874,6 +876,13 @@ export class TaskRuntime {
   }
 
   private ask(t: TaskRow, call: Extract<Part, { type: 'tool_call' }>, actionClass: string, signal: AbortSignal): Promise<boolean> {
+    const script = this.replays.get(t.id);
+    if (script) {
+      // Interactive replays reuse the recorded human decision instead of waiting for a new approval.
+      const approved = script.recordedStatus() !== 'denied';
+      this.publish(t.id, t.ws, 'approval.replayed', { tool: call.name, args: call.args, actionClass, approved }, 'audit');
+      return Promise.resolve(approved);
+    }
     const approvalId = prefixedId('appr');
     this.o.db.run(`INSERT INTO approvals (id, task, tool, args_json, action_class, status, at) VALUES (?, ?, ?, ?, ?, 'pending', ?)`, approvalId, t.id, call.name, json(call.args), actionClass, new Date().toISOString());
     this.setStatus(t.id, 'awaiting_approval');

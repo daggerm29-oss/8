@@ -180,6 +180,9 @@ export class EgressProxy {
         const s = this.substitute(body.toString('utf8'), host, 'body', ctx);
         if (s === null) { deny(); return; }
         body = Buffer.from(s, 'utf8');
+      } else if (body.length) {
+        const foreign = this.bindingsFor(ctx.root).find((b) => !b.injectHosts.includes(host) && body.includes(b.sentinel));
+        if (foreign) { this.policy.onExfil?.({ secret: foreign.name, host, where: 'body' }, ctx); deny(); return; }
       }
       if (body.length || !['GET', 'HEAD'].includes(req.method ?? 'GET')) headers['content-length'] = String(body.length);
       const target = this.upstream?.resolve(host, port) ?? { host, port };
@@ -262,12 +265,28 @@ export class EgressProxy {
     const headers = { ...req.headers };
     delete headers['proxy-connection'];
     delete headers['proxy-authorization'];
-    const up = httpRequest({ host, port, method: req.method, path: url.pathname + url.search, headers, lookup: safeLookup as never }, (r) => {
-      res.writeHead(r.statusCode ?? 502, r.headers);
-      r.pipe(res);
+    delete headers['transfer-encoding'];
+    const chunks: Buffer[] = [];
+    let size = 0;
+    req.on('data', (c: Buffer) => { size += c.length; if (size <= MAX_SCANNED_BODY) chunks.push(c); });
+    req.on('end', () => {
+      if (size > MAX_SCANNED_BODY) { res.writeHead(413).end('helix: request body too large for the egress proxy\n'); return; }
+      const body = Buffer.concat(chunks);
+      const inBody = this.bindingsFor(ctx.root).find((b) => body.includes(b.sentinel));
+      if (inBody) {
+        this.policy.onExfil?.({ secret: inBody.name, host, where: 'plain http body' }, ctx);
+        res.writeHead(403, { 'X-Helix-Egress': 'secret-blocked', 'Content-Type': 'text/plain' }).end(`helix: secrets are never sent over plain http (${host})\n`);
+        return;
+      }
+      if (body.length || !['GET', 'HEAD'].includes(req.method ?? 'GET')) headers['content-length'] = String(body.length);
+      else delete headers['content-length'];
+      const up = httpRequest({ host, port, method: req.method, path: url.pathname + url.search, headers, lookup: safeLookup as never }, (r) => {
+        res.writeHead(r.statusCode ?? 502, r.headers);
+        r.pipe(res);
+      });
+      up.on('error', () => { if (!res.headersSent) res.writeHead(502); res.end(); });
+      up.end(body);
     });
-    up.on('error', () => { if (!res.headersSent) res.writeHead(502); res.end(); });
-    req.pipe(up);
   }
 
   close(): void {

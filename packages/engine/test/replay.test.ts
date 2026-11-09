@@ -50,6 +50,21 @@ test('session bundle + deterministic replay: identical run offline, no side effe
     assert.equal(i, callsAfterRecording, 'replay made no provider calls');
     assert.equal(readFileSync(join(dir, 'src/calc.js'), 'utf8'), original, 'replay did not touch the workspace');
     assert.equal(engine.runtime.artifacts(report.task, 'replay').length, 1);
+    const profileOf = (id: string) => engine.db.get<{ policy_profile: string }>('SELECT policy_profile FROM tasks WHERE id = ?', id)?.policy_profile;
+    assert.equal(profileOf(report.task), profileOf(t.id), 'replay keeps the recorded policy profile');
+
+    // Interactive recording without preapprovals: approvals are answered from the recording, not forced to headless denials.
+    const interactive = await engine.runtime.replay({ ...bundle, task: { ...bundle.task, policyProfile: 'interactive', preapprove: [] } });
+    assert.equal(interactive.identical, true, interactive.divergence ?? '');
+    assert.equal(profileOf(interactive.task), 'interactive');
+    // A human denied the shell command in an interactive session: replaying as interactive reproduces the denial,
+    // while the old forced-headless replay (exec allowed) would diverge.
+    const deniedShell = { ...bundle, tools: bundle.tools.map((x) => (x.tool === 'run_shell' ? { ...x, status: 'denied' } : x)) } as SessionBundle;
+    const asRecorded = await engine.runtime.replay({ ...deniedShell, task: { ...bundle.task, policyProfile: 'interactive', preapprove: [] } });
+    assert.equal(asRecorded.identical, true, asRecorded.divergence ?? '');
+    const asHeadless = await engine.runtime.replay({ ...deniedShell, task: { ...bundle.task, policyProfile: 'headless', preapprove: [] } });
+    assert.match(asHeadless.divergence ?? '', /run_shell was denied in the recording but is allowed now/);
+    await assert.rejects(engine.runtime.replay({ ...bundle, task: { ...bundle.task, policyProfile: 'yolo' } }), /unknown policy profile/);
 
     // Policy differs from the recording's harness (edit_file was denied there, allowed now) → divergence at tool call 2.
     const stricter = { ...bundle, tools: bundle.tools.map((x) => (x.index === 1 ? { ...x, status: 'denied' } : x)) } as SessionBundle;

@@ -19,12 +19,14 @@ Do NOT read `plan.md` or `architecture.md` in full. Do NOT read `docs/history/`.
 - Never add, remove, or reword top-level roadmap items (that would fake the percentages). A big task may be split into indented sub-bullets under it; sub-bullets are not counted.
 - A good idea that is not on the roadmap → one line in "Ideas parking lot" in `progress.md`, then move on.
 - Prefer simple heuristics over the "full" architecture version (the architecture doc describes the end state).
-- When the current milestone hits 100%, continue with the next milestone. Human launch gates are not build tasks; skip them.
+- **One PR never spans two milestones.** When the current milestone hits 100%, STOP building: do not start the next milestone's first task on this branch. Go straight to section 5 (end the session) so the user can review and merge this milestone on its own. The next session starts the next milestone on a fresh branch from `main`. Human launch gates are not build tasks; skip them.
 
 ## 3. Session branch and PR (one session = one batch = one PR)
 
 - **Start of session:** run `gh pr list --state open`.
   - If an open `helix/session-*` PR exists, the user has not merged it yet: check out that branch, `git pull`, and continue on it. Never start from `main` while unmerged work exists.
+  - If that open PR's milestone is already 100% (per `node scripts/progress.mjs` on its branch), do NOT add tasks from the next milestone to it. Only finish fixes requested in its review comments, then end the session (section 5) and ask the user to merge it.
+  - If more than one open `helix/session-*` PR exists, continue the one whose base is `main`; never touch a PR stacked on another branch.
   - Otherwise create `helix/session-<YYYY-MM-DD>-<next-task-short-name>` from the latest `main`.
 - **Immediately after your first push** (even if the first task is still unfinished): open ONE **draft** PR to `main` for the session branch. The next session finds unfinished work only through an open PR, so never leave a pushed session branch without one. Later work pushes to the same branch/PR. Never open a PR per task.
 - Commit and push after every working step, not only at the end of a task (credits can run out at any moment).

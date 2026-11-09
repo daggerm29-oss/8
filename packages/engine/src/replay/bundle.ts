@@ -107,6 +107,9 @@ export class ToolScript {
     return { content: rec.content, isError: rec.isError, provenance: rec.provenance, summary: `replayed ${rec.tool}` };
   }
 
+  /** Recorded status of the next tool call (used to answer approvals during an interactive replay). */
+  recordedStatus(): string | undefined { return this.recorded[this.i]?.status; }
+
   get remaining(): number { return this.recorded.length - this.i; }
 }
 

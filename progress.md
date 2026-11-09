@@ -28,7 +28,8 @@
 
 ## Current task notes (overwrite when the task changes)
 
-- Next: M3 "General subagents + task DAG scheduler (F-ORC-2)" [§10.3] — not started; write its Accept line first. Reuse the T6 explore subagent plumbing (`explore` tool) for general subagents.
+- Next: M3 "General subagents + task DAG scheduler (F-ORC-2)" [§10.3]. Work for it AND "Write leases + worktrees" already exists in the open PR from branch `helix/session-2026-11-09-m3-orchestration` (split out of PR #18). After #18 is merged, continue on that PR; do not rebuild them.
+- Known M3 review issues to fix there first: shared-mode write-lease bypass, worktree lease leak.
 
 ## Ideas parking lot (one line each, max 15 — do not implement)
 
