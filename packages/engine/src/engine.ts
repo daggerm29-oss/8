@@ -23,6 +23,7 @@ import { detectKeychain, type Keychain } from './vault/keychain.ts';
 import { Ledger } from './models/ledger.ts';
 import { ModelGateway } from './models/gateway.ts';
 import { ReplayAdapter, exportBundle, type SessionBundle } from './replay/bundle.ts';
+import { DagScheduler, type DagRunParams } from './dag/scheduler.ts';
 import { builtinTools } from './tools/builtin.ts';
 import { McpManager, type McpServerConfig, type McpServerStatus } from './mcp/manager.ts';
 import { TaskRuntime } from './agent/runtime.ts';
@@ -100,6 +101,8 @@ export class Engine {
   readonly gateway: ModelGateway;
   readonly replay: ReplayAdapter;
   readonly runtime: TaskRuntime;
+  /** Task DAG scheduler (F-ORC-2): nodes run as child tasks. */
+  readonly dags: DagScheduler;
   readonly blobs: BlobStore;
   readonly mcp: McpManager;
   /** Allowlisting HTTP/CONNECT proxy shared by every sandbox (F-SBX-3). */
@@ -156,6 +159,7 @@ export class Engine {
     this.mcpReady = opts.mcp === false ? Promise.resolve([]) : this.mcp.start();
     this.runtime = new TaskRuntime({ db: this.db, bus: this.bus, gateway: this.gateway, ledger: this.ledger, tools, tracer: this.tracer, engineId: this.id, blobs: this.blobs, logger: this.logger, forceProcessSandbox: opts.forceProcessSandbox, egress: this.egress, devServers: this.devServers, browser: this.browser, taskRetryScale: opts.taskRetryScale, helixHome: this.home, replay: this.replay, indexing: opts.indexing, compaction: compactionFrom(env, opts.compaction),
       depGate: env.HELIX_DEP_GATE === 'off' ? undefined : new DepGate({ osvUrl: env.HELIX_OSV_URL, npmRegistryUrl: env.HELIX_NPM_REGISTRY_URL, pypiUrl: env.HELIX_PYPI_URL }) });
+    this.dags = new DagScheduler({ db: this.db, runtime: this.runtime, worktreeRoot: join(this.home, 'worktrees') });
 
     const now = new Date().toISOString();
     this.db.run('INSERT INTO engine_instances (id, pid, started_at, heartbeat_at) VALUES (?, ?, ?, ?)', this.id, process.pid, now, now);
@@ -261,6 +265,8 @@ export class Engine {
       if (p.task) return this.runtime.artifacts(p.task, 'roles').at(-1)?.data ?? null;
       return this.runtime.resolveTaskRoles(this.runtime.workspaceFor(p.workspacePath ?? process.cwd()).path, p as never);
     }));
+    peer.handle(Methods.dagRun, guard<DagRunParams>((p) => this.dags.run(p)));
+    peer.handle(Methods.dagStatus, guard<{ id: string }>((p) => this.dags.status(p.id)));
     peer.handle(Methods.taskBundle, guard<{ task: string }>((p) => {
       if (typeof p.task !== 'string' || !p.task) throw new Error('task is required');
       return exportBundle(this.db, p.task);
