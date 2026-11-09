@@ -9,3 +9,6 @@ pmOnFail: ignore
 minimumReleaseAgeExclude:
   - '@next/*'
   - next
+
+allowBuilds:
+  electron: false

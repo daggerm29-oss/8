@@ -1,0 +1,415 @@
+{
+  "eval": "m2",
+  "at": "2026-11-08T17:40:42.432Z",
+  "model": "gemini-3.8-flash",
+  "pass": true,
+  "checks": {
+    "mcpRegistered200": true,
+    "tasksDone": true,
+    "mcpTokensPerTurn": true,
+    "costVsBaseline": true,
+    "elementSource": true
+  },
+  "ms": 12263,
+  "mcp": {
+    "tools": 200,
+    "limit": 3000,
+    "maxMcpDefTokensPerTurn": 240,
+    "baselineMaxMcpDefTokensPerTurn": 28541
+  },
+  "cost": {
+    "m2Usd": 0.01651275,
+    "baselineUsd": 0.0782445,
+    "ratio": 0.2110403926154554,
+    "limit": 0.5,
+    "m2InputTokens": 21217,
+    "baselineInputTokens": 103726
+  },
+  "elementSource": {
+    "total": 24,
+    "correct": 24,
+    "accuracy": 1,
+    "limit": 0.95
+  },
+  "runs": {
+    "m2": {
+      "mode": "m2",
+      "status": "done",
+      "error": null,
+      "registeredMcpTools": 200,
+      "toolSearch": true,
+      "cacheHits": 1,
+      "forecastResultChars": [
+        15226,
+        15226
+      ],
+      "perTurn": [
+        {
+          "turn": 1,
+          "declaredTools": 18,
+          "mcpDeclared": 1,
+          "mcpDefTokens": 105,
+          "inputTokens": 2202
+        },
+        {
+          "turn": 2,
+          "declaredTools": 19,
+          "mcpDeclared": 2,
+          "mcpDefTokens": 163,
+          "inputTokens": 2349
+        },
+        {
+          "turn": 3,
+          "declaredTools": 20,
+          "mcpDeclared": 3,
+          "mcpDefTokens": 240,
+          "inputTokens": 6364
+        },
+        {
+          "turn": 4,
+          "declaredTools": 20,
+          "mcpDeclared": 3,
+          "mcpDefTokens": 240,
+          "inputTokens": 10302
+        }
+      ],
+      "totals": {
+        "calls": 4,
+        "inputTokens": 21217,
+        "outputTokens": 160,
+        "costUsd": 0.01651275
+      }
+    },
+    "baseline": {
+      "mode": "baseline",
+      "status": "done",
+      "error": null,
+      "registeredMcpTools": 200,
+      "toolSearch": false,
+      "cacheHits": 0,
+      "forecastResultChars": [
+        15227,
+        15227
+      ],
+      "perTurn": [
+        {
+          "turn": 1,
+          "declaredTools": 217,
+          "mcpDeclared": 200,
+          "mcpDefTokens": 28541,
+          "inputTokens": 30639
+        },
+        {
+          "turn": 2,
+          "declaredTools": 217,
+          "mcpDeclared": 200,
+          "mcpDefTokens": 28541,
+          "inputTokens": 34575
+        },
+        {
+          "turn": 3,
+          "declaredTools": 217,
+          "mcpDeclared": 200,
+          "mcpDefTokens": 28541,
+          "inputTokens": 38512
+        }
+      ],
+      "totals": {
+        "calls": 3,
+        "inputTokens": 103726,
+        "outputTokens": 120,
+        "costUsd": 0.0782445
+      }
+    }
+  },
+  "e2sResults": [
+    {
+      "id": "Widget0",
+      "x": 140,
+      "y": 60,
+      "kind": "attribute",
+      "path": "src/Widget0.jsx",
+      "line": 3,
+      "got": "src/Widget0.jsx:3",
+      "strategy": "attribute",
+      "confidence": 1,
+      "ok": true
+    },
+    {
+      "id": "Widget1",
+      "x": 440,
+      "y": 60,
+      "kind": "attribute",
+      "path": "src/Widget1.jsx",
+      "line": 3,
+      "got": "src/Widget1.jsx:3",
+      "strategy": "attribute",
+      "confidence": 1,
+      "ok": true
+    },
+    {
+      "id": "Widget2",
+      "x": 740,
+      "y": 60,
+      "kind": "attribute",
+      "path": "src/Widget2.jsx",
+      "line": 3,
+      "got": "src/Widget2.jsx:3",
+      "strategy": "attribute",
+      "confidence": 1,
+      "ok": true
+    },
+    {
+      "id": "Widget3",
+      "x": 1040,
+      "y": 60,
+      "kind": "attribute",
+      "path": "src/Widget3.jsx",
+      "line": 3,
+      "got": "src/Widget3.jsx:3",
+      "strategy": "attribute",
+      "confidence": 1,
+      "ok": true
+    },
+    {
+      "id": "Widget4",
+      "x": 140,
+      "y": 150,
+      "kind": "attribute",
+      "path": "src/Widget4.jsx",
+      "line": 3,
+      "got": "src/Widget4.jsx:3",
+      "strategy": "attribute",
+      "confidence": 1,
+      "ok": true
+    },
+    {
+      "id": "Widget5",
+      "x": 440,
+      "y": 150,
+      "kind": "attribute",
+      "path": "src/Widget5.jsx",
+      "line": 3,
+      "got": "src/Widget5.jsx:3",
+      "strategy": "attribute",
+      "confidence": 1,
+      "ok": true
+    },
+    {
+      "id": "Widget6",
+      "x": 740,
+      "y": 150,
+      "kind": "attribute",
+      "path": "src/Widget6.jsx",
+      "line": 3,
+      "got": "src/Widget6.jsx:3",
+      "strategy": "attribute",
+      "confidence": 1,
+      "ok": true
+    },
+    {
+      "id": "Widget7",
+      "x": 1040,
+      "y": 150,
+      "kind": "attribute",
+      "path": "src/Widget7.jsx",
+      "line": 3,
+      "got": "src/Widget7.jsx:3",
+      "strategy": "attribute",
+      "confidence": 1,
+      "ok": true
+    },
+    {
+      "id": "Widget8",
+      "x": 140,
+      "y": 240,
+      "kind": "attribute",
+      "path": "src/Widget8.jsx",
+      "line": 3,
+      "got": "src/Widget8.jsx:3",
+      "strategy": "attribute",
+      "confidence": 1,
+      "ok": true
+    },
+    {
+      "id": "Widget9",
+      "x": 440,
+      "y": 240,
+      "kind": "attribute",
+      "path": "src/Widget9.jsx",
+      "line": 3,
+      "got": "src/Widget9.jsx:3",
+      "strategy": "attribute",
+      "confidence": 1,
+      "ok": true
+    },
+    {
+      "id": "Widget10",
+      "x": 740,
+      "y": 240,
+      "kind": "attribute",
+      "path": "src/Widget10.jsx",
+      "line": 3,
+      "got": "src/Widget10.jsx:3",
+      "strategy": "attribute",
+      "confidence": 1,
+      "ok": true
+    },
+    {
+      "id": "Widget11",
+      "x": 1040,
+      "y": 240,
+      "kind": "attribute",
+      "path": "src/Widget11.jsx",
+      "line": 3,
+      "got": "src/Widget11.jsx:3",
+      "strategy": "attribute",
+      "confidence": 1,
+      "ok": true
+    },
+    {
+      "id": "Card0",
+      "x": 140,
+      "y": 335,
+      "kind": "ancestor",
+      "path": "src/Card0.jsx",
+      "line": 3,
+      "got": "src/Card0.jsx:3",
+      "strategy": "attribute",
+      "confidence": 0.9,
+      "ok": true
+    },
+    {
+      "id": "Card1",
+      "x": 440,
+      "y": 335,
+      "kind": "ancestor",
+      "path": "src/Card1.jsx",
+      "line": 3,
+      "got": "src/Card1.jsx:3",
+      "strategy": "attribute",
+      "confidence": 0.9,
+      "ok": true
+    },
+    {
+      "id": "Card2",
+      "x": 740,
+      "y": 335,
+      "kind": "ancestor",
+      "path": "src/Card2.jsx",
+      "line": 3,
+      "got": "src/Card2.jsx:3",
+      "strategy": "attribute",
+      "confidence": 0.9,
+      "ok": true
+    },
+    {
+      "id": "Card3",
+      "x": 1040,
+      "y": 335,
+      "kind": "ancestor",
+      "path": "src/Card3.jsx",
+      "line": 3,
+      "got": "src/Card3.jsx:3",
+      "strategy": "attribute",
+      "confidence": 0.9,
+      "ok": true
+    },
+    {
+      "id": "Card4",
+      "x": 140,
+      "y": 425,
+      "kind": "ancestor",
+      "path": "src/Card4.jsx",
+      "line": 3,
+      "got": "src/Card4.jsx:3",
+      "strategy": "attribute",
+      "confidence": 0.9,
+      "ok": true
+    },
+    {
+      "id": "Card5",
+      "x": 440,
+      "y": 425,
+      "kind": "ancestor",
+      "path": "src/Card5.jsx",
+      "line": 3,
+      "got": "src/Card5.jsx:3",
+      "strategy": "attribute",
+      "confidence": 0.9,
+      "ok": true
+    },
+    {
+      "id": "Note0",
+      "x": 680,
+      "y": 408,
+      "kind": "text",
+      "path": "src/Note0.jsx",
+      "line": 4,
+      "got": "src/Note0.jsx:4",
+      "strategy": "text",
+      "confidence": 0.5,
+      "ok": true
+    },
+    {
+      "id": "Note1",
+      "x": 980,
+      "y": 408,
+      "kind": "text",
+      "path": "src/Note1.jsx",
+      "line": 4,
+      "got": "src/Note1.jsx:4",
+      "strategy": "text",
+      "confidence": 0.5,
+      "ok": true
+    },
+    {
+      "id": "Note2",
+      "x": 80,
+      "y": 498,
+      "kind": "text",
+      "path": "src/Note2.jsx",
+      "line": 4,
+      "got": "src/Note2.jsx:4",
+      "strategy": "text",
+      "confidence": 0.5,
+      "ok": true
+    },
+    {
+      "id": "Note3",
+      "x": 380,
+      "y": 498,
+      "kind": "text",
+      "path": "src/Note3.jsx",
+      "line": 4,
+      "got": "src/Note3.jsx:4",
+      "strategy": "text",
+      "confidence": 0.5,
+      "ok": true
+    },
+    {
+      "id": "Note4",
+      "x": 680,
+      "y": 498,
+      "kind": "text",
+      "path": "src/Note4.jsx",
+      "line": 4,
+      "got": "src/Note4.jsx:4",
+      "strategy": "text",
+      "confidence": 0.5,
+      "ok": true
+    },
+    {
+      "id": "Note5",
+      "x": 980,
+      "y": 498,
+      "kind": "text",
+      "path": "src/Note5.jsx",
+      "line": 4,
+      "got": "src/Note5.jsx:4",
+      "strategy": "text",
+      "confidence": 0.5,
+      "ok": true
+    }
+  ]
+}

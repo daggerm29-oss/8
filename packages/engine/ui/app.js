@@ -240,9 +240,41 @@ async function renderImpact(target) {
   } catch (err) { box.replaceChildren(h('p', { class: 'form-error' }, err.message)); }
 }
 
+/* Verification evidence (F-UI-4): structured assertions + re-verify. */
+function evidenceView(a) {
+  const e = a.data;
+  const result = h('div', { class: 'evidence-result', 'aria-live': 'polite' });
+  const btn = h('button', { type: 'button' }, 'Re-verify');
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    result.replaceChildren(h('p', { class: 'note' }, 'Re-running assertions…'));
+    try {
+      const r = await rpc.call('artifact.reverify', { id: a.id });
+      result.replaceChildren(
+        h('p', { class: r.allPassed && r.hashOk ? 'ev-pass' : 'ev-fail' }, `${r.allPassed ? 'All assertions pass now' : 'Some assertions fail now'} · hash ${r.hashOk ? 'intact' : 'MISMATCH'} · ${r.matchesRecorded ? 'matches recording' : 'differs from recording'}`),
+        h('table', { class: 'table' }, h('thead', {}, h('tr', {}, h('th', {}, 'Check'), h('th', {}, 'Recorded'), h('th', {}, 'Now'))),
+          h('tbody', {}, r.assertions.map((x) => h('tr', {}, h('td', {}, x.check), h('td', { class: 'mono' }, String(x.recorded)), h('td', { class: `mono ${x.passed ? 'ev-pass' : 'ev-fail'}` }, `${x.now} ${x.passed ? 'pass' : 'fail'}`))))),
+      );
+    } catch (err) { result.replaceChildren(h('p', { class: 'form-error' }, err.message)); }
+    btn.disabled = false;
+  });
+  return h('div', { class: 'part' },
+    h('p', { class: e.passed ? 'ev-pass' : 'ev-fail' }, `${e.passed ? 'Passed' : 'Failed'} · attempt ${e.attempt} · ${e.assertions.length} assertion${e.assertions.length === 1 ? '' : 's'}`),
+    h('table', { class: 'table evidence-table' },
+      h('thead', {}, h('tr', {}, h('th', {}, 'Check'), h('th', {}, 'Command'), h('th', {}, 'Expected'), h('th', {}, 'Actual'), h('th', {}, 'Result'))),
+      h('tbody', {}, e.assertions.map((x) => h('tr', {},
+        h('td', {}, x.check), h('td', { class: 'mono' }, x.command), h('td', { class: 'mono' }, `exit ${x.expected}`), h('td', { class: 'mono' }, `exit ${x.actual}`),
+        h('td', { class: x.passed ? 'ev-pass' : 'ev-fail' }, x.passed ? 'pass' : `fail${x.required ? '' : ' (optional)'}`))))),
+    e.changedFiles.length ? h('p', { class: 'note mono' }, `Changed: ${e.changedFiles.join(', ')}`) : '',
+    h('p', { class: 'note mono' }, e.hash),
+    h('div', { class: 'row' }, btn), result,
+  );
+}
+
 async function renderArtifacts() {
   const arts = await rpc.call('artifact.list', { task: state.selected });
-  $('artifacts').replaceChildren(...arts.map((a) => h('div', { class: 'msg' }, h('div', { class: 'role' }, `${a.kind} · ${a.title}`), h('div', { class: 'part' }, h('pre', { class: 'mono' }, typeof a.data === 'string' ? a.data : JSON.stringify(a.data, null, 2))))));
+  $('artifacts').replaceChildren(...arts.map((a) => h('div', { class: 'msg' }, h('div', { class: 'role' }, `${a.kind} · ${a.title}`),
+    a.kind === 'verification_evidence' && a.data?.assertions ? evidenceView(a) : h('div', { class: 'part' }, h('pre', { class: 'mono' }, typeof a.data === 'string' ? a.data : JSON.stringify(a.data, null, 2))))));
   if (!arts.length) $('artifacts').append(h('p', { class: 'note' }, 'No artifacts.'));
 }
 
@@ -571,7 +603,9 @@ function renderPreview() {
   $('preview-start').disabled = preview.busy || !ws;
   $('preview-reload').hidden = !info;
   $('preview-open').hidden = !info;
-  frame.hidden = !info;
+  $('preview-inspect').hidden = !info;
+  if (!info && inspect.on) setInspect(false);
+  frame.hidden = !info || inspect.on;
   if (info) {
     $('preview-open').href = info.url;
     if (frame.dataset.url !== info.url) { frame.dataset.url = info.url; frame.src = info.url; }
@@ -586,6 +620,68 @@ async function startPreview() {
   try { preview.byWs.set(ws, await rpc.call('preview.start', { workspacePath: ws }, 120_000)); }
   catch (err) { preview.error = `Failed: ${String(err.message ?? err).split('\n')[0]}`; }
   finally { preview.busy = false; if (state.tab === 'preview') renderPreview(); }
+}
+
+/* §18.6 Inspect mode: the dev-server iframe is cross-origin, so selection happens on a CDP screenshot. */
+const inspect = { on: false, point: null };
+
+function setInspect(on) {
+  inspect.on = on; inspect.point = null;
+  $('preview-inspect').setAttribute('aria-pressed', String(on));
+  $('preview-inspect').textContent = on ? 'Exit inspect' : 'Inspect';
+  $('inspect-view').hidden = !on;
+  $('preview-frame').hidden = on || !preview.byWs.get(selectedWorkspace());
+  $('inspect-form').hidden = true;
+  $('inspect-box').hidden = true;
+  if (!on) return;
+  $('inspect-shot').removeAttribute('src');
+  rpc.call('preview.inspect', { workspacePath: selectedWorkspace() }, 60_000)
+    .then((r) => { $('inspect-shot').src = `data:image/png;base64,${r.image}`; })
+    .catch((err) => { $('inspect-error').textContent = err.message; $('inspect-form').hidden = false; });
+}
+
+async function inspectClick(ev) {
+  const img = $('inspect-shot');
+  if (!img.src) return;
+  const rect = img.getBoundingClientRect();
+  const scale = img.naturalWidth / rect.width;
+  const x = Math.round((ev.clientX - rect.left) * scale);
+  const y = Math.round((ev.clientY - rect.top) * scale);
+  $('inspect-error').textContent = '';
+  try {
+    const r = await rpc.call('preview.locate', { workspacePath: selectedWorkspace(), x, y }, 30_000);
+    inspect.point = { x, y };
+    const box = $('inspect-box');
+    Object.assign(box.style, { left: `${r.card.box.x / scale}px`, top: `${r.card.box.y / scale}px`, width: `${r.card.box.w / scale}px`, height: `${r.card.box.h / scale}px` });
+    box.hidden = false;
+    const src = r.source;
+    $('inspect-chip').textContent = src ? `${src.path}:${src.line}` : 'source unknown';
+    $('inspect-chip').title = src ? `${src.strategy}, confidence ${src.confidence}${src.chain.length > 1 ? `; ${src.chain.join(' > ')}` : ''}` : '';
+    $('inspect-card').textContent = `${r.card.tag} · ${r.card.role}${r.card.name ? ` "${r.card.name}"` : ''}${r.card.classes.length ? ` · .${r.card.classes.join('.')}` : ''}`;
+    $('inspect-confirm').hidden = !(src ? src.needsConfirm : true);
+    $('inspect-form').elements.namedItem('path').value = src ? src.path : '';
+    $('inspect-form').hidden = false;
+    $('inspect-instruction').focus();
+  } catch (err) { $('inspect-error').textContent = err.message; $('inspect-form').hidden = false; }
+}
+
+async function inspectSubmit(ev) {
+  ev.preventDefault();
+  if (!inspect.point) return;
+  const form = ev.currentTarget;
+  const instruction = $('inspect-instruction').value.trim();
+  if (!instruction) return;
+  const path = $('inspect-confirm').hidden ? undefined : String(form.elements.namedItem('path').value).trim() || undefined;
+  const btn = form.querySelector('button[type="submit"]');
+  btn.disabled = true;
+  try {
+    const r = await rpc.call('preview.instruct', { workspacePath: selectedWorkspace(), ...inspect.point, instruction, path, policyProfile: 'interactive' }, 60_000);
+    $('inspect-instruction').value = '';
+    setInspect(false);
+    await refreshTasks();
+    await select(r.task.id);
+  } catch (err) { $('inspect-error').textContent = err.message; }
+  finally { btn.disabled = false; }
 }
 
 function reloadPreview() {
@@ -807,6 +903,9 @@ function setStatus(text, ok) {
 function bindUi() {
   $('preview-start').addEventListener('click', startPreview);
   $('preview-reload').addEventListener('click', reloadPreview);
+  $('preview-inspect').addEventListener('click', () => setInspect(!inspect.on));
+  $('inspect-shot').addEventListener('click', inspectClick);
+  $('inspect-form').addEventListener('submit', inspectSubmit);
   $('git-refresh').addEventListener('click', () => gitAction(async () => ''));
   $('git-stage').addEventListener('click', () => gitAction(async () => {
     const st = await rpc.call('git.stageAll', { workspacePath: selectedWorkspace() });

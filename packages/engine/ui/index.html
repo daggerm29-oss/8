@@ -168,9 +168,29 @@
               <span id="preview-status" class="sub" aria-live="polite">No dev server running.</span>
               <button type="button" class="primary" id="preview-start">Start dev server</button>
               <button type="button" class="ghost" id="preview-reload" hidden>Reload</button>
+              <button type="button" class="ghost" id="preview-inspect" aria-pressed="false" hidden>Inspect</button>
               <a id="preview-open" class="sub" href="#" target="_blank" rel="noopener" hidden>Open in new tab</a>
             </div>
             <iframe id="preview-frame" class="preview-frame" title="Dev server preview" hidden></iframe>
+            <div id="inspect-view" class="inspect-view" hidden>
+              <p class="sub">Click an element to find its source, then describe the change.</p>
+              <div class="inspect-stage">
+                <img id="inspect-shot" alt="Preview screenshot; click an element to select it" width="1280" height="800">
+                <div id="inspect-box" class="inspect-box" hidden></div>
+              </div>
+              <form id="inspect-form" class="inspect-form" hidden>
+                <div class="inspect-chip-row">
+                  <span id="inspect-chip" class="chip mono"></span>
+                  <span id="inspect-card" class="sub"></span>
+                </div>
+                <label id="inspect-confirm" class="sub" hidden>Low confidence. Confirm the file:
+                  <input name="path" class="mono" autocomplete="off">
+                </label>
+                <label class="sub" for="inspect-instruction">Instruction</label>
+                <textarea id="inspect-instruction" name="instruction" rows="2" required placeholder="make this the primary variant, +8px padding"></textarea>
+                <div><button type="submit" class="primary">Create task</button> <span id="inspect-error" class="sub" role="alert"></span></div>
+              </form>
+            </div>
             <p class="note">Runs the workspace's package.json "dev" (or "start") script in a sandbox and shows it here.</p>
           </section>
         </div>

@@ -17,20 +17,25 @@ import { EventBus } from './events/bus.ts';
 import { Tracer } from './obs/tracing.ts';
 import { Logger, helixHome } from './util/log.ts';
 import { prefixedId, randomToken } from './util/ids.ts';
+import { globalRedactor } from './util/redact.ts';
 import { Vault } from './vault/vault.ts';
+import { detectKeychain, type Keychain } from './vault/keychain.ts';
 import { Ledger } from './models/ledger.ts';
 import { ModelGateway } from './models/gateway.ts';
+import { ReplayAdapter, exportBundle, type SessionBundle } from './replay/bundle.ts';
 import { builtinTools } from './tools/builtin.ts';
 import { McpManager, type McpServerConfig, type McpServerStatus } from './mcp/manager.ts';
 import { TaskRuntime } from './agent/runtime.ts';
 import { LocalSandbox, unshareAvailable } from './sandbox/sandbox.ts';
-import { DEFAULT_EGRESS_ALLOWLIST, EgressProxy } from './sandbox/egress.ts';
+import { DEFAULT_EGRESS_ALLOWLIST, EgressProxy, type UpstreamOverride } from './sandbox/egress.ts';
 import { DevServers } from './preview/devserver.ts';
 import { PreviewBrowser } from './preview/browser.ts';
+import { elementContext, mapElementToSource, parseLoc } from './preview/locate.ts';
 import { listWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile } from './workspace/files.ts';
 import { gitCommit, gitDiff, gitStageAll, gitStatus } from './workspace/git.ts';
 import { WorkspaceIndex } from './index/index.ts';
 import { parseDiagnostics } from './diagnostics/parsers.ts';
+import { DepGate } from './policy/depgate.ts';
 
 export const ENGINE_VERSION = '0.1.0';
 
@@ -49,6 +54,8 @@ export interface EngineOptions {
   env?: NodeJS.ProcessEnv;
   adapters?: ProviderAdapter[];
   forceProcessSandbox?: boolean;
+  /** Test seam for the masking proxy (F-SBX-4): where intercepted requests really go. */
+  egressUpstream?: UpstreamOverride;
   retry?: { maxRetries?: number; baseDelayMs?: number; maxDelayMs?: number };
   taskRetryScale?: number;
   /** Resume interrupted tasks on open (default true). */
@@ -63,6 +70,8 @@ export interface EngineOptions {
   mcpToolSearchThreshold?: number;
   /** Transcript compaction (F-CTX-2). Env overrides: `HELIX_COMPACT_TRIGGER_TOKENS`, `HELIX_COMPACT_KEEP_TURNS`, `HELIX_COMPACT=off`. */
   compaction?: CompactionOptions;
+  /** OS credential store for provider keys (default: detected from `env`). */
+  keychain?: Keychain;
 }
 
 function compactionFrom(env: NodeJS.ProcessEnv, opts?: CompactionOptions): CompactionOptions {
@@ -76,7 +85,7 @@ function compactionFrom(env: NodeJS.ProcessEnv, opts?: CompactionOptions): Compa
   };
 }
 
-const TOPICS = ['task.*', 'agent.*', 'tool.*', 'model.*', 'verify.*', 'approval.*', 'ledger.*', 'budget.*', 'context.*', 'artifact.*', 'checkpoint.*', 'workspace.*', 'egress.*', 'preview.*'];
+const TOPICS = ['task.*', 'agent.*', 'tool.*', 'model.*', 'verify.*', 'approval.*', 'ledger.*', 'budget.*', 'context.*', 'artifact.*', 'checkpoint.*', 'workspace.*', 'egress.*', 'preview.*', 'secret.*'];
 
 /** Helix Engine (§6.2): composition root for storage, bus, gateway, tools, sandbox, and the task runtime. */
 export class Engine {
@@ -89,6 +98,7 @@ export class Engine {
   readonly vault: Vault;
   readonly ledger: Ledger;
   readonly gateway: ModelGateway;
+  readonly replay: ReplayAdapter;
   readonly runtime: TaskRuntime;
   readonly blobs: BlobStore;
   readonly mcp: McpManager;
@@ -98,6 +108,8 @@ export class Engine {
   readonly devServers: DevServers;
   /** Lazily launched headless Chrome for agent browser tools (F-PRV-5). */
   readonly browser: PreviewBrowser;
+  /** Where `secrets.bind` reads a value from when the caller passes only a name. */
+  private readonly secretSource: NodeJS.ProcessEnv;
   /** Resolves once configured MCP servers are connected (or failed) and their tools are registered. */
   readonly mcpReady: Promise<McpServerStatus[]>;
   private heartbeat?: NodeJS.Timeout;
@@ -117,16 +129,22 @@ export class Engine {
     this.bus = new EventBus(this.db);
     this.tracer = new Tracer(this.db, { otlpEndpoint: env.OTEL_EXPORTER_OTLP_ENDPOINT ?? null, logger: this.logger });
     this.blobs = new BlobStore(join(this.home, 'blobs'), this.db);
-    this.vault = new Vault(env);
+    this.vault = new Vault(env, opts.keychain ?? detectKeychain(env));
     this.ledger = new Ledger(this.db, this.bus);
-    this.gateway = new ModelGateway({ adapters: opts.adapters ?? [new GeminiAdapter(), new OpenAIAdapter()], vault: this.vault, ledger: this.ledger, tracer: this.tracer, logger: this.logger, retry: opts.retry });
+    this.replay = new ReplayAdapter();
+    this.gateway = new ModelGateway({ adapters: [...(opts.adapters ?? [new GeminiAdapter(), new OpenAIAdapter()]), this.replay], vault: this.vault, ledger: this.ledger, tracer: this.tracer, logger: this.logger, retry: opts.retry });
     this.egress = new EgressProxy({
       isAllowed: (host, ctx) => DEFAULT_EGRESS_ALLOWLIST.includes(host) || !!this.db.get('SELECT 1 AS ok FROM egress_allow WHERE ws = ? AND host = ?', this.runtime.workspaceFor(ctx.root).id, host),
       onDenied: (info, ctx) => {
         this.bus.publish({ topic: 'egress.denied', ws: this.runtime.workspaceFor(ctx.root).id, data: { ...info, sandbox: ctx.sandboxId }, persist: 'audit' });
         this.logger.warn('egress.denied', { ...info, sandbox: ctx.sandboxId });
       },
-    });
+      onExfil: (info, ctx) => {
+        this.bus.publish({ topic: 'secret.exfil_attempt', ws: this.runtime.workspaceFor(ctx.root).id, data: { ...info, sandbox: ctx.sandboxId }, persist: 'audit' });
+        this.logger.warn('secret.exfil_attempt', { ...info, sandbox: ctx.sandboxId });
+      },
+    }, { upstream: opts.egressUpstream });
+    this.secretSource = env;
     this.devServers = new DevServers({
       egress: this.egress, forceProcess: opts.forceProcessSandbox,
       onReady: (root, info) => this.bus.publish({ topic: 'preview.ready', ws: this.runtime.workspaceFor(root).id, data: { ...info, workspacePath: root } }),
@@ -136,7 +154,8 @@ export class Engine {
     const tools = builtinTools();
     this.mcp = new McpManager({ home: this.home, registry: tools, logger: this.logger, config: opts.mcpServers, toolSearchThreshold: opts.mcpToolSearchThreshold });
     this.mcpReady = opts.mcp === false ? Promise.resolve([]) : this.mcp.start();
-    this.runtime = new TaskRuntime({ db: this.db, bus: this.bus, gateway: this.gateway, ledger: this.ledger, tools, tracer: this.tracer, engineId: this.id, blobs: this.blobs, logger: this.logger, forceProcessSandbox: opts.forceProcessSandbox, egress: this.egress, devServers: this.devServers, browser: this.browser, taskRetryScale: opts.taskRetryScale, helixHome: this.home, indexing: opts.indexing, compaction: compactionFrom(env, opts.compaction) });
+    this.runtime = new TaskRuntime({ db: this.db, bus: this.bus, gateway: this.gateway, ledger: this.ledger, tools, tracer: this.tracer, engineId: this.id, blobs: this.blobs, logger: this.logger, forceProcessSandbox: opts.forceProcessSandbox, egress: this.egress, devServers: this.devServers, browser: this.browser, taskRetryScale: opts.taskRetryScale, helixHome: this.home, replay: this.replay, indexing: opts.indexing, compaction: compactionFrom(env, opts.compaction),
+      depGate: env.HELIX_DEP_GATE === 'off' ? undefined : new DepGate({ osvUrl: env.HELIX_OSV_URL, npmRegistryUrl: env.HELIX_NPM_REGISTRY_URL, pypiUrl: env.HELIX_PYPI_URL }) });
 
     const now = new Date().toISOString();
     this.db.run('INSERT INTO engine_instances (id, pid, started_at, heartbeat_at) VALUES (?, ?, ?, ?)', this.id, process.pid, now, now);
@@ -224,6 +243,10 @@ export class Engine {
     }));
     peer.handle(Methods.checkpointList, guard<{ task: string }>((p) => this.runtime.checkpoints(p.task)));
     peer.handle(Methods.checkpointRestore, guard<{ task: string; checkpoint?: string }>((p) => this.runtime.restore(p.task, p.checkpoint)));
+    peer.handle(Methods.artifactReverify, guard<{ id: string }>((p) => {
+      if (typeof p.id !== 'string' || !p.id) throw new Error('id is required');
+      return this.runtime.reverifyArtifact(p.id);
+    }));
     peer.handle(Methods.artifactList, guard<{ task: string; kind?: string }>((p) => this.runtime.artifacts(p.task, p.kind)));
     peer.handle(Methods.diagnosticsParse, guard<{ command: string; output: string }>((p) => parseDiagnostics(p.command, p.output)));
     peer.handle(Methods.checkpointDiff, guard<{ task: string; checkpoint?: string }>((p) => this.runtime.diff(p.task, p.checkpoint)));
@@ -237,6 +260,15 @@ export class Engine {
     peer.handle(Methods.modelsRoles, guard<{ workspacePath?: string; task?: string; provider?: string; model?: string; roles?: TaskCreateParams['roles']; policyProfile?: string }>((p) => {
       if (p.task) return this.runtime.artifacts(p.task, 'roles').at(-1)?.data ?? null;
       return this.runtime.resolveTaskRoles(this.runtime.workspaceFor(p.workspacePath ?? process.cwd()).path, p as never);
+    }));
+    peer.handle(Methods.taskBundle, guard<{ task: string }>((p) => {
+      if (typeof p.task !== 'string' || !p.task) throw new Error('task is required');
+      return exportBundle(this.db, p.task);
+    }));
+    peer.handle(Methods.taskReplay, guard<{ task?: string; bundle?: SessionBundle; workspacePath?: string }>((p) => {
+      const bundle = p.bundle ?? (typeof p.task === 'string' && p.task ? exportBundle(this.db, p.task) : undefined);
+      if (!bundle) throw new Error('task or bundle is required');
+      return this.runtime.replay(bundle, p.workspacePath ? this.knownWorkspace(p.workspacePath) : undefined);
     }));
     peer.handle(Methods.modelsUsage, guard<{ task: string }>((p) => {
       if (typeof p.task !== 'string' || !p.task) throw new Error('task is required');
@@ -286,6 +318,17 @@ export class Engine {
       return { killed: !!c };
     }));
 
+    peer.handle(Methods.vaultStatus, guard(() => this.vault.status()));
+    peer.handle(Methods.vaultSetKey, guard<{ provider: string; key: string }>((p) => {
+      this.vault.setProviderKey(p.provider, p.key);
+      this.bus.publish({ topic: 'vault.key_set', ws: 'engine', data: { provider: p.provider, store: this.vault.keychain.kind }, persist: 'audit' });
+      return { ok: true, provider: p.provider, source: this.vault.keySource(p.provider) };
+    }));
+    peer.handle(Methods.vaultDeleteKey, guard<{ provider: string }>((p) => {
+      this.vault.deleteProviderKey(p.provider);
+      this.bus.publish({ topic: 'vault.key_deleted', ws: 'engine', data: { provider: p.provider, store: this.vault.keychain.kind }, persist: 'audit' });
+      return { ok: true, provider: p.provider, source: this.vault.keySource(p.provider) };
+    }));
     peer.handle(Methods.egressAllow, guard<{ workspacePath: string; host: string }>((p) => {
       const host = typeof p.host === 'string' ? p.host.trim().toLowerCase() : '';
       if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(host) || host.length > 253) throw new Error('host must be a DNS name like example.com');
@@ -294,6 +337,17 @@ export class Engine {
       this.bus.publish({ topic: 'egress.allowed', ws: ws.id, data: { host, by: 'user' }, persist: 'audit' });
       return { ok: true, host };
     }));
+    peer.handle(Methods.secretsBind, guard<{ workspacePath: string; name: string; injectHosts: string[]; value?: string }>((p) => {
+      const root = this.knownWorkspace(p.workspacePath);
+      const value = p.value ?? this.secretSource[p.name];
+      if (!value) throw new Error(`no value for ${p.name}: pass value or set it in the Engine environment`);
+      globalRedactor.register(value);
+      const b = this.egress.bind(root, { name: p.name, value, injectHosts: Array.isArray(p.injectHosts) ? p.injectHosts : [] });
+      const ws = this.runtime.workspaceFor(root);
+      this.bus.publish({ topic: 'secret.bound', ws: ws.id, data: { name: b.name, injectHosts: b.injectHosts }, persist: 'audit' });
+      return { name: b.name, injectHosts: b.injectHosts, sentinel: b.sentinel };
+    }));
+    peer.handle(Methods.secretsList, guard<{ workspacePath: string }>((p) => this.egress.bindingsFor(this.knownWorkspace(p.workspacePath)).map((b) => ({ name: b.name, injectHosts: b.injectHosts }))));
     peer.handle(Methods.egressList, guard<{ workspacePath: string }>((p) => {
       const ws = this.runtime.workspaceFor(this.knownWorkspace(p.workspacePath));
       return { defaults: DEFAULT_EGRESS_ALLOWLIST, workspace: this.db.all<{ host: string; at: string }>('SELECT host, at FROM egress_allow WHERE ws = ? ORDER BY host', ws.id) };
@@ -301,6 +355,42 @@ export class Engine {
 
     peer.handle(Methods.previewStart, guard<{ workspacePath: string }>((p) => this.devServers.start(this.knownWorkspace(p.workspacePath))));
     peer.handle(Methods.previewStop, guard<{ workspacePath: string }>((p) => ({ stopped: this.devServers.stop(this.knownWorkspace(p.workspacePath)) })));
+    const previewUrl = (root: string) => {
+      const info = this.devServers.get(root);
+      if (!info) throw new Error('no dev server running for this workspace (start it first)');
+      return info.url;
+    };
+    const locateAt = async (workspacePath: string, x: number, y: number) => {
+      const root = this.knownWorkspace(workspacePath);
+      const card = await this.browser.locate(previewUrl(root), x, y);
+      if (!card) throw new Error(`no element at ${x},${y}`);
+      const idx = this.index(root);
+      const source = mapElementToSource(card, idx);
+      return { root, card, source, context: elementContext(card, source, idx) };
+    };
+    peer.handle(Methods.previewInspect, guard<{ workspacePath: string }>(async (p) => {
+      const shot = await this.browser.screenshot(previewUrl(this.knownWorkspace(p.workspacePath)));
+      return { image: readFileSync(shot.path).toString('base64'), width: 1280, height: 800, url: shot.url, title: shot.title };
+    }));
+    peer.handle(Methods.previewLocate, guard<{ workspacePath: string; x: number; y: number }>(async (p) => {
+      const { card, source, context } = await locateAt(p.workspacePath, p.x, p.y);
+      return { card, source, context };
+    }));
+    peer.handle(Methods.previewInstruct, guard<{ workspacePath: string; x: number; y: number; instruction: string; path?: string; start?: boolean } & Omit<TaskCreateParams, 'workspacePath' | 'goal'>>(async (p) => {
+      const instruction = String(p.instruction ?? '').trim();
+      if (!instruction) throw new Error('instruction is required');
+      const { root, card, source, context } = await locateAt(p.workspacePath, p.x, p.y);
+      let confirmed = source;
+      if (p.path) {
+        const at = parseLoc(root, `${p.path}:${source && source.path === p.path ? source.line : 1}`);
+        if (!at) throw new Error(`not a workspace file: ${p.path}`);
+        confirmed = { path: at.path, line: at.line, strategy: source?.strategy ?? 'text', confidence: 1, needsConfirm: false, chain: source?.chain ?? [] };
+      }
+      const ctx = confirmed !== source ? elementContext(card, confirmed, this.index(root)) : context;
+      const { x: _x, y: _y, instruction: _i, path: _p, ...rest } = p;
+      const task = this.runtime.create({ ...rest, workspacePath: root, goal: `${instruction}\n\n${ctx}`, title: rest.title ?? instruction.slice(0, 80), start: p.start ?? true });
+      return { task, card, source: confirmed };
+    }));
     peer.handle(Methods.gitStatus, guard<{ workspacePath: string }>((p) => gitStatus(this.knownWorkspace(p.workspacePath))));
     peer.handle(Methods.gitDiff, guard<{ workspacePath: string }>((p) => gitDiff(this.knownWorkspace(p.workspacePath))));
     peer.handle(Methods.gitStageAll, guard<{ workspacePath: string }>((p) => gitStageAll(this.knownWorkspace(p.workspacePath))));

@@ -11,16 +11,16 @@
 
 > These are **checklist completion** numbers (ticked items with recorded evidence ÷ all items). They are not a measure of product quality or release readiness; human launch gates in `docs/roadmap.md` are not counted.
 
-**Overall checklist completion: 54%** (48/89 roadmap items)  
-**Current milestone:** M2 Precision and efficiency  
-**Next task:** Element→source + select-and-instruct in preview [§17]
+**Overall checklist completion: 66%** (59/89 roadmap items)  
+**Current milestone:** M3 Parallel and background  
+**Next task:** General subagents + task DAG scheduler (F-ORC-2) [§10.3]
 
 | Milestone | Progress | Items | Status |
 | --- | --- | --- | --- |
 | M0 Foundations | ██████████ 100% | 11/11 | Done |
 | M1 MVP, grounded single agent | ██████████ 100% | 26/26 | Done |
-| M2 Precision and efficiency | █████░░░░░ 50% | 11/22 | In progress |
-| M3 Parallel and background | ░░░░░░░░░░ 0% | 0/12 | Not started |
+| M2 Precision and efficiency | ██████████ 100% | 22/22 | Done |
+| M3 Parallel and background | ░░░░░░░░░░ 0% | 0/12 | In progress |
 | M4 Team and ecosystem | ░░░░░░░░░░ 0% | 0/9 | Not started |
 | M5 Platform | ░░░░░░░░░░ 0% | 0/5 | Not started |
 | M6 Collaboration | ░░░░░░░░░░ 0% | 0/4 | Not started |
@@ -28,8 +28,8 @@
 
 ## Current task notes (overwrite when the task changes)
 
-- Next: M2 "Element→source + select-and-instruct in preview" [§17, §18.6] — not started; write its Accept line first.
-- Suggested split: (a) engine RPC `preview.locate {x,y}` → CDP `DOM.getNodeForLocation` on the headless page → element card (role, name, classes) + source via `data-helix-loc` attr else index text/className search (confidence); (b) Preview tab "Inspect" mode over a CDP screenshot (iframe is cross-origin) → chip `file:line` → instruction creates a task with the element card as context.
+- Next: M3 "General subagents + task DAG scheduler (F-ORC-2)" [§10.3]. Work for it AND "Write leases + worktrees" already exists in the open PR from branch `helix/session-2026-11-09-m3-orchestration` (split out of PR #18). After #18 is merged, continue on that PR; do not rebuild them.
+- Known M3 review issues to fix there first: shared-mode write-lease bypass, worktree lease leak.
 
 ## Ideas parking lot (one line each, max 15 — do not implement)
 
@@ -38,6 +38,9 @@
 - `--verify auto` emitting `{{tests}}` gates
 - Persist demoted model refs per workspace
 - PTY history indexing + live resize
+- Test generation: coverage-driven target picking + test-runner subagent; non-JS default commands
+- Hooks: pre_commit/session_start events, YAML hooks file, skills in tool_search
+- Dep gate: license/typosquat/age/install-script checks, lockfile transitive diff
 - Preview through an Engine origin proxy (p<port>-<ws>.localhost, §17.3) so remote workbench users can see it
 
 ## How to run
@@ -48,6 +51,7 @@
 - Full engine suite (end of task only, ~5–8 min, timeout ≥ 600 s): same command with `"test/**/*.test.ts"` (`pnpm test` can hang in the v0 VM)
 - CLI tests: `pnpm --filter @helix/cli test`
 - Workbench (service `helix-workbench`, port 4100): `bash -lc "set -a; . ./.env.development.local; set +a; exec node --disable-warning=ExperimentalWarning packages/engine/src/main.ts --ws 4100 --ui --host 0.0.0.0 --allow-host '*' --no-auth"`
+- Desktop: `pnpm --filter @helix/desktop setup` (fetch Electron), test `cd packages/desktop && node --test test/desktop.test.mjs`
 - Live model: env `GEMINI_API`, model `gemini-3.5-flash-lite` (free tier ~20 req/day per model)
 
 ## Environment notes

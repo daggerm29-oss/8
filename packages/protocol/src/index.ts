@@ -141,9 +141,25 @@ export const Methods = {
   /* F-SBX-3 egress allowlist */
   egressAllow: 'egress.allow',
   egressList: 'egress.list',
+  /* F-SBX-4 credential masking */
+  secretsBind: 'secrets.bind',
+  secretsList: 'secrets.list',
+  /* F-AUTH-1 provider keys in the OS keychain */
+  vaultStatus: 'vault.status',
+  vaultSetKey: 'vault.setKey',
+  vaultDeleteKey: 'vault.deleteKey',
   /* F-PRV-1 dev server */
   previewStart: 'preview.start',
   previewStop: 'preview.stop',
+  /* §18.6 element→source + select-and-instruct */
+  previewInspect: 'preview.inspect',
+  previewLocate: 'preview.locate',
+  previewInstruct: 'preview.instruct',
+  /* F-UI-4 verification evidence */
+  artifactReverify: 'artifact.reverify',
+  /* F-OBS-2 session replay */
+  taskBundle: 'task.bundle',
+  taskReplay: 'task.replay',
   /* F-GIT-1 minimal Git panel */
   gitStatus: 'git.status',
   gitDiff: 'git.diff',

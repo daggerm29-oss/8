@@ -149,6 +149,40 @@ export function formatSnapshot(s: EnvironmentSnapshot, opts: { full?: boolean } 
   return out.join('\n');
 }
 
+/** Element card for select-and-instruct (§18.6): what the agent is told about the clicked element. */
+export interface ElementCard {
+  tag: string;
+  role: string;
+  name: string;
+  text: string;
+  classes: string[];
+  id?: string;
+  box: { x: number; y: number; w: number; h: number };
+  style: { color: string; background: string; fontSize: string; padding: string; display: string };
+  /** `data-helix-loc` on the element itself, else the nearest ancestor's. */
+  loc: string | null;
+  locOnElement: boolean;
+  /** Every `data-helix-loc` from the outermost ancestor down to the element (component chain). */
+  locChain: string[];
+}
+
+const ELEMENT_CARD_JS = `function (x, y) {
+  const el = document.elementFromPoint(x, y);
+  if (!el || el === document.documentElement) return null;
+  const implicit = { button: 'button', a: 'link', input: 'textbox', textarea: 'textbox', select: 'combobox', img: 'img', nav: 'navigation', main: 'main', header: 'banner', footer: 'contentinfo', form: 'form', h1: 'heading', h2: 'heading', h3: 'heading', h4: 'heading', h5: 'heading', h6: 'heading' };
+  const tag = el.tagName.toLowerCase();
+  const text = (el.innerText || el.textContent || '').trim().replace(/\\s+/g, ' ');
+  const chain = [];
+  for (let p = el; p && p.nodeType === 1; p = p.parentElement) { const l = p.getAttribute('data-helix-loc'); if (l) chain.unshift(l); }
+  const own = el.getAttribute('data-helix-loc');
+  const cs = getComputedStyle(el);
+  const r = el.getBoundingClientRect();
+  return { tag, role: el.getAttribute('role') || implicit[tag] || 'generic', name: (el.getAttribute('aria-label') || el.getAttribute('alt') || text).slice(0, 80), text: text.slice(0, 200),
+    classes: [...el.classList], id: el.id || undefined, box: { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) },
+    style: { color: cs.color, background: cs.backgroundColor, fontSize: cs.fontSize, padding: cs.padding, display: cs.display },
+    loc: own || chain[chain.length - 1] || null, locOnElement: !!own, locChain: chain };
+}`;
+
 export interface PageCapture {
   url: string;
   title: string;
@@ -349,6 +383,15 @@ export class PreviewBrowser {
     if (prev) snap.diff = diffSnapshots(prev, snap);
     this.lastSnapshot.set(url, snap);
     return snap;
+  }
+
+  /** Load `url` and describe the element at viewport point (x, y) (§18.6 element card); null when nothing is there. */
+  async locate(url: string, x: number, y: number, opts: { timeoutMs?: number } = {}): Promise<ElementCard | null> {
+    const { extra } = await this.load(url, opts.timeoutMs ?? 15_000, async (cdp) => {
+      const r = await cdp.send<{ result: { value: ElementCard | null } }>('Runtime.evaluate', { expression: `(${ELEMENT_CARD_JS})(${Number(x)}, ${Number(y)})`, returnByValue: true });
+      return r.result.value;
+    });
+    return extra;
   }
 
   /** Load the page at `url` and return its console messages and uncaught exceptions. */

@@ -31,10 +31,10 @@ const NETWORK: Array<[RegExp, string]> = [
 ];
 
 const TOOL_CLASS: Record<string, ActionClass> = {
-  read_file: 'read', list_dir: 'read', tool_search: 'read', search: 'read', find_symbol: 'read', code_search: 'read', domain_map: 'read', submit_plan: 'read',
+  read_file: 'read', list_dir: 'read', tool_search: 'read', search: 'read', find_symbol: 'read', code_search: 'read', domain_map: 'read', submit_plan: 'read', use_skill: 'read',
   preview_screenshot: 'read', preview_console: 'read', preview_snapshot: 'read', explore: 'read',
   write_file: 'write', edit_file: 'write',
-  run_shell: 'exec', start_dev_server: 'exec',
+  run_shell: 'exec', start_dev_server: 'exec', propose_test: 'exec',
 };
 
 /** Dynamically registered tools (MCP, F-MCP-3 v0) declare their class here; unknown `mcp__*` tools default to network. */

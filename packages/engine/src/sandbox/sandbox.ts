@@ -1,12 +1,30 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { FORWARDER_SOURCE, SANDBOX_PROXY_PORT, type EgressProxy } from './egress.ts';
+
+const SYSTEM_CA_BUNDLES = ['/etc/ssl/certs/ca-certificates.crt', '/etc/pki/tls/certs/ca-bundle.crt', '/etc/ssl/cert.pem'];
 import { tmpdir } from 'node:os';
 import { connect, type Socket } from 'node:net';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isDeniedHostPath, Vault } from '../vault/vault.ts';
 import { globalRedactor } from '../util/redact.ts';
+import { wslEnvList, wslExecArgs, wslFromEnv, type WslConfig } from './wsl.ts';
+
+const IS_WINDOWS = process.platform === 'win32';
+/** Windows needs these to start wsl.exe; they are never forwarded into WSL (not listed in WSLENV). */
+const WINDOWS_HOST_ENV = ['SystemRoot', 'windir', 'PATH', 'PATHEXT', 'COMSPEC'];
+
+/** Kill a spawned process tree: process group on POSIX, `taskkill /T /F` on Windows. */
+function killTree(pid: number | undefined): void {
+  if (!pid) return;
+  try {
+    if (IS_WINDOWS) spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+    else process.kill(-pid, 'SIGKILL');
+  } catch {
+    /* already exited */
+  }
+}
 
 export interface ExecOptions {
   /** Working directory relative to the sandbox root. */
@@ -123,7 +141,8 @@ const PASSTHROUGH_ENV = ['PATH', 'LANG', 'LC_ALL', 'TZ', 'NODE_OPTIONS_SAFE'];
 export class LocalSandbox {
   readonly id: string;
   readonly root: string;
-  readonly provider: 'local-unshare' | 'local-process';
+  readonly provider: 'local-unshare' | 'local-process' | 'wsl';
+  private readonly wsl: WslConfig | null;
   readonly fsIsolation: boolean;
   private readonly scratch: string;
   private readonly newRoot: string | null;
@@ -135,11 +154,13 @@ export class LocalSandbox {
   private readonly bridgeDir: string | null = null;
   private readonly hostBridgeDir: string | null = null;
   private readonly egressOn: boolean = false;
+  private readonly egress?: EgressProxy;
 
-  constructor(id: string, root: string, opts: { forceProcess?: boolean; noMountNs?: boolean; roPaths?: string[]; egress?: EgressProxy } = {}) {
+  constructor(id: string, root: string, opts: { forceProcess?: boolean; noMountNs?: boolean; roPaths?: string[]; egress?: EgressProxy; wsl?: WslConfig | null } = {}) {
     this.id = id;
     this.root = realpathSync(resolve(root));
-    this.provider = !opts.forceProcess && unshareAvailable() ? 'local-unshare' : 'local-process';
+    this.wsl = opts.wsl !== undefined ? opts.wsl : wslFromEnv();
+    this.provider = this.wsl ? 'wsl' : !opts.forceProcess && unshareAvailable() ? 'local-unshare' : 'local-process';
     this.fsIsolation = this.provider === 'local-unshare' && !opts.noMountNs && mountNsAvailable();
     this.scratch = mkdtempSync(join(tmpdir(), 'helix-sbx-'));
     this.newRoot = this.fsIsolation ? mkdtempSync(join(tmpdir(), 'helix-root-')) : null;
@@ -154,6 +175,11 @@ export class LocalSandbox {
     }
     if (opts.egress && this.hostBridgeDir) {
       this.egressOn = true;
+      this.egress = opts.egress;
+      const ca = opts.egress.caFor(id).cert;
+      const system = SYSTEM_CA_BUNDLES.find((p) => existsSync(p));
+      writeFileSync(join(this.hostBridgeDir, 'helix-ca.pem'), ca);
+      writeFileSync(join(this.hostBridgeDir, 'ca-bundle.pem'), `${system ? readFileSync(system, 'utf8') : ''}\n${ca}`);
       this.egressReady = opts.egress.listen(join(this.hostBridgeDir, 'egress.sock'), { sandboxId: id, root: this.root }).catch(() => null);
     } else {
       this.egressReady = Promise.resolve(null);
@@ -161,7 +187,7 @@ export class LocalSandbox {
   }
 
   info(): SandboxInfo {
-    return { id: this.id, provider: this.provider, root: this.root, network: this.provider === 'local-process', fsIsolation: this.fsIsolation, egressProxy: this.egressOn };
+    return { id: this.id, provider: this.provider, root: this.root, network: this.provider !== 'local-unshare', fsIsolation: this.fsIsolation, egressProxy: this.egressOn };
   }
 
   /**
@@ -207,14 +233,22 @@ export class LocalSandbox {
     const secrets = new Set(Vault.secretEnvNames());
     const env: Record<string, string> = {};
     for (const k of PASSTHROUGH_ENV) if (process.env[k] && !secrets.has(k)) env[k] = process.env[k]!;
-    const tmp = this.fsIsolation ? '/tmp' : this.scratch;
+    const tmp = this.fsIsolation || this.wsl ? '/tmp' : this.scratch;
     Object.assign(env, { HOME: tmp, TMPDIR: tmp, TERM: 'dumb', CI: '1', NO_COLOR: '1', HELIX_SANDBOX: this.id });
     if (this.egressOn) {
       const proxy = `http://127.0.0.1:${SANDBOX_PROXY_PORT}`;
       for (const k of ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'npm_config_proxy', 'npm_config_https_proxy']) env[k] = proxy;
       env.NO_PROXY = env.no_proxy = 'localhost,127.0.0.1,::1';
+      const bundle = `${this.bridgeDir}/ca-bundle.pem`;
+      Object.assign(env, { SSL_CERT_FILE: bundle, CURL_CA_BUNDLE: bundle, REQUESTS_CA_BUNDLE: bundle, GIT_SSL_CAINFO: bundle, NODE_EXTRA_CA_CERTS: `${this.bridgeDir}/helix-ca.pem` });
     }
     for (const [k, v] of Object.entries(extra)) if (!secrets.has(k)) env[k] = v;
+    if (this.egress) Object.assign(env, this.egress.sentinelEnv(this.root));
+    if (this.wsl) {
+      delete env.PATH;
+      env.WSLENV = wslEnvList(Object.keys(env));
+      for (const k of WINDOWS_HOST_ENV) if (process.env[k]) env[k] = process.env[k]!;
+    }
     return env;
   }
 
@@ -225,14 +259,16 @@ export class LocalSandbox {
     command = this.prelude(egress, opts.exposePorts?.filter((p) => Number.isInteger(p) && p > 0 && p < 65536)) + command;
     const timeoutMs = opts.timeoutMs ?? 120_000;
     const max = opts.maxOutputBytes ?? 256 * 1024;
-    const [cmd, args] = this.fsIsolation
+    const [cmd, args] = this.wsl
+      ? [this.wsl.exe, wslExecArgs(this.wsl, cwd, command)]
+      : this.fsIsolation
       ? ['unshare', ['--user', '--map-root-user', '--net', '--mount', '--pid', '--fork', '--', 'bash', '-c', CONTAIN_SCRIPT, 'helix', this.newRoot!, this.root, this.scratch, cwd, command, ...this.roPaths]]
       : this.provider === 'local-unshare'
         ? ['unshare', ['--user', '--map-root-user', '--net', '--', 'bash', '-c', command]]
         : ['bash', ['-c', command]];
     const started = performance.now();
     return new Promise((resolveExec) => {
-      const child = spawn(cmd, args, { cwd, env: this.env(opts.env), detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = spawn(cmd, args, { cwd, env: this.env(opts.env), detached: !IS_WINDOWS, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
       let stdout = '';
       let stderr = '';
       let bytes = 0;
@@ -253,13 +289,7 @@ export class LocalSandbox {
       };
       child.stdout.on('data', collect('out'));
       child.stderr.on('data', collect('err'));
-      const kill = () => {
-        try {
-          if (child.pid) process.kill(-child.pid, 'SIGKILL');
-        } catch {
-          /* already exited */
-        }
-      };
+      const kill = () => killTree(child.pid);
       const timer = setTimeout(() => {
         timedOut = true;
         kill();
@@ -304,7 +334,10 @@ export class LocalSandbox {
     delete env.NO_COLOR;
     delete env.CI;
     env.TERM = 'xterm-256color';
-    const child = spawn('script', ['-qfec', quoted, '/dev/null'], { cwd, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    // Under WSL the PTY is allocated by `script` inside the distro; the host only relays pipes.
+    const child = this.wsl
+      ? spawn(this.wsl.exe, wslExecArgs(this.wsl, cwd, `exec script -qfec '${shell.replace(/'/g, `'\\''`)}' /dev/null`), { cwd, env, detached: !IS_WINDOWS, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
+      : spawn('script', ['-qfec', quoted, '/dev/null'], { cwd, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
     const decoder = new StringDecoder('utf8');
     const emit = (chunk: Buffer) => { const s = decoder.write(chunk); if (s) opts.onData(globalRedactor.redact(s)); };
     child.stdout.on('data', emit);
@@ -317,7 +350,7 @@ export class LocalSandbox {
     return {
       pid: child.pid,
       write: (data) => { if (!exited && typeof data === 'string') child.stdin.write(data); },
-      kill: () => { try { if (child.pid) process.kill(-child.pid, 'SIGKILL'); } catch { /* already exited */ } },
+      kill: () => killTree(child.pid),
     };
   }
 

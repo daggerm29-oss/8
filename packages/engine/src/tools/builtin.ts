@@ -4,6 +4,8 @@ import { dirname, join } from 'node:path';
 import { ToolRegistry, type PreviewCapture, type Tool } from './registry.ts';
 import { codeSearch, domainMap, findSymbol, impactTool } from './index-tools.ts';
 import { formatSnapshot } from '../preview/browser.ts';
+import { smokeCheck } from '../verify/testgen.ts';
+import { loadSkills, skillBody } from '../agent/skills.ts';
 
 const SKIP_DIRS = new Set(['node_modules', '.git', '.next', 'dist', 'build', '__pycache__', '.venv', 'target']);
 
@@ -244,6 +246,62 @@ const exploreTool: Tool = {
   },
 };
 
+/** Test generation (F-TST-2, §9.6): keep a proposed test only if it passes and a mutation smoke check kills it. */
+const proposeTest: Tool = {
+  spec: {
+    name: 'propose_test',
+    description: 'Propose a new unit test for a changed or uncovered symbol. Helix runs it in a scratch copy: it must pass on the current code and fail when an operator or return value in the target is flipped (mutation smoke check). Only then is the test file written. Returns the verdict and mutant results.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Test file to create, e.g. test/divide.test.js' },
+        content: { type: 'string', description: 'Full test file content' },
+        target: { type: 'string', description: 'Source file under test (mutated in the scratch copy)' },
+        symbol: { type: 'string', description: 'Function/method under test; limits mutations to its lines' },
+        command: { type: 'string', description: 'Command that runs just this test (default: node --test <path>)' },
+      },
+      required: ['path', 'content', 'target'],
+      additionalProperties: false,
+    },
+  },
+  async run(args, { sandbox, signal, index, beforeWrite }) {
+    const path = sandbox.relative(sandbox.resolvePath(String(args.path), 'write'));
+    const target = sandbox.relative(sandbox.resolvePath(String(args.target)));
+    if (existsSync(sandbox.resolvePath(path))) return { content: `${path} already exists; propose a new test file`, isError: true };
+    if (!existsSync(sandbox.resolvePath(target))) return { content: `target not found: ${target}`, isError: true };
+    let range: { start: number; end: number } | undefined;
+    if (args.symbol && index) {
+      index.update();
+      const hit = index.findSymbol(String(args.symbol)).find((s) => s.path === target && (s.name === args.symbol || s.qualifiedName === args.symbol));
+      if (!hit) return { content: `symbol '${args.symbol}' not found in ${target}`, isError: true };
+      range = { start: hit.line, end: hit.endLine };
+    }
+    const command = args.command ? String(args.command) : `node --test ${JSON.stringify(path)}`;
+    const r = await smokeCheck(sandbox, { testPath: path, testContent: String(args.content), targetPath: target, range, command, signal });
+    const table = r.mutants.map((m) => `  ${target}:${m.line} '${m.from}'→'${m.to}': ${m.killed ? 'killed' : 'survived'}`).join('\n');
+    if (r.accepted) writeWithCheckpoint(sandbox.resolvePath(path, 'write'), String(args.content), beforeWrite);
+    return {
+      content: `${r.accepted ? `ACCEPTED: wrote ${path}` : `REJECTED: ${path} not written`} — ${r.reason}${table ? `\nmutants:\n${table}` : ''}${r.accepted ? '' : `\ntest output (tail):\n${r.baseline.output}`}`,
+      isError: !r.accepted,
+      summary: `propose_test ${path}: ${r.accepted ? 'accepted' : 'rejected'} (${r.reason})`,
+    };
+  },
+};
+
+/** Skills (F-AGT-5, §9.7): the context lists only name + description; the body loads here. */
+const useSkill: Tool = {
+  spec: {
+    name: 'use_skill',
+    description: 'Load the full instructions of a workspace skill listed under "Skills" in your context (skills/<name>/SKILL.md). Returns its body and any helper scripts.',
+    inputSchema: { type: 'object', properties: { name: { type: 'string', minLength: 1 } }, required: ['name'], additionalProperties: false },
+  },
+  async run(args, { sandbox }) {
+    const r = skillBody(sandbox.root, String(args.name));
+    if (!r) return { content: `unknown skill '${args.name}'. Available: ${loadSkills(sandbox.root).map((s) => s.name).join(', ') || '(none)'}`, isError: true };
+    return { content: `# Skill: ${r.skill.name} (${r.skill.file})\n${r.body}${r.scripts.length ? `\n\nScripts (run with run_shell):\n${r.scripts.map((s) => `- ${s}`).join('\n')}` : ''}`, summary: `use_skill ${r.skill.name}` };
+  },
+};
+
 /** Plan Mode output (F-AGT-2, §9.4). Only offered under the `plan` profile. */
 export const submitPlan: Tool = {
   spec: {
@@ -284,6 +342,6 @@ export const submitPlan: Tool = {
 
 export function builtinTools(): ToolRegistry {
   const reg = new ToolRegistry();
-  for (const t of [readFile, listDir, search, findSymbol, codeSearch, impactTool, domainMap, writeFile, editFile, runShell, startDevServerTool, previewScreenshot, previewConsole, previewSnapshot, exploreTool, submitPlan]) reg.register(t);
+  for (const t of [readFile, listDir, search, findSymbol, codeSearch, impactTool, domainMap, writeFile, editFile, runShell, startDevServerTool, previewScreenshot, previewConsole, previewSnapshot, exploreTool, proposeTest, useSkill, submitPlan]) reg.register(t);
   return reg;
 }

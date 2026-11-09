@@ -37,6 +37,7 @@ export interface GatewayCall {
   onEvent?: (e: StreamEvent) => void;
   contextBreakdown?: Record<string, number>;
   toolTokens?: Record<string, number>;
+  routerReason?: string;
 }
 
 export interface GatewayResult {
@@ -53,6 +54,8 @@ export interface GatewayResult {
 interface BreakerState {
   consecutiveFailures: number;
   openedAt: number | null;
+  /** Outcomes within the error-rate window. */
+  window: Array<{ at: number; ok: boolean }>;
 }
 
 export interface GatewayOptions {
@@ -62,13 +65,14 @@ export interface GatewayOptions {
   tracer: Tracer;
   logger?: Logger;
   retry?: { maxRetries?: number; baseDelayMs?: number; maxDelayMs?: number };
-  breaker?: { threshold?: number; cooldownMs?: number };
+  breaker?: { threshold?: number; cooldownMs?: number; windowMs?: number; minCalls?: number; errorRate?: number };
 }
 
 /**
  * Model Gateway (§7, §27.1): budget pre-check → circuit breaker → stream → jittered retry (≤ 2) on
- * transient/rate-limit errors → ledger entry per attempt → OTel span. Multi-provider fallback chains and
- * the router are M2 (F-MDL-5).
+ * transient/rate-limit errors → ledger entry per attempt (with the router's rationale) → OTel span.
+ * The breaker is per (provider, model): it opens on `threshold` consecutive failures or an error rate
+ * ≥ `errorRate` over `windowMs` (at least `minCalls` outcomes) and half-opens after `cooldownMs`.
  */
 export class ModelGateway {
   private readonly adapters = new Map<string, ProviderAdapter>();
@@ -81,6 +85,9 @@ export class ModelGateway {
   private readonly maxDelayMs: number;
   private readonly breakerThreshold: number;
   private readonly breakerCooldownMs: number;
+  private readonly breakerWindowMs: number;
+  private readonly breakerMinCalls: number;
+  private readonly breakerErrorRate: number;
   private readonly breakers = new Map<string, BreakerState>();
   private readonly liveManifests = new Map<string, ModelManifest>();
 
@@ -95,6 +102,32 @@ export class ModelGateway {
     this.maxDelayMs = opts.retry?.maxDelayMs ?? 20_000;
     this.breakerThreshold = opts.breaker?.threshold ?? 5;
     this.breakerCooldownMs = opts.breaker?.cooldownMs ?? 30_000;
+    this.breakerWindowMs = opts.breaker?.windowMs ?? 60_000;
+    this.breakerMinCalls = opts.breaker?.minCalls ?? 4;
+    this.breakerErrorRate = opts.breaker?.errorRate ?? 0.5;
+  }
+
+  /** True while the breaker for this (provider, model) is open and still cooling down. */
+  isOpen(provider: string, model: string): boolean {
+    const b = this.breakers.get(`${provider}:${model}`);
+    return !!b && b.openedAt !== null && Date.now() - b.openedAt < this.breakerCooldownMs;
+  }
+
+  private recordOutcome(b: BreakerState, ok: boolean): void {
+    const now = Date.now();
+    b.window = b.window.filter((x) => now - x.at < this.breakerWindowMs);
+    b.window.push({ at: now, ok });
+    if (ok) {
+      b.consecutiveFailures = 0;
+      return;
+    }
+    b.consecutiveFailures++;
+    const failures = b.window.filter((x) => !x.ok).length;
+    const rateTrip = b.window.length >= this.breakerMinCalls && failures / b.window.length >= this.breakerErrorRate;
+    if (b.consecutiveFailures >= this.breakerThreshold || rateTrip) {
+      b.openedAt = now;
+      b.window = [];
+    }
   }
 
   adapter(id: string): ProviderAdapter {
@@ -104,7 +137,7 @@ export class ModelGateway {
   }
 
   providers(): Array<{ id: string; configured: boolean; defaultModel: string }> {
-    return [...this.adapters.values()].map((a) => ({ id: a.id, configured: this.vault.isConfigured(a.id), defaultModel: a.defaultModel }));
+    return [...this.adapters.values()].filter((a) => a.id !== 'replay').map((a) => ({ id: a.id, configured: this.vault.isConfigured(a.id), defaultModel: a.defaultModel }));
   }
 
   defaultProvider(): string {
@@ -125,7 +158,7 @@ export class ModelGateway {
   private breaker(key: string): BreakerState {
     let b = this.breakers.get(key);
     if (!b) {
-      b = { consecutiveFailures: 0, openedAt: null };
+      b = { consecutiveFailures: 0, openedAt: null, window: [] };
       this.breakers.set(key, b);
     }
     return b;
@@ -153,7 +186,7 @@ export class ModelGateway {
     while (true) {
       if (breaker.openedAt !== null) {
         if (Date.now() - breaker.openedAt < this.breakerCooldownMs) {
-          throw new ProviderError(c.provider, 'transient', `circuit open for ${key} after ${breaker.consecutiveFailures} consecutive failures`);
+          throw new ProviderError(c.provider, 'transient', `circuit open for ${key}`);
         }
         breaker.openedAt = null; // half-open: allow one probe
       }
@@ -172,18 +205,17 @@ export class ModelGateway {
         const latencyMs = performance.now() - started;
         const entry = this.ledger.record({
           ws: c.ws, task: c.task, agent: c.agent, step: c.step, role: c.role, provider: c.provider, model: c.model, usage: result.usage, latencyMs,
-          status: 'ok', providerResponseId: result.responseId, contextBreakdown: c.contextBreakdown, toolTokens: c.toolTokens,
+          status: 'ok', providerResponseId: result.responseId, contextBreakdown: c.contextBreakdown, toolTokens: c.toolTokens, routerReason: c.routerReason,
         }, manifest?.pricing);
-        breaker.consecutiveFailures = 0;
+        this.recordOutcome(breaker, true);
         return { message: result.message, usage: result.usage, finishReason: result.finishReason, responseId: result.responseId, ledgerEntryId: entry.id, costUsd: entry.costUsd, attempts: attempt + 1, latencyMs };
       } catch (error) {
         const e = adapter.normalizeError(error);
         const latencyMs = performance.now() - started;
-        this.ledger.record({ ws: c.ws, task: c.task, agent: c.agent, step: c.step, role: c.role, provider: c.provider, model: c.model, usage: emptyUsage('estimate'), latencyMs, status: e.kind === 'cancelled' ? 'cancelled' : 'error', error: `${e.kind}: ${e.message}` }, manifest?.pricing);
+        this.ledger.record({ ws: c.ws, task: c.task, agent: c.agent, step: c.step, role: c.role, provider: c.provider, model: c.model, usage: emptyUsage('estimate'), latencyMs, status: e.kind === 'cancelled' ? 'cancelled' : 'error', error: `${e.kind}: ${e.message}`, routerReason: c.routerReason }, manifest?.pricing);
         if (e.kind === 'cancelled') throw e;
-        breaker.consecutiveFailures++;
-        if (breaker.consecutiveFailures >= this.breakerThreshold) breaker.openedAt = Date.now();
-        if (!e.retryable || attempt >= this.maxRetries) throw e;
+        this.recordOutcome(breaker, false);
+        if (breaker.openedAt !== null || !e.retryable || attempt >= this.maxRetries) throw e;
         const delay = this.backoff(attempt, e.retryAfterMs);
         this.logger?.warn('model call failed; retrying', { provider: c.provider, model: c.model, kind: e.kind, attempt, delayMs: delay });
         await new Promise((r) => setTimeout(r, delay));

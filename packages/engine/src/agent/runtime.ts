@@ -17,10 +17,15 @@ import type { BlobStore } from '../storage/blobs.ts';
 import type { EventBus } from '../events/bus.ts';
 import type { GatewayCall, GatewayResult, ModelGateway } from '../models/gateway.ts';
 import type { Ledger, ModelRole } from '../models/ledger.ts';
-import { assertUsable, loadRoleLayers, refString, resolveRoles, type ModelRef, type ResolvedRoles, type RolesInput } from '../models/roles.ts';
+import { MODEL_ROLES, assertUsable, loadRoleLayers, refString, resolveRoles, type ModelRef, type ResolvedRoles, type RolesInput } from '../models/roles.ts';
+import { route, type StepType } from '../models/router.ts';
+import { ToolScript, type ReplayAdapter, type SessionBundle } from '../replay/bundle.ts';
+import type { DepGate } from '../policy/depgate.ts';
+import { formatHookRuns, loadHooks, loadSkills, runHooks, skillsContext, type Hook } from './skills.ts';
+import { buildEvidence, reverify, type ReverifyResult, type VerificationEvidence } from '../artifacts/evidence.ts';
 import type { Tracer } from '../obs/tracing.ts';
 import type { Logger } from '../util/log.ts';
-import type { ToolContext, ToolRegistry } from '../tools/registry.ts';
+import type { ToolContext, ToolOutput, ToolRegistry } from '../tools/registry.ts';
 import { LocalSandbox } from '../sandbox/sandbox.ts';
 import type { EgressProxy } from '../sandbox/egress.ts';
 import type { DevServers } from '../preview/devserver.ts';
@@ -66,6 +71,21 @@ export interface RuntimeOptions {
   contextBudgetTokens?: number;
   /** Transcript compaction (F-CTX-2, §13.4). */
   compaction?: CompactionOptions;
+  /** Recorded-turn provider for deterministic session replay (F-OBS-2). */
+  replay?: ReplayAdapter;
+  /** OSV dependency gate for shell package installs (F-REV-3). */
+  depGate?: DepGate;
+}
+
+export interface ReplayReport {
+  task: string;
+  source: string;
+  status: string;
+  identical: boolean;
+  modelTurns: { recorded: number; replayed: number };
+  toolCalls: { recorded: number; replayed: number };
+  finalTextMatches: boolean;
+  divergence: string | null;
 }
 
 export interface CheckpointInfo {
@@ -123,9 +143,56 @@ export class TaskRuntime {
   private readonly approvals = new Map<string, (approved: boolean) => void>();
   /** Per task: `provider/model` refs that failed permanently (F-MDL-4 fallback), in memory only. */
   private readonly demoted = new Map<string, Set<string>>();
+  /** Replay tasks: recorded tool results served instead of running tools. */
+  private readonly replays = new Map<string, ToolScript>();
 
   constructor(opts: RuntimeOptions) {
     this.o = opts;
+  }
+
+  /**
+   * Deterministic replay (F-OBS-2, §26.4): a new task runs the current harness (policy, loop, context,
+   * router) against the recording — model turns from `ReplayAdapter`, tool results from the bundle, no
+   * verification gates — and reports the first divergence.
+   */
+  async replay(bundle: SessionBundle, workspacePath = bundle.task.workspacePath, timeoutMs = 120_000): Promise<ReplayReport> {
+    const adapter = this.o.replay;
+    if (!adapter) throw new Error('replay is not available in this engine');
+    if (bundle?.version !== 1 || !Array.isArray(bundle.models) || !Array.isArray(bundle.tools)) throw new Error('invalid session bundle');
+    if (bundle.task.policyProfile === 'plan') throw new Error('plan-mode sessions cannot be replayed yet');
+    const policyProfile = bundle.task.policyProfile;
+    if (policyProfile !== 'headless' && policyProfile !== 'interactive') throw new Error(`cannot replay unknown policy profile '${String(policyProfile)}'`);
+    const key = prefixedId('rpl');
+    adapter.load(key, bundle.models);
+    const script = new ToolScript(bundle.tools);
+    const ref = `replay/${key}`;
+    let taskId: string | undefined;
+    try {
+      const t = this.create({
+        workspacePath, goal: bundle.task.goal, title: `Replay of ${bundle.task.id}`, provider: 'replay', model: key,
+        roles: Object.fromEntries(MODEL_ROLES.map((r) => [r, ref])), policyProfile, preapprove: bundle.task.preapprove, start: false,
+      });
+      taskId = t.id;
+      this.replays.set(t.id, script);
+      this.start(t.id);
+      const s = await this.wait(t.id, timeoutMs);
+      const replayedTurns = adapter.served(key);
+      const finalTextMatches = (s.result ?? null) === (bundle.task.result ?? null);
+      let divergence = s.status === 'done' ? null : s.error ?? `replay ended ${s.status}`;
+      if (!divergence && replayedTurns < bundle.models.length) divergence = `replay finished after ${replayedTurns} of ${bundle.models.length} recorded model turns`;
+      if (!divergence && script.remaining) divergence = `${script.remaining} recorded tool calls were not replayed`;
+      if (!divergence && !finalTextMatches) divergence = 'final result text differs from the recording';
+      const report: ReplayReport = {
+        task: t.id, source: bundle.task.id, status: s.status, identical: divergence === null,
+        modelTurns: { recorded: bundle.models.length, replayed: replayedTurns }, toolCalls: { recorded: bundle.tools.length, replayed: script.served.length },
+        finalTextMatches, divergence,
+      };
+      this.saveArtifact(t.id, 'replay', `Replay of ${bundle.task.id}`, report);
+      return report;
+    } finally {
+      adapter.unload(key);
+      if (taskId) this.replays.delete(taskId);
+    }
   }
 
   private workspace(path: string): { id: string; path: string } {
@@ -386,7 +453,10 @@ export class TaskRuntime {
         if (pending.length) {
           await this.runTools(t, pending, sandbox, signal, index);
         } else if (last?.role === 'assistant') {
-          if (await this.verify(t, last, sandbox, signal, index)) return;
+          if (await this.verify(t, last, sandbox, signal, index)) {
+            await this.taskDoneHooks(id, sandbox, signal);
+            return;
+          }
         } else {
           if (t.step_count >= t.max_steps) {
             this.setStatus(id, 'failed', { error: `step limit reached (${t.max_steps})` });
@@ -417,6 +487,8 @@ export class TaskRuntime {
     }
     const instructions = loadInstructions(root, { helixHome: this.o.helixHome });
     const composed = assembleContext({ goal: t.goal, index: stats ? index : undefined, instructions, budgetTokens: this.o.contextBudgetTokens });
+    const skills = skillsContext(loadSkills(root));
+    if (skills) composed.text = composed.text ? `${composed.text}\n\n${skills}` : skills;
     this.saveArtifact(t.id, 'context', 'Composed context', composed);
     this.publish(t.id, t.ws, 'context.composed', {
       items: composed.items, usedTokens: composed.usedTokens, budgetTokens: composed.budgetTokens, warnings: composed.warnings,
@@ -446,19 +518,22 @@ export class TaskRuntime {
   }
 
   /**
-   * Call a role's chain: the primary first, then each fallback when the gateway gives up with a
-   * non-cancel provider error (its own quick retries are exhausted or the breaker is open).
+   * Call a role's chain in router order (F-MDL-5): the routed pick first, then each next ref when the
+   * gateway gives up with a non-cancel provider error (its own quick retries are exhausted or the breaker is open).
    */
-  private async callRole(t: TaskRow, role: ModelRole, c: Omit<GatewayCall, 'provider' | 'model' | 'role'>): Promise<GatewayResult & { ref: ModelRef }> {
+  private async callRole(t: TaskRow, role: ModelRole, step: StepType, c: Omit<GatewayCall, 'provider' | 'model' | 'role'>): Promise<GatewayResult & { ref: ModelRef }> {
     const chain = this.roles(t)[role]?.chain ?? [];
     const all = chain.length ? chain : [{ provider: t.provider, model: t.model }];
     const demoted = this.demoted.get(t.id) ?? new Set<string>();
     // Refs that failed permanently are skipped for the rest of the task (the last one is always kept).
-    const refs = all.filter((r, i) => i === all.length - 1 || !demoted.has(refString(r)));
+    const kept = all.filter((r, i) => i === all.length - 1 || !demoted.has(refString(r)));
+    const gateFailures = this.o.db.get<{ n: number }>('SELECT verify_attempts AS n FROM tasks WHERE id = ?', t.id)?.n ?? 0;
+    const decision = route({ step, chain: kept, gateFailures, isOpen: (r) => this.o.gateway.isOpen(r.provider, r.model) });
+    const refs = decision.refs;
     for (let i = 0; ; i++) {
       const ref = refs[i];
       try {
-        return { ...(await this.o.gateway.call({ ...c, provider: ref.provider, model: ref.model, role })), ref };
+        return { ...(await this.o.gateway.call({ ...c, provider: ref.provider, model: ref.model, role, routerReason: i === 0 ? decision.reason : `${decision.reason}; fallback to ${refString(ref)}` })), ref };
       } catch (error) {
         const next = refs[i + 1];
         if (!next || !(error instanceof ProviderError) || error.kind === 'cancelled' || c.signal?.aborted) throw error;
@@ -466,6 +541,20 @@ export class TaskRuntime {
         if (sticky) this.demoted.set(t.id, demoted.add(refString(ref)));
         this.publish(t.id, t.ws, 'model.fallback', { role, from: refString(ref), to: refString(next), kind: error.kind, sticky, error: error.message.slice(0, 300) }, 'audit');
       }
+    }
+  }
+
+  /** Re-run a verification evidence artifact's assertions in a fresh sandbox of its workspace (F-UI-4). */
+  async reverifyArtifact(artifactId: string): Promise<ReverifyResult> {
+    const row = this.o.db.get<{ task: string; kind: string; data_json: string }>('SELECT task, kind, data_json FROM artifacts WHERE id = ?', artifactId);
+    if (!row) throw new Error(`unknown artifact ${artifactId}`);
+    if (row.kind !== 'verification_evidence') throw new Error(`artifact ${artifactId} is ${row.kind}, not verification_evidence`);
+    const root = this.wsPath(this.row(row.task).ws);
+    const sandbox = new LocalSandbox(prefixedId('sbx'), root, { forceProcess: this.o.forceProcessSandbox, egress: this.o.egress });
+    try {
+      return await reverify(artifactId, parseJson<VerificationEvidence>(row.data_json, { assertions: [] } as unknown as VerificationEvidence), (command) => sandbox.exec(command, { timeoutMs: 300_000 }));
+    } finally {
+      sandbox.destroy();
     }
   }
 
@@ -589,7 +678,7 @@ export class TaskRuntime {
     let summary: CompactionSummary | null = null;
     let error: string | undefined;
     try {
-      const res = await this.callRole(t, 'summarizer', {
+      const res = await this.callRole(t, 'summarizer', 'summarize', {
         ws: t.ws, task: t.id, agent: 'primary', step: stepId, signal,
         request: { system: SUMMARIZER_SYSTEM, messages: [{ role: 'user', parts: [{ type: 'text', text: summarizerPrompt(slice, current) }] }], toolChoice: 'none', maxOutputTokens: 2048 },
       });
@@ -623,7 +712,8 @@ export class TaskRuntime {
     const system = systemPrompt(root, this.gateSummary(root, t.verify_command), t.policy_profile, context);
     const compaction = await this.maybeCompact(t, messages, system, tools, stepId, signal);
     const view = this.requestMessages(compactedView(messages, compaction));
-    const call = () => this.callRole(t, t.policy_profile === 'plan' ? 'planner' : 'coder', {
+    const plan = t.policy_profile === 'plan';
+    const call = () => this.callRole(t, plan ? 'planner' : 'coder', plan ? 'plan' : 'edit', {
       ws: t.ws, task: t.id, agent: 'primary', step: stepId, signal,
       request: { system, messages: view, tools, toolChoice: 'auto', maxOutputTokens: 8192 },
       onEvent: (e) => { if (e.type === 'text_delta') this.publish(t.id, t.ws, 'model.delta', { stepId, text: e.text }, 'none'); },
@@ -663,7 +753,7 @@ export class TaskRuntime {
     const messages: Message[] = [{ role: 'user', parts: [{ type: 'text', text: question }] }];
     this.publish(t.id, t.ws, 'agent.subagent', { kind: 'explore', question: question.slice(0, 300), tools: tools.map((s) => s.name) });
     for (let step = 0; step < EXPLORE_MAX_STEPS; step++) {
-      const res = await this.callRole(t, 'explorer', {
+      const res = await this.callRole(t, 'explorer', 'explore', {
         ws: t.ws, task: t.id, agent: 'explore', signal,
         request: { system, messages, tools, toolChoice: step === EXPLORE_MAX_STEPS - 1 ? 'none' : 'auto', maxOutputTokens: 2048 },
       });
@@ -707,8 +797,28 @@ export class TaskRuntime {
       const decision = evaluate({ tool: call.name, args: call.args, profile: t.policy_profile, preapprove, sandboxHasNetwork: sandbox.info().network, tainted });
       let allowed = decision.verdict === 'allow';
       if (decision.verdict === 'ask') allowed = await this.ask(t, call, decision.actionClass, signal);
+      let denyReason = decision.reason;
+      if (allowed && call.name === 'run_shell' && this.o.depGate && !this.replays.has(t.id)) {
+        const dep = await this.o.depGate.decide(String((call.args as { command?: unknown }).command ?? ''), sandbox.root);
+        if (dep) {
+          this.publish(t.id, t.ws, 'deps.checked', { callId: call.id, verdict: dep.verdict, findings: dep.findings }, 'audit');
+          if (dep.verdict === 'deny' || (dep.verdict === 'ask' && t.policy_profile === 'headless')) allowed = false;
+          else if (dep.verdict === 'ask') allowed = await this.ask(t, call, 'dependency', signal);
+          if (!allowed) denyReason = dep.reason;
+        }
+      }
       const started = performance.now();
-      const out = allowed
+      const script = this.replays.get(t.id);
+      const replayed = script?.next(call, allowed ? 'allowed' : 'denied');
+      const hooks = replayed || !allowed ? [] : this.hooksFor(sandbox.root);
+      const pre = await runHooks(sandbox, hooks, 'pre_tool', { tool: call.name, args: call.args }, signal);
+      const blocked = pre.find((r) => r.exitCode !== 0);
+      if (pre.length) this.publish(t.id, t.ws, 'hook.ran', { event: 'pre_tool', tool: call.name, runs: pre.map((r) => ({ run: r.run, exitCode: r.exitCode })) }, 'audit');
+      let out: ToolOutput = blocked
+        ? { content: `blocked by pre_tool hook \`${blocked.run}\` (exit ${blocked.exitCode})\n${formatHookRuns('pre_tool', pre)}`, isError: true, summary: `hook blocked ${call.name}`, provenance: { source: 'repo', trust: 'untrusted', taint: true, origin: 'hook:pre_tool' } }
+        : replayed && allowed
+        ? replayed
+        : allowed
         ? await this.o.tracer.withSpan('tool.call', { tool: call.name, 'task.id': t.id, action_class: decision.actionClass }, () =>
             this.o.tools.run(call.name, call.args, {
               sandbox, signal, index,
@@ -722,7 +832,14 @@ export class TaskRuntime {
                 return artId;
               } : undefined,
             }))
-        : { content: `denied by policy: ${decision.reason}`, isError: true, summary: `denied ${call.name}` };
+        : { content: `denied by policy: ${denyReason}`, isError: true, summary: `denied ${call.name}` };
+      if (!blocked && hooks.length && !signal.aborted) {
+        const post = await runHooks(sandbox, hooks, 'post_tool', { tool: call.name, args: call.args }, signal);
+        if (post.length) {
+          this.publish(t.id, t.ws, 'hook.ran', { event: 'post_tool', tool: call.name, runs: post.map((r) => ({ run: r.run, exitCode: r.exitCode })) }, 'audit');
+          out = { ...out, content: `${out.content}\n${formatHookRuns('post_tool', post)}`, provenance: { source: out.provenance?.source ?? 'builtin', trust: 'untrusted', taint: true, origin: 'hook:post_tool' } };
+        }
+      }
       if (signal.aborted) return;
       const durationMs = Math.round(performance.now() - started);
       this.o.db.transaction(() => {
@@ -735,12 +852,37 @@ export class TaskRuntime {
     }
   }
 
+  /** `.helix/hooks.json` (F-AGT-5); an invalid file is reported once per call and treated as no hooks. */
+  private hooksFor(root: string): Hook[] {
+    try {
+      return loadHooks(root);
+    } catch (error) {
+      this.o.logger?.warn('invalid hooks file; hooks disabled', { root, error: (error as Error).message });
+      return [];
+    }
+  }
+
+  private async taskDoneHooks(id: string, sandbox: LocalSandbox, signal: AbortSignal): Promise<void> {
+    const t = this.row(id);
+    const runs = await runHooks(sandbox, this.hooksFor(sandbox.root), 'task_done', { status: t.status }, signal);
+    if (!runs.length) return;
+    this.saveArtifact(id, 'hook_output', 'task_done hooks', { event: 'task_done', status: t.status, runs, provenance: { source: 'repo', trust: 'untrusted', taint: true } });
+    this.publish(id, t.ws, 'hook.ran', { event: 'task_done', status: t.status, runs: runs.map((r) => ({ run: r.run, exitCode: r.exitCode })) }, 'audit');
+  }
+
   private checkpoint(t: TaskRow, sandbox: LocalSandbox, abs: string, previous: string | null): void {
     const ref = previous === null ? null : this.o.blobs ? this.o.blobs.put(previous, { kind: 'checkpoint', id: t.id }) : previous;
     this.o.db.run('INSERT INTO checkpoints (id, task, step, files_json, at) VALUES (?, ?, ?, ?, ?)', prefixedId('ckpt'), t.id, null, json([{ path: sandbox.relative(abs), before: ref }]), new Date().toISOString());
   }
 
   private ask(t: TaskRow, call: Extract<Part, { type: 'tool_call' }>, actionClass: string, signal: AbortSignal): Promise<boolean> {
+    const script = this.replays.get(t.id);
+    if (script) {
+      // Interactive replays reuse the recorded human decision instead of waiting for a new approval.
+      const approved = script.recordedStatus() !== 'denied';
+      this.publish(t.id, t.ws, 'approval.replayed', { tool: call.name, args: call.args, actionClass, approved }, 'audit');
+      return Promise.resolve(approved);
+    }
     const approvalId = prefixedId('appr');
     this.o.db.run(`INSERT INTO approvals (id, task, tool, args_json, action_class, status, at) VALUES (?, ?, ?, ?, ?, 'pending', ?)`, approvalId, t.id, call.name, json(call.args), actionClass, new Date().toISOString());
     this.setStatus(t.id, 'awaiting_approval');
@@ -882,6 +1024,13 @@ export class TaskRuntime {
       command, exitCode: failed[0]?.exitCode ?? 0, attempt, passed: failed.length === 0, diagnostics: allDiagnostics,
       gates: results.map((x) => ({ name: x.gate.name, kind: x.gate.kind, required: x.gate.required, passed: x.passed, exitCode: x.exitCode, durationMs: x.durationMs, ...(tolerated.includes(x) ? { preexistingOnly: true } : {}) })),
     }, 'audit');
+    const evidence = buildEvidence({
+      attempt, passed: failed.length === 0,
+      gates: results.map((x) => ({ name: x.gate.name, command: x.command, required: x.gate.required, exitCode: x.exitCode, passed: x.passed, diagnostics: x.diagnostics.length })),
+      changedFiles: this.changeset(t.id).map((p) => (p.startsWith(`${sandbox.root}/`) ? p.slice(sandbox.root.length + 1) : p)),
+    });
+    const evidenceId = this.saveArtifact(t.id, 'verification_evidence', `Verification evidence (attempt ${attempt})`, evidence);
+    this.publish(t.id, t.ws, 'artifact.created', { artifactId: evidenceId, kind: 'verification_evidence', title: `Verification evidence (attempt ${attempt})` });
     if (!failed.length) {
       const warn = results.filter((x) => !x.passed && !tolerated.includes(x)).map((x) => x.gate.name);
       const notes = [
