@@ -1,0 +1,36 @@
+{
+  "verifiedAt": "2026-11-10",
+  "repository": "daggerm29-oss/8",
+  "pr": 22,
+  "positive": {
+    "url": "https://github.com/daggerm29-oss/8/actions/runs/42822113350",
+    "sha": "b6260eb3a340a43ba7456328274cc9b12ec71702",
+    "event": "pull_request",
+    "job": "ci-linux",
+    "conclusion": "success",
+    "engine": { "tests": 160, "passed": 160, "failed": 0, "skipped": 0 },
+    "backends": ["local-container", "local-unshare", "local-os"],
+    "verifiedSteps": ["TypeScript", "runtime and PTY probe", "Protocol A-local suites", "Provider conformance", "Agent exit and restart regressions", "Engine A-local suites and all backend conformance", "CLI A-local suites", "Desktop E2E headless (binary required, no skipped pass)", "Red-team regression suites", "Scope invariants and mutation tests"]
+  },
+  "negative": {
+    "url": "https://github.com/daggerm29-oss/8/actions/runs/42828757024",
+    "sha": "efaf3963740351b76c7e8d50aa9173a428593df1",
+    "branch": "helix/ci-negative-2026-11-10-current",
+    "workflowBlob": "0d8e23906bc9f7502c1b3cbd293a0ec3e6a859b5",
+    "workflowIdenticalToPositive": true,
+    "conclusion": "failure",
+    "failedStep": "Protocol A-local suites",
+    "assertion": "R0.8 seeded assertion: current ci.yml must reject this scratch branch",
+    "errorCode": "ERR_ASSERTION",
+    "exitCode": 1,
+    "extraPullRequestCreated": false,
+    "mustNeverMerge": true
+  },
+  "exactAcceptanceCommand": {
+    "command": "gh workflow run ci.yml --repo daggerm29-oss/8 --ref helix/session-2026-11-10-local-container",
+    "result": "HTTP 403: Resource not accessible by integration",
+    "successfulDispatchWatchVerified": false
+  },
+  "fullR08Complete": false,
+  "remaining": ["Exact dispatch/watch acceptance is permission-blocked", "Nightly reference/full-HTS job provisioning is not certified; later harnesses remain absent"]
+}

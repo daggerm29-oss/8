@@ -29,7 +29,7 @@
 ## Current task notes (overwrite when the task changes)
 
 - R0.3 stays Blocked: the OpenAI API-key live check is intentionally not applicable (user will not use an OpenAI Platform key; ChatGPT OAuth via Codex app-server is NOT implemented or verified). All A-local cases + Gemini live pass (commit 663805d). Do not ask for `OPENAI_API_KEY`.
-- R0.6/R0.7/R0.9 passed (cfda275/29b8ce6/222a759). R0.8: fail-fast run 42814435472 exposes both agent failures as EACCES deleting Podman probe dirs. Fix: namespace-safe cleanup of probe/rootfs/scratch trees; failed cleanup makes probe unavailable. Agent/fail-closed tests 15/15, tsc clean. Earlier hang fixed with assertion-safe provider cleanup. Inspect next push CI; never merge the scratch negative branch.
+- R0.8: verified green PR run 42822113350 at b6260eb (engine 160/160, all three backends, PTY, Electron, red-team, scope). Current identical-workflow negative control 42828757024 fails its seeded assertion at efaf396. Exact dispatch now denied HTTP 403; full R0.8 remains open rather than weakening its Accept line. Evidence: evals/results/r0-8-ci-2026-11-10.json.
 - G0.1: 3/3 real Gemini 3.5 Flash Lite fixtures + live-tool restart pass, but unpriced costs cannot satisfy reconciliation (reviewed failed JSON in evals/results/). Default 3.8 Flash had 503/timeout. G0.2 still rejects FR-1, F-MDL-1, F-AGT-1; resume their original acceptance gaps, not M1.
 - Sandbox tests need `sudo dnf install -y podman crun bubblewrap` after a VM reset; conformance: `HELIX_SANDBOX_BACKENDS=local-container,local-unshare,local-os`.
 - Parked: draft PR #19 (M3) is untouched; do not continue it until M3 is the current milestone (AGENTS.md §3). Then first fix its shared-mode write-lease bypass and worktree lease leak.
