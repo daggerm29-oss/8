@@ -4,6 +4,10 @@
 > AI sessions: read `AGENTS.md` first. This file is **replaced, not appended**; keep it under 120 lines.
 > Task details and Accept lines: `docs/roadmap.md`. Decisions and known issues: `docs/decisions.md`. Old session log: `docs/history/`.
 
+> **RESUME NOTE: R0.8 is intentionally POSTPONED at the user's request (2026-11-10).** Resume from R0.8 when the user says they are ready, not before. Do not start M1 and do not declare M0 complete. R0.8 stays `[ ]`, its acceptance is unchanged, and it is not waived.
+> Exact Accept [A-host] (docs/roadmap.md R0.8): `gh workflow run ci.yml --ref <branch> && gh run watch --exit-status` → `ci-linux` green on the branch; a seeded failing test on a scratch branch turns it red. Branch: `helix/session-2026-11-10-local-container`.
+> Outstanding blockers: (1) manual dispatch + successful watch not yet done; (2) v0 GitHub App lacks Actions: Read and write (only Vercel can add it; the owner then approves; alternatively the owner runs the command); (3) nightly `bench-ref` needs a registered self-hosted `helix-reference` runner; (4) GitHub Actions secret `GEMINI_API` must be configured and verified (the Vercel env var does not apply to Actions); (5) later-milestone harnesses `bench/run.mjs`, `evals/hts-lite.ts`, `evals/browser.ts`, `evals/router-cache.ts` are not yet available. Nightly schedules also need the workflows on `main`.
+
 ## Dashboard
 
 <!-- progress:start -->
@@ -30,9 +34,9 @@
 
 - R0.3 DONE / F-MDL-1 Done: explicit user-approved OpenAI M0 live-smoke exemption in plan §0.3. Both adapters 23/23 A-local; package/degradation gateway 11/11; Gemini live listing + two authenticated configuration/access responses 2/2 (28 models), fresh artifact fr-1-gemini-controls-2026-11-10T14-50-33-405Z.json. No OpenAI key, OAuth or billing claim.
 - G0.2 DONE: exact strict M0 scope command exits 0, all 154 IDs retained; scope guardrails 14/14, tsc clean. F-AGT-1 stays Partial across approved original M0/M1 split; R1.16 and new R1.47 retain M1 editable-plan/nested-Explore coverage (documentation only). Previous failed scope/exit artifacts retained unchanged.
-- R0.8 remains OPEN (owner action needed). Dispatch 403 = v0 GitHub App token lacks `actions=write` (header X-Accepted-Github-Permissions). Fix: grant the app "Actions: Read and write", or the owner runs the Accept command. Nightly: no workflows on `main`, 0 `helix-reference` runners, GEMINI_API Actions secret unverified. Not waived.
+- R0.8 POSTPONED by the user (see resume note above); remains OPEN (owner action needed). Dispatch 403 = v0 GitHub App token lacks `actions=write` (header X-Accepted-Github-Permissions). Fix: grant the app "Actions: Read and write", or the owner runs the Accept command. Nightly: no workflows on `main`, 0 `helix-reference` runners, GEMINI_API Actions secret unverified. Not waived.
 - Container runtime RESTORED: VM had been reset (no Podman, crun, bwrap or storage left, so nothing deleted). Reinstalled them; probe picks crun with masked /proc and PTY ok. Focused sandbox/conformance/cancel/fail-closed/egress tests 51/51, 0 skipped, all three backends. Fresh full engine 166/166, 0 skipped.
-- Current commit 2b55cfe ci-linux green (push 42840845440, PR 42840864785). Evidence: evals/results/m0-container-recovery-r0-8-diagnosis-2026-11-10.json. No code, CI or isolation change; no M1, no merge, PR #19 untouched. Safe to merge: no while R0.8 is open.
+- ci-linux green at 2b55cfe (push 42840845440, PR 42840864785) and at 61b7223 (push 42845900460, PR 42846494225). Evidence: evals/results/m0-container-recovery-r0-8-diagnosis-2026-11-10.json. No code, CI or isolation change; no M1, no merge, PR #19 untouched. Safe to merge: no while R0.8 is open.
 
 ## Ideas parking lot (one line each, max 15 — do not implement)
 
