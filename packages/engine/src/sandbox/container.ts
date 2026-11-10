@@ -40,12 +40,12 @@ export function clientEnv(): Record<string, string> {
   return env;
 }
 
+/** Strict PATH lookup: no hidden fallback directories, so a backend missing from PATH is really unavailable (R0.2 fail closed). */
 function onPath(bin: string): string | null {
   if (bin.includes('/')) return existsSync(bin) ? bin : null;
   for (const dir of (process.env.PATH ?? '').split(delimiter)) {
     if (dir && existsSync(join(dir, bin))) return join(dir, bin);
   }
-  for (const dir of ['/usr/bin', '/usr/local/bin', '/usr/sbin']) if (existsSync(join(dir, bin))) return join(dir, bin);
   return null;
 }
 
@@ -108,11 +108,14 @@ export function runArgs(s: RunSpec): string[] {
 }
 
 let probed: ContainerRuntime | null | undefined;
+let probedKey: string | undefined;
 
 /** Reset the cached probe (tests that change PATH). */
 export function resetContainerProbe(): void {
   probed = undefined;
 }
+
+const probeKey = () => ['PATH', 'HELIX_CONTAINER_CLI', 'HELIX_CONTAINER_RUNTIME', 'HELIX_SANDBOX_IMAGE'].map((k) => process.env[k] ?? '').join('\0');
 
 /**
  * Detect a working rootless container engine: tries gVisor first, then the engine's default runtime, then
@@ -120,7 +123,9 @@ export function resetContainerProbe(): void {
  * `HELIX_CONTAINER_CLI` (podman|docker), `HELIX_CONTAINER_RUNTIME` and `HELIX_SANDBOX_IMAGE` override.
  */
 export function containerRuntime(): ContainerRuntime | null {
-  if (probed !== undefined) return probed;
+  const key = probeKey();
+  if (probed !== undefined && probedKey === key) return probed;
+  probedKey = key;
   probed = null;
   const forcedCli = process.env.HELIX_CONTAINER_CLI as ContainerCli | undefined;
   const clis: ContainerCli[] = forcedCli ? [forcedCli] : ['podman', 'docker'];

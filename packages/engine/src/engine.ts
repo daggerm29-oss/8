@@ -1,5 +1,5 @@
 import type { CompactionOptions } from './context/compaction.ts';
-import { mkdirSync, writeFileSync, rmSync, readFileSync, realpathSync } from 'node:fs';
+import { mkdirSync, writeFileSync, rmSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { timingSafeEqual } from 'node:crypto';
@@ -26,7 +26,8 @@ import { ReplayAdapter, exportBundle, type SessionBundle } from './replay/bundle
 import { builtinTools } from './tools/builtin.ts';
 import { McpManager, type McpServerConfig, type McpServerStatus } from './mcp/manager.ts';
 import { TaskRuntime } from './agent/runtime.ts';
-import { LocalSandbox, availableBackends, unshareAvailable } from './sandbox/sandbox.ts';
+import { LocalSandbox, SandboxUnavailableError, availableBackends, mountNsAvailable, sandboxStatus, unshareAvailable } from './sandbox/sandbox.ts';
+import { localOsTool } from './sandbox/localos.ts';
 import { containerRuntime } from './sandbox/container.ts';
 import { DEFAULT_EGRESS_ALLOWLIST, EgressProxy, type UpstreamOverride } from './sandbox/egress.ts';
 import { DevServers } from './preview/devserver.ts';
@@ -54,7 +55,6 @@ export interface EngineOptions {
   home?: string;
   env?: NodeJS.ProcessEnv;
   adapters?: ProviderAdapter[];
-  forceProcessSandbox?: boolean;
   /** Test seam for the masking proxy (F-SBX-4): where intercepted requests really go. */
   egressUpstream?: UpstreamOverride;
   retry?: { maxRetries?: number; baseDelayMs?: number; maxDelayMs?: number };
@@ -86,7 +86,7 @@ function compactionFrom(env: NodeJS.ProcessEnv, opts?: CompactionOptions): Compa
   };
 }
 
-const TOPICS = ['task.*', 'agent.*', 'tool.*', 'model.*', 'verify.*', 'approval.*', 'ledger.*', 'budget.*', 'context.*', 'artifact.*', 'checkpoint.*', 'workspace.*', 'egress.*', 'preview.*', 'secret.*'];
+const TOPICS = ['task.*', 'agent.*', 'tool.*', 'model.*', 'verify.*', 'approval.*', 'ledger.*', 'budget.*', 'context.*', 'artifact.*', 'checkpoint.*', 'workspace.*', 'egress.*', 'preview.*', 'secret.*', 'sandbox.*'];
 
 /** Helix Engine (§6.2): composition root for storage, bus, gateway, tools, sandbox, and the task runtime. */
 export class Engine {
@@ -118,11 +118,9 @@ export class Engine {
   private http?: Server;
   private closed = false;
   private readonly terminals = new Map<string, LocalSandbox>();
-  private readonly forceProcessSandbox: boolean;
 
   constructor(opts: EngineOptions = {}) {
     this.home = opts.home ?? helixHome();
-    this.forceProcessSandbox = opts.forceProcessSandbox ?? false;
     mkdirSync(this.home, { recursive: true, mode: 0o700 });
     const env = opts.env ?? process.env;
     this.logger = new Logger({ dir: join(this.home, 'logs'), stderr: false, bindings: { engine: this.id } });
@@ -147,7 +145,7 @@ export class Engine {
     }, { upstream: opts.egressUpstream });
     this.secretSource = env;
     this.devServers = new DevServers({
-      egress: this.egress, forceProcess: opts.forceProcessSandbox,
+      egress: this.egress, createSandbox: (root) => this.runtime.sandboxFor(root, 'dev', { purpose: 'preview' }),
       onReady: (root, info) => this.bus.publish({ topic: 'preview.ready', ws: this.runtime.workspaceFor(root).id, data: { ...info, workspacePath: root } }),
       onExit: (root, info, code) => this.bus.publish({ topic: 'preview.exited', ws: this.runtime.workspaceFor(root).id, data: { ...info, workspacePath: root, exitCode: code } }),
     });
@@ -155,7 +153,7 @@ export class Engine {
     const tools = builtinTools();
     this.mcp = new McpManager({ home: this.home, registry: tools, logger: this.logger, config: opts.mcpServers, toolSearchThreshold: opts.mcpToolSearchThreshold });
     this.mcpReady = opts.mcp === false ? Promise.resolve([]) : this.mcp.start();
-    this.runtime = new TaskRuntime({ db: this.db, bus: this.bus, gateway: this.gateway, ledger: this.ledger, tools, tracer: this.tracer, engineId: this.id, blobs: this.blobs, logger: this.logger, forceProcessSandbox: opts.forceProcessSandbox, egress: this.egress, devServers: this.devServers, browser: this.browser, taskRetryScale: opts.taskRetryScale, helixHome: this.home, replay: this.replay, indexing: opts.indexing, compaction: compactionFrom(env, opts.compaction),
+    this.runtime = new TaskRuntime({ db: this.db, bus: this.bus, gateway: this.gateway, ledger: this.ledger, tools, tracer: this.tracer, engineId: this.id, blobs: this.blobs, logger: this.logger, egress: this.egress, devServers: this.devServers, browser: this.browser, taskRetryScale: opts.taskRetryScale, helixHome: this.home, replay: this.replay, indexing: opts.indexing, compaction: compactionFrom(env, opts.compaction),
       depGate: env.HELIX_DEP_GATE === 'off' ? undefined : new DepGate({ osvUrl: env.HELIX_OSV_URL, npmRegistryUrl: env.HELIX_NPM_REGISTRY_URL, pypiUrl: env.HELIX_PYPI_URL }) });
 
     const now = new Date().toISOString();
@@ -178,9 +176,18 @@ export class Engine {
   attach(peer: RpcPeer, opts: { token?: string } = {}): void {
     let initialized = opts.token === undefined;
     const unsubs: Array<() => void> = [];
+    const failClosed = (e: unknown): never => {
+      if (e instanceof SandboxUnavailableError) throw new RpcError(RpcErrorCode.SandboxUnavailable, e.message, { code: e.code });
+      throw e;
+    };
     const guard = <P>(fn: (p: P) => unknown) => (params: unknown) => {
       if (!initialized) throw new RpcError(RpcErrorCode.InvalidRequest, 'call initialize with a valid token first');
-      return fn((params ?? {}) as P);
+      try {
+        const r = fn((params ?? {}) as P);
+        return r instanceof Promise ? r.catch(failClosed) : r;
+      } catch (e) {
+        return failClosed(e);
+      }
     };
     peer.handle(Methods.initialize, (params): InitializeResult => {
       const p = (params ?? {}) as InitializeParams;
@@ -191,7 +198,7 @@ export class Engine {
       }
       initialized = true;
       for (const topic of p.topics ?? []) unsubs.push(this.bus.subscribe(topic, (e) => peer.notify(Notifications.event, e)));
-      return { engineVersion: ENGINE_VERSION, protocolVersion: PROTOCOL_VERSION, engineId: this.id, capabilities: { sandboxProviders: availableBackends().length ? availableBackends() : ['local-process'], providers: this.gateway.providers().map((x) => x.id), topics: TOPICS } };
+      return { engineVersion: ENGINE_VERSION, protocolVersion: PROTOCOL_VERSION, engineId: this.id, capabilities: { sandboxProviders: availableBackends(), defaultSandbox: sandboxStatus().backend, providers: this.gateway.providers().map((x) => x.id), topics: TOPICS } };
     });
     peer.onClose(() => unsubs.forEach((u) => u()));
     peer.handle(Methods.ping, () => ({ pong: true, at: new Date().toISOString() }));
@@ -221,7 +228,26 @@ export class Engine {
     peer.handle(Methods.budgetsSet, guard<Parameters<Ledger['setBudget']>[0]>((p) => ({ id: this.ledger.setBudget(p) })));
     peer.handle(Methods.providersList, guard(() => this.gateway.providers()));
     peer.handle(Methods.modelsList, guard<{ provider: string }>((p) => this.gateway.listModels(p.provider)));
-    peer.handle(Methods.sandboxCheck, guard(() => ({ unshare: unshareAvailable(), container: containerRuntime() })));
+    peer.handle(Methods.sandboxCheck, guard(() => {
+      const s = sandboxStatus();
+      const lo = localOsTool();
+      return { unshare: unshareAvailable(), mountNs: mountNsAvailable(), container: containerRuntime(), localOs: lo ? { tool: lo.kind, proc: lo.proc } : null, available: availableBackends(), default: s.backend, isolation: s.isolation, reason: s.reason };
+    }));
+    peer.handle(Methods.workbenchStatus, guard<{ workspacePath?: string }>((p) => this.workbenchStatus(p.workspacePath)));
+    peer.handle(Methods.workspaceTrust, guard<{ workspacePath: string; trusted: boolean; lightMode?: boolean }>((p) => {
+      if (typeof p.workspacePath !== 'string' || !p.workspacePath) throw new Error('workspacePath is required');
+      let root: string;
+      try { root = realpathSync(resolve(p.workspacePath)); } catch { throw new Error(`no such workspace: ${p.workspacePath}`); }
+      if (!statSync(root).isDirectory()) throw new Error(`not a directory: ${p.workspacePath}`);
+      const ws = this.runtime.workspaceFor(root);
+      const busy = this.db.all<{ id: string }>('SELECT id FROM tasks WHERE ws = ?', ws.id).find((t) => this.runtime.isRunning(t.id));
+      if (busy) throw new Error(`task ${busy.id} is running in this workspace; wait for it or cancel it before changing trust`);
+      this.runtime.setWorkspaceTrust(root, { trusted: p.trusted, lightMode: p.lightMode });
+      this.terminals.get(root)?.destroy();
+      this.terminals.delete(root);
+      this.devServers.stop(root);
+      return this.workbenchStatus(root);
+    }));
     peer.handle(Methods.eventsReplay, guard<{ ws: string; afterSeq?: number; limit?: number }>((p) => (this.bus.flush(), this.bus.replay(p.ws, p.afterSeq ?? 0, p.limit))));
     peer.handle(Methods.indexUpdate, guard<{ workspacePath: string }>((p) => {
       const idx = this.index(p.workspacePath);
@@ -440,10 +466,26 @@ export class Engine {
   private terminalSandbox(root: string): LocalSandbox {
     let s = this.terminals.get(root);
     if (!s) {
-      s = new LocalSandbox(prefixedId('term'), root, { forceProcess: this.forceProcessSandbox, egress: this.egress });
+      s = this.runtime.sandboxFor(root, 'term', { purpose: 'terminal' });
       this.terminals.set(root, s);
     }
     return s;
+  }
+
+  /**
+   * Isolation the workbench shows permanently (SEC-1): `full`, `light` (trusted repo in `local-os`), `partial` (WSL), or
+   * `none` (agent processes are refused). Engine-wide when no workspace is given.
+   */
+  workbenchStatus(workspacePath?: string) {
+    let root: string | null = null;
+    if (workspacePath) {
+      try { root = realpathSync(resolve(workspacePath)); } catch { throw new Error(`no such workspace: ${workspacePath}`); }
+    }
+    const s = root ? this.runtime.sandboxStatusFor(root) : { ...sandboxStatus(), trust: null };
+    return {
+      isolation: s.isolation, backend: s.backend, reason: s.reason, available: availableBackends(),
+      workspace: root ? { path: root, trusted: !!s.trust?.trusted, lightMode: !!s.trust?.lightMode, trustedAt: s.trust?.at ?? null } : null,
+    };
   }
 
   /** Index for a workspace path (registers the workspace on first use). */

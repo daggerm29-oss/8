@@ -8,7 +8,7 @@ import { Engine } from './engine.ts';
 const args = process.argv.slice(2);
 const flag = (name: string) => args.includes(name);
 const value = (name: string) => (flag(name) ? args[args.indexOf(name) + 1] : undefined);
-const engine = new Engine({ forceProcessSandbox: process.env.HELIX_SANDBOX_PROVIDER === 'process' });
+const engine = new Engine();
 const stop = () => void engine.close().then(() => process.exit(0));
 process.on('SIGTERM', stop);
 process.on('SIGINT', stop);

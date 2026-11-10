@@ -99,4 +99,7 @@ export const MIGRATIONS: string[] = [
   CREATE INDEX idx_config_path ON idx_config(ws, path);
   DELETE FROM idx_files; DELETE FROM idx_symbols; DELETE FROM idx_imports; DELETE FROM idx_chunks; DELETE FROM idx_refs; DELETE FROM idx_vectors;
   `,
+  /* v7: per-workspace trust and the explicit `local-os` light-mode opt-in (SEC-1, §16.2). NULL = untrusted, full isolation. */ `
+  ALTER TABLE workspace ADD COLUMN trust_json TEXT;
+  `,
 ];

@@ -33,6 +33,8 @@ export const RpcErrorCode = {
   Unauthorized: -32001,
   NotInitialized: -32002,
   Conflict: -32009,
+  /** No isolating sandbox for the request; the Engine refuses to run agent processes (SEC-1). `data.code = 'sandbox_unavailable'`. */
+  SandboxUnavailable: -32010,
 } as const;
 
 export class RpcError extends Error {

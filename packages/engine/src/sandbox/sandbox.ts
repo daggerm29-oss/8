@@ -11,22 +11,85 @@ import { isDeniedHostPath, Vault } from '../vault/vault.ts';
 import { globalRedactor } from '../util/redact.ts';
 import { wslEnvList, wslExecArgs, wslFromEnv, type WslConfig } from './wsl.ts';
 import { buildRootfs, clientEnv, containerRuntime, removeContainer, runArgs, type ContainerRuntime } from './container.ts';
+import { bwrapArgv, localOsTool, seatbeltArgv, type LocalOsTool } from './localos.ts';
 
-export type SandboxBackend = 'local-container' | 'local-unshare';
+export type SandboxBackend = 'local-container' | 'local-unshare' | 'local-os';
+/** `full`: container or namespaced contained root. `light`: `local-os` for a trusted repo (SEC-1). `partial`: WSL (no fs isolation or egress proxy yet, R2.15). */
+export type SandboxIsolation = 'full' | 'light' | 'partial';
 
-/** Default local backend (§16.2): `local-container` when a rootless engine works, else `local-unshare`. Overridable with `HELIX_SANDBOX_PROVIDER`. */
-export function defaultBackend(): SandboxBackend | null {
-  const forced = process.env.HELIX_SANDBOX_PROVIDER;
-  if (forced === 'local-container' || forced === 'local-unshare') return forced;
-  if (containerRuntime()) return 'local-container';
-  return unshareAvailable() ? 'local-unshare' : null;
+/** Raised instead of ever running an agent process unisolated (SEC-1, FR-19). Mapped to the `sandbox_unavailable` RPC error. */
+export class SandboxUnavailableError extends Error {
+  readonly code = 'sandbox_unavailable';
+  constructor(message: string) {
+    super(message);
+    this.name = 'SandboxUnavailableError';
+  }
 }
 
-/** Backends usable on this host, best first. */
+/** `local-unshare` counts as isolating only when the full contained root works (fs + net + pid), not with unshare alone (SEC-2). */
+function unshareIsolates(): boolean {
+  return mountNsAvailable();
+}
+
+const lightToolName = () => (process.platform === 'darwin' ? 'Seatbelt (sandbox-exec)' : 'bubblewrap (bwrap)');
+
+/**
+ * Fail-closed backend resolution (§16.2, SEC-1). Full isolation: `local-container` when a rootless engine works, else
+ * `local-unshare` with a contained root. `local-os` only when the caller passes the workspace's explicit trusted light-mode
+ * opt-in, and then exactly `local-os` (no switch to another backend). `HELIX_SANDBOX_PROVIDER` may force a full backend; an
+ * unknown or unavailable value is an error, never ignored. Throws `SandboxUnavailableError`; there is no unisolated fallback.
+ */
+export function resolveBackend(opts: { lightMode?: boolean } = {}): SandboxBackend {
+  if (opts.lightMode) {
+    if (localOsTool()) return 'local-os';
+    throw new SandboxUnavailableError(`local-os light mode is selected for this trusted workspace, but ${lightToolName()} is not usable on this host; agent processes are refused`);
+  }
+  const forced = process.env.HELIX_SANDBOX_PROVIDER;
+  if (forced && forced !== 'wsl') {
+    if (forced === 'local-container') {
+      if (containerRuntime()) return forced;
+      throw new SandboxUnavailableError('HELIX_SANDBOX_PROVIDER=local-container, but no working rootless podman/docker was found; agent processes are refused');
+    }
+    if (forced === 'local-unshare') {
+      if (unshareIsolates()) return forced;
+      throw new SandboxUnavailableError('HELIX_SANDBOX_PROVIDER=local-unshare, but user+mount namespaces with a contained root do not work on this host; agent processes are refused');
+    }
+    if (forced === 'local-os') throw new SandboxUnavailableError('HELIX_SANDBOX_PROVIDER=local-os is not accepted: light mode is enabled per workspace by the user (workspace.trust with lightMode), never by environment');
+    throw new SandboxUnavailableError(`unknown HELIX_SANDBOX_PROVIDER '${forced}' (expected local-container or local-unshare)`);
+  }
+  if (containerRuntime()) return 'local-container';
+  if (unshareIsolates()) return 'local-unshare';
+  throw new SandboxUnavailableError('no isolating sandbox backend is available (needs rootless podman/docker, or unprivileged user+mount namespaces); agent processes are refused');
+}
+
+/** Resolution without throwing: the backend agent processes would use, or the reason they are refused. */
+export function sandboxStatus(opts: { lightMode?: boolean } = {}): { backend: SandboxBackend | 'wsl' | null; isolation: SandboxIsolation | 'none'; reason: string | null } {
+  if (wslFromEnv()) return { backend: 'wsl', isolation: 'partial', reason: null };
+  try {
+    const backend = resolveBackend(opts);
+    return { backend, isolation: backend === 'local-os' ? 'light' : 'full', reason: null };
+  } catch (e) {
+    if (e instanceof SandboxUnavailableError) return { backend: null, isolation: 'none', reason: e.message };
+    throw e;
+  }
+}
+
+/** Default full-isolation backend, or null when agent processes would be refused. Never `local-os`. */
+export function defaultBackend(): SandboxBackend | null {
+  try {
+    return resolveBackend();
+  } catch (e) {
+    if (e instanceof SandboxUnavailableError) return null;
+    throw e;
+  }
+}
+
+/** Backends usable on this host, best first. `local-os` is listed when present but is only used for trusted-repo opt-in. */
 export function availableBackends(): SandboxBackend[] {
   const out: SandboxBackend[] = [];
   if (containerRuntime()) out.push('local-container');
-  if (unshareAvailable()) out.push('local-unshare');
+  if (unshareIsolates()) out.push('local-unshare');
+  if (localOsTool()) out.push('local-os');
   return out;
 }
 
@@ -77,8 +140,12 @@ export interface SandboxInfo {
   fsIsolation: boolean;
   /** True when HTTP(S) egress goes through the Engine allowlisting proxy (F-SBX-3). */
   egressProxy?: boolean;
+  /** `full`, `light` (trusted-repo `local-os`, permanently indicated in the workbench), or `partial` (WSL). */
+  isolation: SandboxIsolation;
   /** `local-container` only: engine, OCI runtime, gVisor use, /proc mode, seccomp. */
   container?: { cli: string; runtime: string; gvisor: boolean; proc: 'proc' | 'masked'; seccomp: boolean; image: string | null };
+  /** `local-os` only: the light-mode tool and whether a private /proc is mounted. */
+  localOs?: { tool: LocalOsTool['kind']; proc: boolean };
 }
 
 export class SandboxPathError extends Error {
@@ -88,15 +155,17 @@ export class SandboxPathError extends Error {
   }
 }
 
-let unshareProbe: boolean | undefined;
+const unshareProbes = new Map<string, boolean>();
 
-/** True when unprivileged user + network namespaces work on this host (§16.2 local provider). */
+/** True when unprivileged user + network namespaces work on this host (§16.2 local provider). Cached per PATH. */
 export function unshareAvailable(): boolean {
-  if (unshareProbe === undefined) {
+  const key = process.env.PATH ?? '';
+  let ok = unshareProbes.get(key);
+  if (ok === undefined) {
     const r = spawnSync('unshare', ['--user', '--map-root-user', '--net', '--', 'true'], { stdio: 'ignore', timeout: 5000 });
-    unshareProbe = r.status === 0;
+    unshareProbes.set(key, (ok = r.status === 0));
   }
-  return unshareProbe;
+  return ok;
 }
 
 /** Host directories exposed read-only inside the contained root (toolchains + system config). */
@@ -129,23 +198,27 @@ mkdir -p "$NR$WS"; mount --rbind "$WS" "$NR$WS"
 mount -o remount,ro,bind "$NR" 2>/dev/null || true
 exec chroot "$NR" /usr/bin/env bash -c 'cd -- "$1" || exit 126; exec bash -c "$2"' helix "$CWD" "$CMD"`;
 
-let mountProbe: boolean | undefined;
+const mountProbes = new Map<string, boolean>();
 
-/** True when the full contained root (user+net+mount+pid namespaces, tmpfs, ro binds, chroot) can be built. */
+/** True when the full contained root (user+net+mount+pid namespaces, tmpfs, ro binds, chroot) can be built. Cached per PATH. */
 export function mountNsAvailable(): boolean {
-  if (mountProbe === undefined) {
-    if (!unshareAvailable()) return (mountProbe = false);
+  const key = process.env.PATH ?? '';
+  const cached = mountProbes.get(key);
+  if (cached !== undefined) return cached;
+  let ok = false;
+  if (unshareAvailable()) {
     const nr = mkdtempSync(join(tmpdir(), 'helix-probe-root-'));
     const sc = mkdtempSync(join(tmpdir(), 'helix-probe-tmp-'));
     try {
       const r = spawnSync('unshare', ['--user', '--map-root-user', '--net', '--mount', '--pid', '--fork', '--', 'bash', '-c', CONTAIN_SCRIPT, 'helix', nr, sc, sc, sc, 'test -d /usr/bin && ! test -e /home/.helix-probe', ...DEFAULT_RO_PATHS], { stdio: 'ignore', timeout: 10_000 });
-      mountProbe = r.status === 0;
+      ok = r.status === 0;
     } finally {
       rmSync(nr, { recursive: true, force: true });
       rmSync(sc, { recursive: true, force: true });
     }
   }
-  return mountProbe;
+  mountProbes.set(key, ok);
+  return ok;
 }
 
 const PASSTHROUGH_ENV = ['PATH', 'LANG', 'LC_ALL', 'TZ', 'NODE_OPTIONS_SAFE'];
@@ -156,15 +229,22 @@ const PASSTHROUGH_ENV = ['PATH', 'LANG', 'LC_ALL', 'TZ', 'NODE_OPTIONS_SAFE'];
  * registered secret never cross the boundary, §8.3), a private HOME/TMPDIR, a wall-clock timeout that
  * kills the whole process group, and capped output. Filesystem confinement for Helix's own tools is
  * enforced by `resolvePath`; shell commands additionally run in a contained root (F-SBX-2) when
- * mount namespaces work, so they can only see the read-only toolchain, the workspace and a private /tmp. Falls back to a plain process when
- * namespaces are unavailable and reports `network: true` so policy can account for it.
+ * mount namespaces work, so they can only see the read-only toolchain, the workspace and a private /tmp. There is no
+ * unisolated fallback: when no isolating backend works the constructor throws `SandboxUnavailableError` (SEC-1, R0.2).
+ * `local-os` (bubblewrap/Seatbelt) is used only with `lightMode: true`, the caller's proof of the user's trusted-repo opt-in.
  */
 export class LocalSandbox {
   readonly id: string;
   readonly root: string;
-  readonly provider: 'local-container' | 'local-unshare' | 'local-process' | 'wsl';
+  readonly provider: SandboxBackend | 'wsl';
+  readonly isolation: SandboxIsolation;
   private readonly wsl: WslConfig | null;
   private readonly container: ContainerRuntime | null = null;
+  private readonly localOs: LocalOsTool | null = null;
+  /** Sandbox-side /tmp is the scratch dir remapped (container, unshare, bwrap); false under Seatbelt (host paths). */
+  private readonly remapsTmp: boolean;
+  /** In-sandbox TCP port of the egress forwarder. Seatbelt shares the host network namespace, so it gets its own port. */
+  private readonly proxyPort: number;
   /** Host-only directory for per-exec env files (never mounted into the sandbox). */
   private readonly ctlDir: string | null = null;
   private readonly live = new Set<string>();
@@ -182,31 +262,41 @@ export class LocalSandbox {
   private readonly egressOn: boolean = false;
   private readonly egress?: EgressProxy;
 
-  constructor(id: string, root: string, opts: { forceProcess?: boolean; noMountNs?: boolean; roPaths?: string[]; egress?: EgressProxy; wsl?: WslConfig | null; backend?: SandboxBackend } = {}) {
+  constructor(id: string, root: string, opts: { lightMode?: boolean; roPaths?: string[]; egress?: EgressProxy; wsl?: WslConfig | null; backend?: SandboxBackend } = {}) {
     this.id = id;
     this.root = realpathSync(resolve(root));
     this.wsl = opts.wsl !== undefined ? opts.wsl : wslFromEnv();
-    const backend = opts.backend ?? (opts.forceProcess ? null : defaultBackend());
-    if (backend === 'local-container' && !this.wsl) {
+    const backend = this.wsl ? null : opts.backend ?? resolveBackend({ lightMode: opts.lightMode });
+    if (backend === 'local-os' && !opts.lightMode) throw new SandboxUnavailableError('local-os requires the workspace to be marked trusted with light mode (workspace.trust)');
+    if (backend === 'local-container') {
       this.container = containerRuntime();
-      if (!this.container) throw new Error('local-container backend unavailable: no working rootless podman/docker');
-    } else if (backend === 'local-unshare' && !this.wsl && !unshareAvailable()) throw new Error('local-unshare backend unavailable: user namespaces do not work on this host');
-    this.provider = this.wsl ? 'wsl' : this.container ? 'local-container' : backend === 'local-unshare' ? 'local-unshare' : 'local-process';
-    this.fsIsolation = this.provider === 'local-container' || (this.provider === 'local-unshare' && !opts.noMountNs && mountNsAvailable());
-    this.scratch = mkdtempSync(join(tmpdir(), 'helix-sbx-'));
-    this.newRoot = this.fsIsolation ? mkdtempSync(join(tmpdir(), 'helix-root-')) : null;
+      if (!this.container) throw new SandboxUnavailableError('local-container backend unavailable: no working rootless podman/docker');
+    } else if (backend === 'local-unshare') {
+      if (!unshareIsolates()) throw new SandboxUnavailableError('local-unshare backend unavailable: user+mount namespaces with a contained root do not work on this host');
+    } else if (backend === 'local-os') {
+      this.localOs = localOsTool();
+      if (!this.localOs) throw new SandboxUnavailableError(`local-os backend unavailable: ${lightToolName()} is not usable on this host`);
+    }
+    this.provider = this.wsl ? 'wsl' : backend!;
+    this.isolation = this.wsl ? 'partial' : backend === 'local-os' ? 'light' : 'full';
+    this.fsIsolation = !this.wsl;
+    this.remapsTmp = !this.wsl && this.localOs?.kind !== 'seatbelt';
+    this.proxyPort = this.localOs?.kind === 'seatbelt' ? 20_000 + Math.floor(Math.random() * 30_000) : SANDBOX_PROXY_PORT;
+    this.scratch = realpathSync(mkdtempSync(join(tmpdir(), 'helix-sbx-')));
+    this.newRoot = this.provider === 'local-unshare' || this.provider === 'local-container' ? mkdtempSync(join(tmpdir(), 'helix-root-')) : null;
     this.roPaths = [...new Set([...DEFAULT_RO_PATHS, ...(opts.roPaths ?? [])])].filter((p) => isAbsolute(p) && !isDeniedHostPath(p));
     if (this.container) {
       this.ctlDir = mkdtempSync(join(tmpdir(), 'helix-ctl-'));
       if (!this.container.image) this.roPaths.push(...buildRootfs(this.newRoot!, this.roPaths));
     }
-    const nodeVisible = !this.fsIsolation || this.roPaths.some((p) => process.execPath.startsWith(p + '/'));
-    if ((this.provider === 'local-unshare' || this.provider === 'local-container') && nodeVisible) {
+    const seatbeltSystem = this.localOs?.kind === 'seatbelt' && ['/usr/', '/opt/'].some((p) => process.execPath.startsWith(p));
+    const nodeVisible = seatbeltSystem || this.roPaths.some((p) => process.execPath.startsWith(p + '/'));
+    if (!this.wsl && nodeVisible) {
       const hostDir = join(this.scratch, '.helix');
       mkdirSync(hostDir, { mode: 0o700 });
       writeFileSync(join(hostDir, 'fwd.cjs'), FORWARDER_SOURCE);
       this.hostBridgeDir = hostDir;
-      this.bridgeDir = this.fsIsolation ? '/tmp/.helix' : hostDir;
+      this.bridgeDir = this.remapsTmp ? '/tmp/.helix' : hostDir;
     }
     if (opts.egress && this.hostBridgeDir) {
       this.egressOn = true;
@@ -224,8 +314,9 @@ export class LocalSandbox {
   info(): SandboxInfo {
     const c = this.container;
     return {
-      id: this.id, provider: this.provider, root: this.root, network: this.provider !== 'local-unshare' && this.provider !== 'local-container', fsIsolation: this.fsIsolation, egressProxy: this.egressOn,
+      id: this.id, provider: this.provider, root: this.root, network: !!this.wsl, fsIsolation: this.fsIsolation, egressProxy: this.egressOn, isolation: this.isolation,
       ...(c ? { container: { cli: c.cli, runtime: c.runtimeName, gvisor: c.gvisor, proc: c.proc, seccomp: c.seccomp, image: c.image } } : {}),
+      ...(this.localOs ? { localOs: { tool: this.localOs.kind, proc: this.localOs.proc } } : {}),
     };
   }
 
@@ -237,6 +328,14 @@ export class LocalSandbox {
     writeFileSync(envFile, Object.entries(env).filter(([, v]) => !/[\r\n]/.test(v)).map(([k, v]) => `${k}=${v}`).join('\n') + '\n', { mode: 0o600 });
     const args = runArgs({ rt: c, name, labels: { 'helix.sandbox': this.id, 'helix.owner': String(process.pid) }, rootfs: this.newRoot, roPaths: this.roPaths, workspace: this.root, scratch: this.scratch, cwd, envFile, tty, argv });
     return { name, args };
+  }
+
+  /** `[cmd, ...args]` running `bash -c <command>` under bubblewrap or Seatbelt (light mode). */
+  private localOsArgv(cwd: string, command: string, newSession: boolean): string[] {
+    const t = this.localOs!;
+    return t.kind === 'bwrap'
+      ? bwrapArgv(t, { roPaths: this.roPaths, workspace: this.root, scratch: this.scratch, cwd, proc: t.proc, newSession }, command)
+      : seatbeltArgv(t, { roPaths: this.roPaths, workspace: this.root, scratch: this.scratch }, command);
   }
 
   private stopContainer(name: string): void {
@@ -260,7 +359,7 @@ export class LocalSandbox {
       `${process.execPath} ${d}/fwd.cjs ${mode} ${sock} ${port} ${d}/ready.${tag}.$$ </dev/null >/dev/null 2>&1 & ` +
       `for _helix_i in $(seq 150); do [ -e ${d}/ready.${tag}.$$ ] && break; sleep 0.02; done; rm -f ${d}/ready.${tag}.$$; `;
     let out = `PATH="$PATH:/usr/sbin:/sbin" ip link set lo up 2>/dev/null; `;
-    if (egress) out += fwd('tcp', `${d}/egress.sock`, SANDBOX_PROXY_PORT, 'egress');
+    if (egress) out += fwd('tcp', `${d}/egress.sock`, this.proxyPort, 'egress');
     for (const p of expose) out += fwd('unix', `${d}/port-${p}.sock`, p, `p${p}`);
     return `${out}unset _helix_i\n`;
   }
@@ -292,10 +391,10 @@ export class LocalSandbox {
     const secrets = new Set(Vault.secretEnvNames());
     const env: Record<string, string> = {};
     for (const k of PASSTHROUGH_ENV) if (process.env[k] && !secrets.has(k)) env[k] = process.env[k]!;
-    const tmp = this.fsIsolation || this.wsl ? '/tmp' : this.scratch;
+    const tmp = this.remapsTmp || this.wsl ? '/tmp' : this.scratch;
     Object.assign(env, { HOME: tmp, TMPDIR: tmp, TERM: 'dumb', CI: '1', NO_COLOR: '1', HELIX_SANDBOX: this.id });
     if (this.egressOn) {
-      const proxy = `http://127.0.0.1:${SANDBOX_PROXY_PORT}`;
+      const proxy = `http://127.0.0.1:${this.proxyPort}`;
       for (const k of ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'npm_config_proxy', 'npm_config_https_proxy']) env[k] = proxy;
       env.NO_PROXY = env.no_proxy = 'localhost,127.0.0.1,::1';
       const bundle = `${this.bridgeDir}/ca-bundle.pem`;
@@ -320,15 +419,14 @@ export class LocalSandbox {
     const max = opts.maxOutputBytes ?? 256 * 1024;
     const env = this.env(opts.env);
     const ctr = this.container ? this.containerSpawn(cwd, ['bash', '-c', command], env, false) : null;
+    const lightArgv = this.localOs ? this.localOsArgv(cwd, command, true) : null;
     const [cmd, args] = this.wsl
       ? [this.wsl.exe, wslExecArgs(this.wsl, cwd, command)]
       : ctr
       ? [this.container!.cli, ctr.args]
-      : this.fsIsolation
-      ? ['unshare', ['--user', '--map-root-user', '--net', '--mount', '--pid', '--fork', '--', 'bash', '-c', CONTAIN_SCRIPT, 'helix', this.newRoot!, this.root, this.scratch, cwd, command, ...this.roPaths]]
-      : this.provider === 'local-unshare'
-        ? ['unshare', ['--user', '--map-root-user', '--net', '--', 'bash', '-c', command]]
-        : ['bash', ['-c', command]];
+      : lightArgv
+      ? [lightArgv[0], lightArgv.slice(1)]
+      : ['unshare', ['--user', '--map-root-user', '--net', '--mount', '--pid', '--fork', '--', 'bash', '-c', CONTAIN_SCRIPT, 'helix', this.newRoot!, this.root, this.scratch, cwd, command, ...this.roPaths]];
     const started = performance.now();
     return new Promise((resolveExec) => {
       if (ctr) this.live.add(ctr.name);
@@ -401,17 +499,17 @@ export class LocalSandbox {
     const ctr = this.container ? this.containerSpawn(cwd, ['bash', '-c', shell], ptyEnv, true) : null;
     const argv = ctr
       ? [this.container!.cli, ...ctr.args]
-      : this.fsIsolation
-      ? ['unshare', '--user', '--map-root-user', '--net', '--mount', '--', 'bash', '-c', CONTAIN_SCRIPT, 'helix', this.newRoot!, this.root, this.scratch, cwd, shell, ...this.roPaths]
-      : this.provider === 'local-unshare'
-        ? ['unshare', '--user', '--map-root-user', '--net', '--', 'bash', '-c', shell]
-        : ['bash', '-c', shell];
+      : this.localOs
+      ? this.localOsArgv(cwd, shell, false)
+      : ['unshare', '--user', '--map-root-user', '--net', '--mount', '--', 'bash', '-c', CONTAIN_SCRIPT, 'helix', this.newRoot!, this.root, this.scratch, cwd, shell, ...this.roPaths];
     const quoted = argv.map((a) => `'${a.replace(/'/g, `'\\''`)}'`).join(' ');
     const env = ctr ? { ...clientEnv(), TERM: 'xterm-256color' } : ptyEnv;
     if (ctr) this.live.add(ctr.name);
-    // Under WSL the PTY is allocated by `script` inside the distro; the host only relays pipes.
+    // Under WSL the PTY is allocated by `script` inside the distro; the host only relays pipes. BSD `script` (macOS) takes argv.
     const child = this.wsl
       ? spawn(this.wsl.exe, wslExecArgs(this.wsl, cwd, `exec script -qfec '${shell.replace(/'/g, `'\\''`)}' /dev/null`), { cwd, env, detached: !IS_WINDOWS, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
+      : process.platform === 'darwin'
+      ? spawn('script', ['-q', '/dev/null', ...argv], { cwd, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] })
       : spawn('script', ['-qfec', quoted, '/dev/null'], { cwd, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
     const decoder = new StringDecoder('utf8');
     const emit = (chunk: Buffer) => { const s = decoder.write(chunk); if (s) opts.onData(globalRedactor.redact(s)); };

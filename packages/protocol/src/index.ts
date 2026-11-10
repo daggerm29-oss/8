@@ -56,7 +56,8 @@ export interface InitializeResult {
   engineVersion: string;
   protocolVersion: string;
   engineId: string;
-  capabilities: { sandboxProviders: string[]; providers: string[]; topics: string[] };
+  /** `sandboxProviders`: usable backends (`local-os` only applies to trusted-repo opt-in). `defaultSandbox`: null = agent processes are refused (fail closed). */
+  capabilities: { sandboxProviders: string[]; defaultSandbox: string | null; providers: string[]; topics: string[] };
 }
 
 export interface TaskCreateParams {
@@ -106,6 +107,9 @@ export const Methods = {
   modelsList: 'models.list',
   providersList: 'models.providers.list',
   sandboxCheck: 'sandbox.check',
+  /* SEC-1 trusted-repo light mode + permanent isolation indicator (R0.2) */
+  workspaceTrust: 'workspace.trust',
+  workbenchStatus: 'workbench.status',
   eventsReplay: 'events.replay',
   /* M1 */
   indexUpdate: 'index.update',

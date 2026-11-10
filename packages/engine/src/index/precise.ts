@@ -74,12 +74,12 @@ export function typescriptFor(root: string): string | null {
  * the Engine-resolved TypeScript package is bind-mounted read-only). Returns null per target that could not
  * be resolved, or null overall when no TypeScript is available or the process fails.
  */
-export async function preciseReferences(root: string, targets: PreciseTarget[], opts: { timeoutMs?: number; forceProcess?: boolean } = {}): Promise<Array<PreciseRef[] | null> | null> {
+export async function preciseReferences(root: string, targets: PreciseTarget[], opts: { timeoutMs?: number; lightMode?: boolean } = {}): Promise<Array<PreciseRef[] | null> | null> {
   if (!targets.length) return [];
   const ts = typescriptFor(root);
   if (!ts) return null;
   const pkgDir = dirname(dirname(ts));
-  const sandbox = new LocalSandbox(prefixedId('sbx'), root, { forceProcess: opts.forceProcess, roPaths: pkgDir.startsWith(root + '/') ? [] : [pkgDir] });
+  const sandbox = new LocalSandbox(prefixedId('sbx'), root, { lightMode: opts.lightMode, roPaths: pkgDir.startsWith(root + '/') ? [] : [pkgDir] });
   try {
     const r = await sandbox.exec('node -e "eval(process.env.HELIX_PRECISE_SCRIPT)"', {
       timeoutMs: opts.timeoutMs ?? 60_000, maxOutputBytes: 4 * 1024 * 1024,

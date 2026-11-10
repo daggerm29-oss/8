@@ -250,5 +250,10 @@ test('verify retry prompt carries structured diagnostics instead of the raw log'
 
 test('sandbox root is reported for diagnostics path relativization', () => {
   const dir = copy('js-calc');
-  assert.ok(new LocalSandbox('sbx_t', dir, { forceProcess: true }).root.length > 0);
+  const sbx = new LocalSandbox('sbx_t', dir);
+  try {
+    assert.ok(sbx.root.length > 0);
+  } finally {
+    sbx.destroy();
+  }
 });

@@ -26,7 +26,7 @@ import { buildEvidence, reverify, type ReverifyResult, type VerificationEvidence
 import type { Tracer } from '../obs/tracing.ts';
 import type { Logger } from '../util/log.ts';
 import type { ToolContext, ToolOutput, ToolRegistry } from '../tools/registry.ts';
-import { LocalSandbox } from '../sandbox/sandbox.ts';
+import { LocalSandbox, SandboxUnavailableError, sandboxStatus } from '../sandbox/sandbox.ts';
 import type { EgressProxy } from '../sandbox/egress.ts';
 import type { DevServers } from '../preview/devserver.ts';
 import type { PreviewBrowser } from '../preview/browser.ts';
@@ -45,6 +45,14 @@ interface TaskRow {
   owner_engine: string | null; created_at: string; updated_at: string; result: string | null; error: string | null;
 }
 
+/** A user's trust decision for a workspace. `lightMode` is the explicit `local-os` opt-in (SEC-1). */
+export interface WorkspaceTrust {
+  trusted: true;
+  lightMode: boolean;
+  at: string;
+  by: 'user';
+}
+
 export interface RuntimeOptions {
   db: Db;
   bus: EventBus;
@@ -55,7 +63,6 @@ export interface RuntimeOptions {
   engineId: string;
   blobs?: BlobStore;
   logger?: Logger;
-  forceProcessSandbox?: boolean;
   /** Engine egress proxy bridged into task sandboxes (F-SBX-3). */
   egress?: EgressProxy;
   /** Workspace dev servers (F-PRV-1) for the `start_dev_server` tool. */
@@ -292,6 +299,8 @@ export class TaskRuntime {
   create(p: TaskCreateParams): TaskSummary {
     if (!p.goal?.trim()) throw new Error('goal is required');
     const ws = this.workspace(p.workspacePath);
+    const sbx = this.sandboxStatusFor(ws.path);
+    if (!sbx.backend) throw new SandboxUnavailableError(sbx.reason ?? 'no isolating sandbox backend is available');
     const roles = this.resolveTaskRoles(ws.path, p);
     const main = roles[p.policyProfile === 'plan' ? 'planner' : 'coder'].chain[0];
     const { provider, model } = main;
@@ -437,7 +446,7 @@ export class TaskRuntime {
   private async loop(id: string, signal: AbortSignal): Promise<void> {
     const initial = this.row(id);
     const root = this.wsPath(initial.ws);
-    const sandbox = new LocalSandbox(prefixedId('sbx'), root, { forceProcess: this.o.forceProcessSandbox, egress: this.o.egress });
+    const sandbox = this.sandboxFor(root, 'sbx', { task: id });
     this.o.db.run('INSERT INTO sandboxes (id, provider, ws, owner_engine, state, created_at, labels_json) VALUES (?, ?, ?, ?, ?, ?, ?)',
       sandbox.id, sandbox.provider, initial.ws, this.o.engineId, 'running', new Date().toISOString(), json({ task: id }));
     this.setStatus(id, 'running');
@@ -550,7 +559,7 @@ export class TaskRuntime {
     if (!row) throw new Error(`unknown artifact ${artifactId}`);
     if (row.kind !== 'verification_evidence') throw new Error(`artifact ${artifactId} is ${row.kind}, not verification_evidence`);
     const root = this.wsPath(this.row(row.task).ws);
-    const sandbox = new LocalSandbox(prefixedId('sbx'), root, { forceProcess: this.o.forceProcessSandbox, egress: this.o.egress });
+    const sandbox = this.sandboxFor(root, 'sbx', { task: row.task, purpose: 'reverify' });
     try {
       return await reverify(artifactId, parseJson<VerificationEvidence>(row.data_json, { assertions: [] } as unknown as VerificationEvidence), (command) => sandbox.exec(command, { timeoutMs: 300_000 }));
     } finally {
@@ -606,6 +615,51 @@ export class TaskRuntime {
       task ? 'SELECT * FROM approvals WHERE task = ? ORDER BY at DESC' : `SELECT * FROM approvals WHERE status = 'pending' ORDER BY at DESC`, ...(task ? [task] : []),
     );
     return rows.map((a) => ({ id: a.id, task: a.task, tool: a.tool, args: parseJson(a.args_json, {}), actionClass: a.action_class, status: a.status, at: a.at }));
+  }
+
+  /** The user's trust decision for a workspace (SEC-1). Untrusted (null) workspaces always get full isolation. */
+  workspaceTrust(path: string): WorkspaceTrust | null {
+    let real: string;
+    try { real = realpathSync(path); } catch { return null; }
+    const row = this.o.db.get<{ trust_json: string | null }>('SELECT trust_json FROM workspace WHERE path = ?', real);
+    return row?.trust_json ? parseJson<WorkspaceTrust | null>(row.trust_json, null) : null;
+  }
+
+  /**
+   * Record the user's trust decision (UI action through `workspace.trust`, never a tool call, §25.6.4). Light mode requires
+   * `trusted`. Audited as `workspace.trust_changed`.
+   */
+  setWorkspaceTrust(path: string, p: { trusted: boolean; lightMode?: boolean }): WorkspaceTrust | null {
+    if (typeof p.trusted !== 'boolean') throw new Error('trusted must be a boolean');
+    if (p.lightMode && !p.trusted) throw new Error('lightMode requires trusted: true (local-os light mode is only for a repo the user marks trusted)');
+    const ws = this.workspace(path);
+    const trust: WorkspaceTrust | null = p.trusted ? { trusted: true, lightMode: !!p.lightMode, at: new Date().toISOString(), by: 'user' } : null;
+    this.o.db.run('UPDATE workspace SET trust_json = ? WHERE id = ?', trust ? json(trust) : null, ws.id);
+    this.o.bus.publish({ topic: 'workspace.trust_changed', ws: ws.id, data: { workspacePath: ws.path, trusted: p.trusted, lightMode: !!trust?.lightMode, by: 'user' }, persist: 'audit' });
+    return trust;
+  }
+
+  /** Backend and isolation agent processes in this workspace would get, or why they are refused. */
+  sandboxStatusFor(path: string): ReturnType<typeof sandboxStatus> & { trust: WorkspaceTrust | null } {
+    const trust = this.workspaceTrust(path);
+    return { ...sandboxStatus({ lightMode: !!trust?.lightMode }), trust };
+  }
+
+  /**
+   * The only way the Engine creates sandboxes for a workspace (tasks, terminals, dev servers, reverify): applies the
+   * user's light-mode opt-in, fails closed with `SandboxUnavailableError`, and audits every light-mode sandbox
+   * (`sandbox.light_mode`, SEC-1).
+   */
+  sandboxFor(root: string, prefix: string, labels: Record<string, string> = {}, extra: { roPaths?: string[] } = {}): LocalSandbox {
+    const trust = this.workspaceTrust(root);
+    const sandbox = new LocalSandbox(prefixedId(prefix), root, { lightMode: !!trust?.lightMode, egress: this.o.egress, roPaths: extra.roPaths });
+    if (sandbox.isolation === 'light') {
+      const ws = this.workspace(root);
+      const info = sandbox.info();
+      this.o.bus.publish({ topic: 'sandbox.light_mode', ws: ws.id, task: labels.task, data: { sandbox: sandbox.id, workspacePath: ws.path, tool: info.localOs?.tool, purpose: labels.purpose ?? prefix, trustedAt: trust?.at }, persist: 'audit' });
+      this.o.logger?.warn('sandbox.light_mode', { sandbox: sandbox.id, workspace: ws.path });
+    }
+    return sandbox;
   }
 
   workspaces(): Array<{ id: string; path: string; createdAt: string }> {

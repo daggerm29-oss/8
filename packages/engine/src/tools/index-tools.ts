@@ -67,14 +67,14 @@ export const impactTool: Tool = {
     description: 'Impact analysis from the code graph: given a symbol name or a file path, lists call sites (transitively, with depth), importing files, and tests that cover them. Use before changing a function signature or behavior to find everything that may break.',
     inputSchema: { type: 'object', properties: { target: { type: 'string', minLength: 1, description: 'Symbol name (e.g. Inventory.total) or workspace-relative file path' }, depth: { type: 'integer', minimum: 1, maximum: 4 } }, required: ['target'] },
   },
-  async run(args, { index }) {
+  async run(args, { index, sandbox }) {
     if (!index) return { content: 'code index unavailable for this task; use search', isError: true };
     index.update();
     let r = index.impact(String(args.target), { depth: args.depth === undefined ? 2 : Number(args.depth) });
     if (r.kind === 'unknown') return { content: `no symbol or indexed file named '${args.target}'`, summary: `impact ${args.target}: unknown` };
     const tsDefs = r.kind === 'symbol' && r.definitions.length <= 8 && r.definitions.every((d) => TS_JS.test(d.path));
     if (tsDefs) {
-      const refs = await preciseReferences(index.root, r.definitions.map((d) => ({ path: d.path, line: d.line, name: d.name })));
+      const refs = await preciseReferences(index.root, r.definitions.map((d) => ({ path: d.path, line: d.line, name: d.name })), { lightMode: sandbox.isolation === 'light' });
       if (refs) r = index.withPreciseCallers(r, refs);
     }
     const out = [
