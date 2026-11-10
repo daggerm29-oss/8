@@ -324,6 +324,38 @@ for (const { kind, make, model } of adapters) {
   });
 }
 
+test('[gemini] LIVE FR-1 discovery, model selection and per-request controls', { skip: process.env.HELIX_LIVE !== '1' ? 'set HELIX_LIVE=1' : !(process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API) ? 'no Gemini API key' : false }, async () => {
+  const { mkdirSync, writeFileSync } = await import('node:fs');
+  const { fileURLToPath } = await import('node:url');
+  const sent: Array<{ url: string; generationConfig: unknown }> = [];
+  const adapter = new GeminiAdapter({ fetch: async (url, init) => {
+    if (init?.body) sent.push({ url: String(url), generationConfig: JSON.parse(String(init.body)).generationConfig });
+    return fetch(url, init);
+  } });
+  const auth = { apiKey: process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API };
+  const model = process.env.HELIX_LIVE_GEMINI_MODEL ?? 'gemini-3.5-flash-lite';
+  const models = await adapter.listModels(auth);
+  assert.ok(models.some((m) => m.id === model && m.origin !== 'bundled'), 'selection must come from live discovery, not a bundled fallback');
+  const responses = [];
+  for (const [reasoningEffort, temperature, maxOutputTokens] of [['low', 0, 512], ['high', 0.3, 1024]] as const) {
+    const request: ModelRequest = { model, messages: [{ role: 'user', parts: [{ type: 'text', text: 'Reply with only the word OK.' }] }], reasoningEffort, temperature, maxOutputTokens };
+    const events = await collect(streamWithRetry(adapter, request, auth, AbortSignal.timeout(90_000), { maxRetries: 1, baseDelayMs: 1000 }));
+    const result = done(events);
+    assert.equal(result.usage.source, 'provider');
+    assert.ok(result.usage.inputTokens > 0 && result.usage.outputTokens > 0);
+    assert.ok(result.message.parts.some((p) => p.type === 'text' && p.text.includes('OK')));
+    assert.equal(notices(events).length, 0, 'supported controls must not silently degrade');
+    assert.deepEqual(sent.at(-1)?.generationConfig, { maxOutputTokens, temperature, thinkingConfig: { thinkingLevel: reasoningEffort } });
+    assert.ok(sent.at(-1)?.url.includes(`/models/${model}:streamGenerateContent`));
+    responses.push({ model, request: { reasoningEffort, temperature, maxOutputTokens }, sent: sent.at(-1), responseId: result.responseId ?? null, finishReason: result.finishReason, usage: result.usage });
+  }
+  const root = new URL('../../../../evals/results/', import.meta.url);
+  mkdirSync(fileURLToPath(root), { recursive: true });
+  const artifact = new URL(`fr-1-gemini-controls-${new Date().toISOString().replace(/[:.]/g, '-')}.json`, root);
+  writeFileSync(fileURLToPath(artifact), JSON.stringify({ at: new Date().toISOString(), pass: true, liveModels: models.filter((m) => m.origin !== 'bundled').map((m) => m.id), accessTestPassed: true, responses }, null, 2));
+  console.log(`FR-1 live evidence: ${fileURLToPath(artifact)}`);
+});
+
 const geminiKey = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API;
 const liveEnabled = process.env.HELIX_LIVE === '1';
 const live = [

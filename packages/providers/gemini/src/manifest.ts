@@ -34,7 +34,7 @@ export const GEMINI_MODELS: ModelManifest[] = [
     pricing: { inputPerM: 0.75, cachedInputPerM: 0.075, outputPerM: 3.75, asOf: '2026-11-06', note: 'introductory rate through 2026-12-31; $1.50/$7.50 from 2027-01-01' },
   },
   { ...base, id: 'gemini-3.6-flash', displayName: 'Gemini 3.6 Flash', status: 'stable', contextWindow: 1_048_576, maxOutput: 65_536, pricing: null },
-  { ...base, id: 'gemini-3.5-flash-lite', displayName: 'Gemini 3.5 Flash-Lite', status: 'stable', contextWindow: 1_048_576, maxOutput: 65_536, pricing: null },
+  { ...base, id: 'gemini-3.5-flash-lite', displayName: 'Gemini 3.5 Flash-Lite', status: 'stable', contextWindow: 1_048_576, maxOutput: 65_536, pricing: { inputPerM: 0.30, cachedInputPerM: 0.03, outputPerM: 2.50, asOf: '2026-11-10', note: 'https://ai.google.dev/gemini-api/docs/pricing#gemini-3.5-flash-lite — Standard paid-tier USD/token reference rates, output includes thinking; not an account invoice or a claim about free-tier billing' } },
   { ...base, id: 'gemini-3.1-pro-preview', displayName: 'Gemini 3.1 Pro (preview)', status: 'preview', contextWindow: 1_048_576, maxOutput: 65_536, pricing: null },
 ];
 

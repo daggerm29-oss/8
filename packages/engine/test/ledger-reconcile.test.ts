@@ -131,10 +131,24 @@ test('R0.4: over 50 recorded provider responses, every ledger row is attributed 
     assert.deepEqual(report.missingAttribution, []);
     assert.equal(report.groups.length, 2);
     assert.ok(report.totals.maxDeltaPct <= 1);
-    console.log(`[R0.4] ${responses} responses; ledger $${report.totals.ledger.costUsd.toFixed(6)} vs provider $${expected.cost.toFixed(6)}; max delta ${report.totals.maxDeltaPct.toFixed(4)}%`);
+    assert.notEqual(report.totals.ledger.costUsd, null);
+    console.log(`[R0.4] ${responses} responses; ledger $${report.totals.ledger.costUsd!.toFixed(6)} vs provider $${expected.cost.toFixed(6)}; max delta ${report.totals.maxDeltaPct.toFixed(4)}%`);
+
+    // Negative controls: unknown prices never become zero or pass the cost gate.
+    const victim = rows[3].id;
+    const originalCost = engine.db.get<{ cost_usd: number }>('SELECT cost_usd FROM ledger_entries WHERE id = ?', victim)!.cost_usd;
+    engine.db.run('UPDATE ledger_entries SET cost_usd = NULL WHERE id = ?', victim);
+    const unpriced = engine.gateway.reconcile();
+    assert.equal(unpriced.ok, false);
+    assert.deepEqual(unpriced.unpricedRows, [victim]);
+    assert.equal(unpriced.totals.ledger.costUsd, null);
+    engine.db.run('UPDATE ledger_entries SET cost_usd = ? WHERE id = ?', originalCost, victim);
+    const noPrices = engine.ledger.reconcile({ normalizeUsage: (provider, raw) => engine.gateway.adapter(provider).normalizeUsage!(raw), pricing: () => null });
+    assert.equal(noPrices.ok, false);
+    assert.equal(noPrices.unpricedRows.length, responses);
+    assert.equal(noPrices.totals.providerReported.costUsd, null);
 
     // Negative controls: the report must catch drift, attribution gaps, and estimate-only rows.
-    const victim = rows[3].id;
     engine.db.run('UPDATE ledger_entries SET input_tokens = input_tokens + 100000 WHERE id = ?', victim);
     const drift = engine.gateway.reconcile();
     assert.equal(drift.ok, false);

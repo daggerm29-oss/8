@@ -98,10 +98,11 @@ export interface ReconcileReport {
   providerReportedRows: number;
   /** Rows with no provider usage metadata (estimate only): cannot be reconciled. */
   estimatedRows: string[];
+  unpricedRows: string[];
   /** Rows lacking one of ATTRIBUTION_FIELDS. */
   missingAttribution: Array<{ id: string; missing: string[] }>;
   groups: ReconcileGroup[];
-  totals: { ledger: TokenTotals & { costUsd: number }; providerReported: TokenTotals & { costUsd: number }; maxDeltaPct: number };
+  totals: { ledger: TokenTotals & { costUsd: number | null }; providerReported: TokenTotals & { costUsd: number | null }; maxDeltaPct: number };
   tolerancePct: number;
   ok: boolean;
 }
@@ -204,9 +205,10 @@ export class Ledger {
     }>(`SELECT * FROM ledger_entries WHERE ${where.join(' AND ')} ORDER BY at, id`, ...params);
     const tolerancePct = opts.tolerancePct ?? 1;
     const estimatedRows: string[] = [];
+    const unpricedRows: string[] = [];
     const missingAttribution: ReconcileReport['missingAttribution'] = [];
     const groups = new Map<string, ReconcileGroup>();
-    const totals = { ledger: { ...zero(), costUsd: 0 }, providerReported: { ...zero(), costUsd: 0 }, maxDeltaPct: 0 };
+    const totals: ReconcileReport['totals'] = { ledger: { ...zero(), costUsd: 0 }, providerReported: { ...zero(), costUsd: 0 }, maxDeltaPct: 0 };
     let providerReportedRows = 0;
     for (const r of rows) {
       const missing: string[] = [];
@@ -238,14 +240,15 @@ export class Ledger {
       g.providerReported.costUsd = reportedCost === null || g.providerReported.costUsd === null ? null : g.providerReported.costUsd + reportedCost;
       add(totals.ledger, ledgerTokens);
       add(totals.providerReported, reported);
-      totals.ledger.costUsd += r.cost_usd ?? 0;
-      totals.providerReported.costUsd += reportedCost ?? 0;
+      if (r.cost_usd === null || reportedCost === null) unpricedRows.push(r.id);
+      totals.ledger.costUsd = r.cost_usd === null || totals.ledger.costUsd === null ? null : totals.ledger.costUsd + r.cost_usd;
+      totals.providerReported.costUsd = reportedCost === null || totals.providerReported.costUsd === null ? null : totals.providerReported.costUsd + reportedCost;
     }
     for (const g of groups.values()) g.maxDeltaPct = maxDelta(g.ledger, g.providerReported);
     totals.maxDeltaPct = maxDelta(totals.ledger, totals.providerReported);
     const list = [...groups.values()];
-    const ok = missingAttribution.length === 0 && estimatedRows.length === 0 && totals.maxDeltaPct <= tolerancePct && list.every((g) => g.maxDeltaPct <= tolerancePct);
-    return { rows: rows.length, providerReportedRows, estimatedRows, missingAttribution, groups: list, totals, tolerancePct, ok };
+    const ok = missingAttribution.length === 0 && estimatedRows.length === 0 && unpricedRows.length === 0 && totals.maxDeltaPct <= tolerancePct && list.every((g) => g.maxDeltaPct <= tolerancePct);
+    return { rows: rows.length, providerReportedRows, estimatedRows, unpricedRows, missingAttribution, groups: list, totals, tolerancePct, ok };
   }
 
   setBudget(spec: BudgetSpec): string {
