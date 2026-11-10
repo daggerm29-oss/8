@@ -52,7 +52,8 @@ test('shell commands cannot read host files outside the workspace (F-SBX-2, ISSU
 test('sandbox has no network egress when namespaces are available', { skip: !unshareAvailable() && 'unshare unavailable' }, async () => {
   const sbx = new LocalSandbox('sbx_t2', workspace());
   try {
-    assert.equal(sbx.provider, 'local-unshare');
+    assert.ok(sbx.provider === 'local-container' || sbx.provider === 'local-unshare', sbx.provider);
+    assert.equal(sbx.info().network, false);
     const r = await sbx.exec(`node -e "require('net').connect(53,'8.8.8.8').on('connect',()=>{console.log('CONNECTED');process.exit(0)}).on('error',e=>{console.log('ERR',e.code);process.exit(3)})"`, { timeoutMs: 10_000 });
     assert.ok(!r.stdout.includes('CONNECTED'));
     assert.equal(r.exitCode, 3);

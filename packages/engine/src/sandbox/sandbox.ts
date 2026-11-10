@@ -10,6 +10,25 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isDeniedHostPath, Vault } from '../vault/vault.ts';
 import { globalRedactor } from '../util/redact.ts';
 import { wslEnvList, wslExecArgs, wslFromEnv, type WslConfig } from './wsl.ts';
+import { buildRootfs, clientEnv, containerRuntime, removeContainer, runArgs, type ContainerRuntime } from './container.ts';
+
+export type SandboxBackend = 'local-container' | 'local-unshare';
+
+/** Default local backend (§16.2): `local-container` when a rootless engine works, else `local-unshare`. Overridable with `HELIX_SANDBOX_PROVIDER`. */
+export function defaultBackend(): SandboxBackend | null {
+  const forced = process.env.HELIX_SANDBOX_PROVIDER;
+  if (forced === 'local-container' || forced === 'local-unshare') return forced;
+  if (containerRuntime()) return 'local-container';
+  return unshareAvailable() ? 'local-unshare' : null;
+}
+
+/** Backends usable on this host, best first. */
+export function availableBackends(): SandboxBackend[] {
+  const out: SandboxBackend[] = [];
+  if (containerRuntime()) out.push('local-container');
+  if (unshareAvailable()) out.push('local-unshare');
+  return out;
+}
 
 const IS_WINDOWS = process.platform === 'win32';
 /** Windows needs these to start wsl.exe; they are never forwarded into WSL (not listed in WSLENV). */
@@ -58,6 +77,8 @@ export interface SandboxInfo {
   fsIsolation: boolean;
   /** True when HTTP(S) egress goes through the Engine allowlisting proxy (F-SBX-3). */
   egressProxy?: boolean;
+  /** `local-container` only: engine, OCI runtime, gVisor use, /proc mode, seccomp. */
+  container?: { cli: string; runtime: string; gvisor: boolean; proc: 'proc' | 'masked'; seccomp: boolean; image: string | null };
 }
 
 export class SandboxPathError extends Error {
@@ -141,8 +162,13 @@ const PASSTHROUGH_ENV = ['PATH', 'LANG', 'LC_ALL', 'TZ', 'NODE_OPTIONS_SAFE'];
 export class LocalSandbox {
   readonly id: string;
   readonly root: string;
-  readonly provider: 'local-unshare' | 'local-process' | 'wsl';
+  readonly provider: 'local-container' | 'local-unshare' | 'local-process' | 'wsl';
   private readonly wsl: WslConfig | null;
+  private readonly container: ContainerRuntime | null = null;
+  /** Host-only directory for per-exec env files (never mounted into the sandbox). */
+  private readonly ctlDir: string | null = null;
+  private readonly live = new Set<string>();
+  private seq = 0;
   readonly fsIsolation: boolean;
   private readonly scratch: string;
   private readonly newRoot: string | null;
@@ -156,17 +182,26 @@ export class LocalSandbox {
   private readonly egressOn: boolean = false;
   private readonly egress?: EgressProxy;
 
-  constructor(id: string, root: string, opts: { forceProcess?: boolean; noMountNs?: boolean; roPaths?: string[]; egress?: EgressProxy; wsl?: WslConfig | null } = {}) {
+  constructor(id: string, root: string, opts: { forceProcess?: boolean; noMountNs?: boolean; roPaths?: string[]; egress?: EgressProxy; wsl?: WslConfig | null; backend?: SandboxBackend } = {}) {
     this.id = id;
     this.root = realpathSync(resolve(root));
     this.wsl = opts.wsl !== undefined ? opts.wsl : wslFromEnv();
-    this.provider = this.wsl ? 'wsl' : !opts.forceProcess && unshareAvailable() ? 'local-unshare' : 'local-process';
-    this.fsIsolation = this.provider === 'local-unshare' && !opts.noMountNs && mountNsAvailable();
+    const backend = opts.backend ?? (opts.forceProcess ? null : defaultBackend());
+    if (backend === 'local-container' && !this.wsl) {
+      this.container = containerRuntime();
+      if (!this.container) throw new Error('local-container backend unavailable: no working rootless podman/docker');
+    } else if (backend === 'local-unshare' && !this.wsl && !unshareAvailable()) throw new Error('local-unshare backend unavailable: user namespaces do not work on this host');
+    this.provider = this.wsl ? 'wsl' : this.container ? 'local-container' : backend === 'local-unshare' ? 'local-unshare' : 'local-process';
+    this.fsIsolation = this.provider === 'local-container' || (this.provider === 'local-unshare' && !opts.noMountNs && mountNsAvailable());
     this.scratch = mkdtempSync(join(tmpdir(), 'helix-sbx-'));
     this.newRoot = this.fsIsolation ? mkdtempSync(join(tmpdir(), 'helix-root-')) : null;
     this.roPaths = [...new Set([...DEFAULT_RO_PATHS, ...(opts.roPaths ?? [])])].filter((p) => isAbsolute(p) && !isDeniedHostPath(p));
+    if (this.container) {
+      this.ctlDir = mkdtempSync(join(tmpdir(), 'helix-ctl-'));
+      if (!this.container.image) this.roPaths.push(...buildRootfs(this.newRoot!, this.roPaths));
+    }
     const nodeVisible = !this.fsIsolation || this.roPaths.some((p) => process.execPath.startsWith(p + '/'));
-    if (this.provider === 'local-unshare' && nodeVisible) {
+    if ((this.provider === 'local-unshare' || this.provider === 'local-container') && nodeVisible) {
       const hostDir = join(this.scratch, '.helix');
       mkdirSync(hostDir, { mode: 0o700 });
       writeFileSync(join(hostDir, 'fwd.cjs'), FORWARDER_SOURCE);
@@ -187,7 +222,31 @@ export class LocalSandbox {
   }
 
   info(): SandboxInfo {
-    return { id: this.id, provider: this.provider, root: this.root, network: this.provider !== 'local-unshare', fsIsolation: this.fsIsolation, egressProxy: this.egressOn };
+    const c = this.container;
+    return {
+      id: this.id, provider: this.provider, root: this.root, network: this.provider !== 'local-unshare' && this.provider !== 'local-container', fsIsolation: this.fsIsolation, egressProxy: this.egressOn,
+      ...(c ? { container: { cli: c.cli, runtime: c.runtimeName, gvisor: c.gvisor, proc: c.proc, seccomp: c.seccomp, image: c.image } } : {}),
+    };
+  }
+
+  /** `podman|docker run …` argv for one contained command; the env goes through a host-only env file. */
+  private containerSpawn(cwd: string, argv: string[], env: Record<string, string>, tty: boolean): { name: string; args: string[] } {
+    const c = this.container!;
+    const name = `helix-${this.id.replace(/[^a-zA-Z0-9_.-]/g, '_')}-${++this.seq}-${process.pid}`;
+    const envFile = join(this.ctlDir!, `${name}.env`);
+    writeFileSync(envFile, Object.entries(env).filter(([, v]) => !/[\r\n]/.test(v)).map(([k, v]) => `${k}=${v}`).join('\n') + '\n', { mode: 0o600 });
+    const args = runArgs({ rt: c, name, labels: { 'helix.sandbox': this.id, 'helix.owner': String(process.pid) }, rootfs: this.newRoot, roPaths: this.roPaths, workspace: this.root, scratch: this.scratch, cwd, envFile, tty, argv });
+    return { name, args };
+  }
+
+  private stopContainer(name: string): void {
+    if (!this.container || !this.live.has(name)) return;
+    void removeContainer(this.container.cli, name);
+  }
+
+  private finishContainer(name: string): void {
+    this.live.delete(name);
+    rmSync(join(this.ctlDir!, `${name}.env`), { force: true });
   }
 
   /**
@@ -259,8 +318,12 @@ export class LocalSandbox {
     command = this.prelude(egress, opts.exposePorts?.filter((p) => Number.isInteger(p) && p > 0 && p < 65536)) + command;
     const timeoutMs = opts.timeoutMs ?? 120_000;
     const max = opts.maxOutputBytes ?? 256 * 1024;
+    const env = this.env(opts.env);
+    const ctr = this.container ? this.containerSpawn(cwd, ['bash', '-c', command], env, false) : null;
     const [cmd, args] = this.wsl
       ? [this.wsl.exe, wslExecArgs(this.wsl, cwd, command)]
+      : ctr
+      ? [this.container!.cli, ctr.args]
       : this.fsIsolation
       ? ['unshare', ['--user', '--map-root-user', '--net', '--mount', '--pid', '--fork', '--', 'bash', '-c', CONTAIN_SCRIPT, 'helix', this.newRoot!, this.root, this.scratch, cwd, command, ...this.roPaths]]
       : this.provider === 'local-unshare'
@@ -268,7 +331,8 @@ export class LocalSandbox {
         : ['bash', ['-c', command]];
     const started = performance.now();
     return new Promise((resolveExec) => {
-      const child = spawn(cmd, args, { cwd, env: this.env(opts.env), detached: !IS_WINDOWS, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      if (ctr) this.live.add(ctr.name);
+      const child = spawn(cmd, args, { cwd, env: ctr ? clientEnv() : env, detached: !IS_WINDOWS, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
       let stdout = '';
       let stderr = '';
       let bytes = 0;
@@ -289,7 +353,10 @@ export class LocalSandbox {
       };
       child.stdout.on('data', collect('out'));
       child.stderr.on('data', collect('err'));
-      const kill = () => killTree(child.pid);
+      const kill = () => {
+        if (ctr) this.stopContainer(ctr.name);
+        else killTree(child.pid);
+      };
       const timer = setTimeout(() => {
         timedOut = true;
         kill();
@@ -299,6 +366,8 @@ export class LocalSandbox {
       child.on('close', (code, signal) => {
         clearTimeout(timer);
         opts.signal?.removeEventListener('abort', onAbort);
+        if (ctr) this.finishContainer(ctr.name);
+        if (ctr && timedOut) { code = null; signal = signal ?? 'SIGKILL'; }
         resolveExec({
           exitCode: code, signal, timedOut, truncated, durationMs: Math.round(performance.now() - started),
           stdout: globalRedactor.redact(stdout), stderr: globalRedactor.redact(stderr),
@@ -306,6 +375,7 @@ export class LocalSandbox {
       });
       child.on('error', (err) => {
         clearTimeout(timer);
+        if (ctr) this.finishContainer(ctr.name);
         resolveExec({ exitCode: null, signal: null, timedOut, truncated, durationMs: 0, stdout: '', stderr: `spawn failed: ${err.message}` });
       });
     });
@@ -324,16 +394,21 @@ export class LocalSandbox {
     const shell = `${this.prelude(this.egressOn)}stty rows ${rows} cols ${cols} 2>/dev/null; export PS1='helix:\\W\\$ '; exec bash --noprofile --norc -i`;
     // No --pid here: as PID-namespace init the shell never owns the PTY's foreground group, so Ctrl-C is lost.
     // /proc stays unmounted, so host processes remain invisible.
-    const argv = this.fsIsolation
+    const ptyEnv = this.env();
+    delete ptyEnv.NO_COLOR;
+    delete ptyEnv.CI;
+    ptyEnv.TERM = 'xterm-256color';
+    const ctr = this.container ? this.containerSpawn(cwd, ['bash', '-c', shell], ptyEnv, true) : null;
+    const argv = ctr
+      ? [this.container!.cli, ...ctr.args]
+      : this.fsIsolation
       ? ['unshare', '--user', '--map-root-user', '--net', '--mount', '--', 'bash', '-c', CONTAIN_SCRIPT, 'helix', this.newRoot!, this.root, this.scratch, cwd, shell, ...this.roPaths]
       : this.provider === 'local-unshare'
         ? ['unshare', '--user', '--map-root-user', '--net', '--', 'bash', '-c', shell]
         : ['bash', '-c', shell];
     const quoted = argv.map((a) => `'${a.replace(/'/g, `'\\''`)}'`).join(' ');
-    const env = this.env();
-    delete env.NO_COLOR;
-    delete env.CI;
-    env.TERM = 'xterm-256color';
+    const env = ctr ? { ...clientEnv(), TERM: 'xterm-256color' } : ptyEnv;
+    if (ctr) this.live.add(ctr.name);
     // Under WSL the PTY is allocated by `script` inside the distro; the host only relays pipes.
     const child = this.wsl
       ? spawn(this.wsl.exe, wslExecArgs(this.wsl, cwd, `exec script -qfec '${shell.replace(/'/g, `'\\''`)}' /dev/null`), { cwd, env, detached: !IS_WINDOWS, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
@@ -344,19 +419,24 @@ export class LocalSandbox {
     child.stderr.on('data', emit);
     child.stdin.on('error', () => { /* shell already gone */ });
     let exited = false;
-    const done = (code: number | null) => { if (!exited) { exited = true; opts.onExit(code); } };
+    const done = (code: number | null) => { if (!exited) { exited = true; if (ctr) this.finishContainer(ctr.name); opts.onExit(code); } };
     child.on('close', (code) => done(code));
     child.on('error', (err) => { opts.onData(`spawn failed: ${err.message}\r\n`); done(null); });
     return {
       pid: child.pid,
       write: (data) => { if (!exited && typeof data === 'string') child.stdin.write(data); },
-      kill: () => killTree(child.pid),
+      kill: () => {
+        if (ctr) this.stopContainer(ctr.name);
+        killTree(child.pid);
+      },
     };
   }
 
   destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
+    for (const name of this.live) this.stopContainer(name);
+    if (this.ctlDir) rmSync(this.ctlDir, { recursive: true, force: true });
     void this.egressReady.then((close) => close?.());
     rmSync(this.scratch, { recursive: true, force: true });
     if (this.newRoot) rmSync(this.newRoot, { recursive: true, force: true });

@@ -26,7 +26,8 @@ import { ReplayAdapter, exportBundle, type SessionBundle } from './replay/bundle
 import { builtinTools } from './tools/builtin.ts';
 import { McpManager, type McpServerConfig, type McpServerStatus } from './mcp/manager.ts';
 import { TaskRuntime } from './agent/runtime.ts';
-import { LocalSandbox, unshareAvailable } from './sandbox/sandbox.ts';
+import { LocalSandbox, availableBackends, unshareAvailable } from './sandbox/sandbox.ts';
+import { containerRuntime } from './sandbox/container.ts';
 import { DEFAULT_EGRESS_ALLOWLIST, EgressProxy, type UpstreamOverride } from './sandbox/egress.ts';
 import { DevServers } from './preview/devserver.ts';
 import { PreviewBrowser } from './preview/browser.ts';
@@ -190,7 +191,7 @@ export class Engine {
       }
       initialized = true;
       for (const topic of p.topics ?? []) unsubs.push(this.bus.subscribe(topic, (e) => peer.notify(Notifications.event, e)));
-      return { engineVersion: ENGINE_VERSION, protocolVersion: PROTOCOL_VERSION, engineId: this.id, capabilities: { sandboxProviders: [unshareAvailable() ? 'local-unshare' : 'local-process'], providers: this.gateway.providers().map((x) => x.id), topics: TOPICS } };
+      return { engineVersion: ENGINE_VERSION, protocolVersion: PROTOCOL_VERSION, engineId: this.id, capabilities: { sandboxProviders: availableBackends().length ? availableBackends() : ['local-process'], providers: this.gateway.providers().map((x) => x.id), topics: TOPICS } };
     });
     peer.onClose(() => unsubs.forEach((u) => u()));
     peer.handle(Methods.ping, () => ({ pong: true, at: new Date().toISOString() }));
@@ -220,7 +221,7 @@ export class Engine {
     peer.handle(Methods.budgetsSet, guard<Parameters<Ledger['setBudget']>[0]>((p) => ({ id: this.ledger.setBudget(p) })));
     peer.handle(Methods.providersList, guard(() => this.gateway.providers()));
     peer.handle(Methods.modelsList, guard<{ provider: string }>((p) => this.gateway.listModels(p.provider)));
-    peer.handle(Methods.sandboxCheck, guard(() => ({ unshare: unshareAvailable() })));
+    peer.handle(Methods.sandboxCheck, guard(() => ({ unshare: unshareAvailable(), container: containerRuntime() })));
     peer.handle(Methods.eventsReplay, guard<{ ws: string; afterSeq?: number; limit?: number }>((p) => (this.bus.flush(), this.bus.replay(p.ws, p.afterSeq ?? 0, p.limit))));
     peer.handle(Methods.indexUpdate, guard<{ workspacePath: string }>((p) => {
       const idx = this.index(p.workspacePath);
