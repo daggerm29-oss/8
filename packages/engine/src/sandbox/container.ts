@@ -163,11 +163,24 @@ function probeSeccomp(cli: ContainerCli): boolean {
   return r.status === 0 && /true|seccomp/.test(r.stdout);
 }
 
+export function removeContainerDirectory(cli: ContainerCli, dir: string): void {
+  try {
+    rmSync(dir, { recursive: true, force: true });
+  } catch (error) {
+    if (cli !== 'podman' || !['EACCES', 'EPERM'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+    // Rootless Podman can map rootfs ownership to subordinate UIDs that the host user cannot traverse.
+    const result = spawnSync(cli, ['unshare', 'rm', '-rf', '--', dir], { stdio: 'ignore', env: clientEnv(), timeout: 15_000 });
+    if (result.status !== 0) throw error;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 function tryRun(rt: ContainerRuntime): boolean {
   const dir = mkdtempSync(join(tmpdir(), 'helix-cprobe-'));
   const rootfs = join(dir, 'root');
   const scratch = join(dir, 'tmp');
   const ws = join(dir, 'ws');
+  let supported = false;
   try {
     mkdirSync(rootfs);
     mkdirSync(scratch);
@@ -178,12 +191,13 @@ function tryRun(rt: ContainerRuntime): boolean {
     writeFileSync(envFile, '');
     const args = runArgs({ rt, name: `helix-probe-${process.pid}-${Date.now().toString(36)}`, labels: { 'helix.probe': '1' }, rootfs, roPaths: [...roPaths, ...extra], workspace: ws, scratch, cwd: ws, envFile, tty: false, argv: ['bash', '-c', 'echo ok > ./probe && test -d /usr/bin'] });
     const r = spawnSync(rt.cli, args, { stdio: ['ignore', 'ignore', 'ignore'], env: clientEnv(), timeout: 60_000 });
-    return r.status === 0 && existsSync(join(ws, 'probe'));
+    supported = r.status === 0 && existsSync(join(ws, 'probe'));
   } catch {
-    return false;
+    supported = false;
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    try { removeContainerDirectory(rt.cli, dir); } catch { supported = false; }
   }
+  return supported;
 }
 
 /** Force-remove a container by name (timeout, cancel, destroy). Resolves when the CLI returns. */

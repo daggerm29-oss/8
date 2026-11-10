@@ -14,6 +14,7 @@ import { startFakeProvider, type FakeScript, type FakeTurn } from '@helix/provid
 import { Engine, wsTransport } from '../src/engine.ts';
 import { LocalSandbox, SandboxUnavailableError, resolveBackend, sandboxStatus } from '../src/sandbox/sandbox.ts';
 import { localOsTool } from '../src/sandbox/localos.ts';
+import { containerRuntime, resetContainerProbe } from '../src/sandbox/container.ts';
 
 const SRC = fileURLToPath(new URL('../src/', import.meta.url));
 const UI = fileURLToPath(new URL('../ui/', import.meta.url));
@@ -162,6 +163,67 @@ test('no isolating backend: task.create returns sandbox_unavailable and no child
     }
   });
 });
+
+for (const cleanupWorks of [true, false]) {
+  test(`rootless Podman probe: mapped-UID cleanup ${cleanupWorks ? 'succeeds without escaping EACCES' : 'fails closed when namespace cleanup fails'}`, () => {
+    const require = createRequire(import.meta.url);
+    const fs = require('node:fs') as typeof import('node:fs');
+    const cp = require('node:child_process') as typeof import('node:child_process');
+    const originalRm = fs.rmSync;
+    const originalSpawn = cp.spawnSync;
+    const bin = tmp('helix-probe-bin-');
+    writeFileSync(join(bin, 'podman'), '');
+    const dirs = new Set<string>();
+    const cleaned = new Set<string>();
+    const cleanupCalls: string[][] = [];
+    fs.rmSync = (...args: Parameters<typeof fs.rmSync>) => {
+      const dir = String(args[0]);
+      if (dirs.has(dir) && !cleaned.has(dir)) throw Object.assign(new Error('mapped-UID rootfs is inaccessible'), { code: 'EACCES' });
+      return originalRm(...args);
+    };
+    cp.spawnSync = ((cli: string, args: string[]) => {
+      assert.equal(cli, 'podman');
+      let status = 0;
+      if (args[0] === 'unshare') {
+        cleanupCalls.push(args);
+        const dir = args.at(-1)!;
+        assert.ok(dirs.has(dir), 'cleanup stays inside a freshly created probe directory');
+        assert.deepEqual(args.slice(0, -1), ['unshare', 'rm', '-rf', '--']);
+        if (cleanupWorks) {
+          originalRm(dir, { recursive: true, force: true });
+          cleaned.add(dir);
+        } else status = 1;
+      } else if (args.includes('run')) {
+        const ws = args[args.indexOf('-w') + 1];
+        const dir = join(ws, '..');
+        dirs.add(dir);
+        assert.ok(args.includes('--read-only'));
+        assert.equal(args[args.indexOf('--cap-drop') + 1], 'ALL');
+        assert.equal(args[args.indexOf('--network') + 1], 'none');
+        writeFileSync(join(ws, 'probe'), 'ok');
+      } else assert.equal(args[0], 'info');
+      return { pid: 1, output: [null, 'true\n', ''], stdout: 'true\n', stderr: '', status, signal: null };
+    }) as typeof cp.spawnSync;
+    syncBuiltinESMExports();
+    try {
+      withEnv({ PATH: bin, HELIX_CONTAINER_CLI: 'podman', HELIX_CONTAINER_RUNTIME: 'crun', HELIX_SANDBOX_IMAGE: undefined }, () => {
+        resetContainerProbe();
+        const runtime = containerRuntime();
+        assert.equal(runtime?.cli ?? null, cleanupWorks ? 'podman' : null);
+        assert.ok(dirs.size > 0);
+        assert.equal(cleanupCalls.length, dirs.size);
+        if (cleanupWorks) for (const dir of dirs) assert.equal(existsSync(dir), false, 'no probe directory is leaked');
+      });
+    } finally {
+      fs.rmSync = originalRm;
+      cp.spawnSync = originalSpawn;
+      syncBuiltinESMExports();
+      resetContainerProbe();
+      for (const dir of dirs) originalRm(dir, { recursive: true, force: true });
+      originalRm(bin, { recursive: true, force: true });
+    }
+  });
+}
 
 test('forced or environment-selected backends never silently fall back', async () => {
   const noIso = pathWithoutIsolation();

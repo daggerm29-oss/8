@@ -11,7 +11,7 @@ import { isDeniedHostPath, Vault } from '../vault/vault.ts';
 import { globalRedactor } from '../util/redact.ts';
 import type { SpanRunner } from '../obs/tracing.ts';
 import { wslEnvList, wslExecArgs, wslFromEnv, type WslConfig } from './wsl.ts';
-import { buildRootfs, clientEnv, containerRuntime, removeContainer, runArgs, type ContainerRuntime } from './container.ts';
+import { buildRootfs, clientEnv, containerRuntime, removeContainer, removeContainerDirectory, runArgs, type ContainerRuntime } from './container.ts';
 import { bwrapArgv, localOsTool, seatbeltArgv, type LocalOsTool } from './localos.ts';
 
 export type SandboxBackend = 'local-container' | 'local-unshare' | 'local-os';
@@ -571,7 +571,10 @@ export class LocalSandbox {
     for (const name of this.live) this.stopContainer(name);
     if (this.ctlDir) rmSync(this.ctlDir, { recursive: true, force: true });
     void this.egressReady.then((close) => close?.());
-    rmSync(this.scratch, { recursive: true, force: true });
-    if (this.newRoot) rmSync(this.newRoot, { recursive: true, force: true });
+    for (const dir of [this.scratch, this.newRoot]) {
+      if (!dir) continue;
+      if (this.container) removeContainerDirectory(this.container.cli, dir);
+      else rmSync(dir, { recursive: true, force: true });
+    }
   }
 }
