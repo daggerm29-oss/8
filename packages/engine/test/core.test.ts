@@ -15,6 +15,10 @@ import { ulid, canonicalJson } from '../src/util/ids.ts';
 
 const tmp = () => mkdtempSync(join(tmpdir(), 'helix-core-'));
 
+test('R0.8 negative control (scratch branch only; never merge)', () => {
+  assert.fail('Intentional CI failure-control assertion.');
+});
+
 test('LineDecoder splits NDJSON across chunk boundaries', () => {
   const d = new LineDecoder();
   assert.deepEqual(d.push('{"a":1}\n{"b"'), ['{"a":1}']);

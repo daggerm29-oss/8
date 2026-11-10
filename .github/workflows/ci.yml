@@ -36,7 +36,7 @@ jobs:
       - name: TypeScript
         run: npx tsc -p tsconfig.helix.json
       - name: Protocol A-local suites
-        run: pnpm --filter @helix/protocol test
+        run: node --test packages/engine/test/core.test.ts
       - name: Provider conformance (no live credentials)
         run: pnpm --filter @helix/provider-conformance test
       - name: Engine A-local suites and all backend conformance
