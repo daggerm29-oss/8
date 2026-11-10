@@ -2,14 +2,34 @@
   "name": "@helix/desktop",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "description": "Helix desktop shell: Electron main process supervising the Engine (architecture.md §5.1).",
   "main": "main.cjs",
   "scripts": {
     "setup": "node setup.cjs",
-    "start": "electron .",
-    "test": "node --test test/desktop.test.mjs"
+    "start": "pnpm build && electron .",
+    "build": "node build.mjs",
+    "package:dir": "node package.mjs",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --test test/*.test.mjs",
+    "test:e2e": "playwright test"
   },
   "devDependencies": {
-    "electron": "^38.0.0"
+    "@playwright/test": "^1.65.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "electron": "^38.0.0",
+    "electron-builder": "^26.18.0",
+    "esbuild": "^0.28.2"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.107.1",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "lucide-react": "^1.70.0",
+    "monaco-editor": "^0.57.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "zustand": "^5.1.0"
   }
 }

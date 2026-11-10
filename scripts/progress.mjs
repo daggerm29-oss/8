@@ -47,12 +47,15 @@ const pct = (done, total) => (total === 0 ? 0 : Math.round((done / total) * 100)
 const bar = (p) => '█'.repeat(Math.round(p / 10)) + '░'.repeat(10 - Math.round(p / 10))
 const done = milestones.reduce((s, m) => s + m.done, 0)
 const total = milestones.reduce((s, m) => s + m.total, 0)
-const current = milestones.find((m) => m.done < m.total)
+const firstIncomplete = milestones.find((m) => m.done < m.total)
+const executionId = readFileSync(roadmapPath, 'utf8').match(/^<!-- execution-milestone: (M\d+) -->$/m)?.[1]
+if (executionId && !milestones.some((m) => m.id === executionId)) throw new Error(`Unknown execution milestone ${executionId}`)
+const current = (executionId && milestones.find((m) => m.id === executionId && m.done < m.total)) || firstIncomplete
 
 const rows = milestones.map((m) => {
   const p = pct(m.done, m.total)
   const status =
-    m.done === m.total ? 'Done' : m === current ? 'In progress' : m.done > 0 ? 'Partly built early' : 'Not started'
+    m.done === m.total ? 'Done' : m === current ? 'In progress' : milestones.indexOf(m) < milestones.indexOf(current) ? 'Unfinished (execution postponed)' : m.done > 0 ? 'Partly built early' : 'Not started'
   return `| ${m.id} ${m.name} | ${bar(p)} ${p}% | ${m.done}/${m.total} | ${status} |`
 })
 
@@ -65,6 +68,7 @@ const dashboard = [
   `**Overall checklist completion: ${pct(done, total)}%** (${done}/${total} roadmap items)  `,
   `**Current milestone:** ${current ? `${current.id} ${current.name}` : 'All milestones complete'}  `,
   `**Next task:** ${current?.next ?? '—'}`,
+  ...(current !== firstIncomplete && firstIncomplete ? ['', `**Execution-order exception:** user-authorized ${current.id} work; ${firstIncomplete.id} remains unfinished (${firstIncomplete.next}). No acceptance criterion or gate is waived.`] : []),
   '',
   '| Milestone | Progress | Items | Status |',
   '| --- | --- | --- | --- |',

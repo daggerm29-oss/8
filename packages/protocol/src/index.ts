@@ -128,6 +128,8 @@ export const Methods = {
   checkpointDiff: 'checkpoint.diff',
   approvalList: 'agent.approvals.list',
   workspaceList: 'workspace.list',
+  workspaceOpen: 'workspace.open',
+  problemsList: 'problems.list',
   /* M1 — activity monitor (F-UI-2) */
   taskMonitor: 'task.monitor',
   taskSteps: 'task.steps',

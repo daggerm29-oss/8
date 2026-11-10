@@ -12,3 +12,5 @@ minimumReleaseAgeExclude:
 
 allowBuilds:
   electron: false
+  esbuild: true
+  electron-winstaller: false

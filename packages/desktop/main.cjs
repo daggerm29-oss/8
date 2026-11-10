@@ -8,8 +8,11 @@ const { app, BrowserWindow, dialog, shell } = require('electron');
 const { spawn } = require('node:child_process');
 const path = require('node:path');
 
-const ENGINE_MAIN = process.env.HELIX_ENGINE_MAIN || path.resolve(__dirname, '../engine/src/main.ts');
-const NODE = process.env.HELIX_NODE || 'node';
+const { existsSync } = require('node:fs');
+const resources = app.isPackaged ? process.resourcesPath : path.join(__dirname, 'dist');
+const ENGINE_MAIN = app.isPackaged ? path.join(resources, 'engine/src/main.mjs') : process.env.HELIX_ENGINE_MAIN || path.resolve(__dirname, '../engine/src/main.ts');
+const NODE = app.isPackaged ? path.join(resources, 'runtime', process.platform === 'win32' ? 'node.exe' : 'node') : process.env.HELIX_NODE || 'node';
+const RENDERER = path.join(resources, 'renderer');
 const HEADLESS = process.env.HELIX_DESKTOP_HEADLESS === '1';
 const MAX_BACKOFF_MS = 10_000;
 const STABLE_UPTIME_MS = 30_000;
@@ -27,7 +30,7 @@ if (HEADLESS) app.disableHardwareAcceleration();
 
 function startEngine() {
   return new Promise((resolve, reject) => {
-    const child = spawn(NODE, ['--disable-warning=ExperimentalWarning', ENGINE_MAIN, '--ws', '0', '--ui'], { stdio: ['ignore', 'ignore', 'pipe'], env: process.env });
+    const child = spawn(NODE, ['--disable-warning=ExperimentalWarning', ENGINE_MAIN, '--ws', '0', '--ui', ...(existsSync(RENDERER) ? ['--desktop-ui', RENDERER] : [])], { stdio: ['ignore', 'ignore', 'pipe'], env: process.env });
     engine = child;
     let buf = '';
     let readyAt = 0;

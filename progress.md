@@ -4,7 +4,7 @@
 > AI sessions: read `AGENTS.md` first. This file is **replaced, not appended**; keep it under 120 lines.
 > Task details and Accept lines: `docs/roadmap.md`. Decisions and known issues: `docs/decisions.md`. Old session log: `docs/history/`.
 
-> **RESUME NOTE: R0.8 is intentionally POSTPONED at the user's request (2026-11-10).** Resume from R0.8 when the user says they are ready, not before. Do not start M1 and do not declare M0 complete. R0.8 stays `[ ]`, its acceptance is unchanged, and it is not waived.
+> **RESUME NOTE (user-authorized 2026-11-10, after merged PR #22): continue M1 from R1.1.** R0.8 remains intentionally POSTPONED and unfinished; M0 is not formally complete. This execution-order decision supersedes the earlier prohibition on starting M1, not the original product scope. R0.8 stays `[ ]`, its acceptance is unchanged, and it is not waived.
 > Exact Accept [A-host] (docs/roadmap.md R0.8): `gh workflow run ci.yml --ref <branch> && gh run watch --exit-status` → `ci-linux` green on the branch; a seeded failing test on a scratch branch turns it red. Branch: `helix/session-2026-11-10-local-container`.
 > Outstanding blockers: (1) manual dispatch + successful watch not yet done; (2) v0 GitHub App lacks Actions: Read and write (only Vercel can add it; the owner then approves; alternatively the owner runs the command); (3) nightly `bench-ref` needs a registered self-hosted `helix-reference` runner; (4) GitHub Actions secret `GEMINI_API` must be configured and verified (the Vercel env var does not apply to Actions); (5) later-milestone harnesses `bench/run.mjs`, `evals/hts-lite.ts`, `evals/browser.ts`, `evals/router-cache.ts` are not yet available. Nightly schedules also need the workflows on `main`.
 
@@ -16,13 +16,15 @@
 > These are **checklist completion** numbers (ticked items with recorded evidence ÷ all items). They are not a measure of product quality or release readiness; human launch gates in `docs/roadmap.md` are not counted.
 
 **Overall checklist completion: 36%** (70/196 roadmap items)  
-**Current milestone:** M0 Foundations  
-**Next task:** R0.8 CI pipeline (plan §15.1, §15.7) [§35.6]
+**Current milestone:** M1 MVP, grounded single agent  
+**Next task:** R1.1 Electron workbench with Monaco (FR-33, F-UI-1, PERF-1, PERF-2) [§4.1, §5.1–5.3]
+
+**Execution-order exception:** user-authorized M1 work; M0 remains unfinished (R0.8 CI pipeline (plan §15.1, §15.7) [§35.6]). No acceptance criterion or gate is waived.
 
 | Milestone | Progress | Items | Status |
 | --- | --- | --- | --- |
-| M0 Foundations | ██████████ 96% | 22/23 | In progress |
-| M1 MVP, grounded single agent | ███░░░░░░░ 33% | 26/79 | Partly built early |
+| M0 Foundations | ██████████ 96% | 22/23 | Unfinished (execution postponed) |
+| M1 MVP, grounded single agent | ███░░░░░░░ 33% | 26/79 | In progress |
 | M2 Precision and efficiency | █████░░░░░ 45% | 22/49 | Partly built early |
 | M3 Parallel and background | ░░░░░░░░░░ 0% | 0/20 | Not started |
 | M4 Team and ecosystem | ░░░░░░░░░░ 0% | 0/16 | Not started |
@@ -32,11 +34,11 @@
 
 ## Current task notes (overwrite when the task changes)
 
-- R0.3 DONE / F-MDL-1 Done: explicit user-approved OpenAI M0 live-smoke exemption in plan §0.3. Both adapters 23/23 A-local; package/degradation gateway 11/11; Gemini live listing + two authenticated configuration/access responses 2/2 (28 models), fresh artifact fr-1-gemini-controls-2026-11-10T14-50-33-405Z.json. No OpenAI key, OAuth or billing claim.
-- G0.2 DONE: exact strict M0 scope command exits 0, all 154 IDs retained; scope guardrails 14/14, tsc clean. F-AGT-1 stays Partial across approved original M0/M1 split; R1.16 and new R1.47 retain M1 editable-plan/nested-Explore coverage (documentation only). Previous failed scope/exit artifacts retained unchanged.
-- R0.8 POSTPONED by the user (see resume note above); remains OPEN (owner action needed). Dispatch 403 = v0 GitHub App token lacks `actions=write` (header X-Accepted-Github-Permissions). Fix: grant the app "Actions: Read and write", or the owner runs the Accept command. Nightly: no workflows on `main`, 0 `helix-reference` runners, GEMINI_API Actions secret unverified. Not waived.
-- Container runtime RESTORED: VM had been reset (no Podman, crun, bwrap or storage left, so nothing deleted). Reinstalled them; probe picks crun with masked /proc and PTY ok. Focused sandbox/conformance/cancel/fail-closed/egress tests 51/51, 0 skipped, all three backends. Fresh full engine 166/166, 0 skipped.
-- ci-linux green at 2b55cfe (push 42840845440, PR 42840864785) and at 61b7223 (push 42845900460, PR 42846494225). Evidence: evals/results/m0-container-recovery-r0-8-diagnosis-2026-11-10.json. No code, CI or isolation change; no M1, no merge, PR #19 untouched. Safe to merge: no while R0.8 is open.
+- PR #22 merged at ad9dff8061cd1ceae796cbd7c34c06df22843e3b (latest main verified). M1 branch: helix/session-2026-11-10-m1-workbench. PR #19 remains untouched.
+- R1.1 in progress: packages/desktop/renderer contains React/Monaco/xterm panels backed by existing authenticated Engine RPCs; build.mjs/package.mjs include renderer, Engine, Node and parser assets in the real Electron directory package.
+- Resume packages/desktop/e2e/workbench.spec.ts: run the exact acceptance command; investigate actual failures, never count a source-shell or browser-only test as packaged acceptance. R1.1 stays unticked until all smoke steps pass.
+- Focused desktop Engine services 3/3 pass; Engine tsc passes. Desktop compiler and packaged Electron verification are in progress; full engine suite must run once at session end. No PERF-reference or M1 exit-gate claim.
+- R0.8 remains postponed/open with unchanged acceptance, M0 unfinished. The explicit user-authorized roadmap execution marker selects M1 without changing checklist arithmetic; existing 26 completed M1 items and their evidence remain intact.
 
 ## Ideas parking lot (one line each, max 15 — do not implement)
 

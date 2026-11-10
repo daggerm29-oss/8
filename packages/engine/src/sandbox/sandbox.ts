@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, constants, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { FORWARDER_SOURCE, SANDBOX_PROXY_PORT, type EgressProxy } from './egress.ts';
 
 const SYSTEM_CA_BUNDLES = ['/etc/ssl/certs/ca-certificates.crt', '/etc/pki/tls/certs/ca-bundle.crt', '/etc/ssl/cert.pem'];
@@ -261,6 +261,7 @@ export class LocalSandbox {
   private readonly egressReady: Promise<(() => void) | null>;
   /** Bridge directory (sockets + forwarder) as seen from inside the sandbox, and on the host. Null without a netns. */
   private readonly bridgeDir: string | null = null;
+  private readonly bridgeNode: string = process.execPath;
   private readonly hostBridgeDir: string | null = null;
   private readonly egressOn: boolean = false;
   private readonly egress?: EgressProxy;
@@ -297,12 +298,18 @@ export class LocalSandbox {
     }
     const seatbeltSystem = this.localOs?.kind === 'seatbelt' && ['/usr/', '/opt/'].some((p) => process.execPath.startsWith(p));
     const nodeVisible = seatbeltSystem || this.roPaths.some((p) => process.execPath.startsWith(p + '/'));
-    if (!this.wsl && nodeVisible) {
+    if (!this.wsl) {
       const hostDir = join(this.scratch, '.helix');
       mkdirSync(hostDir, { mode: 0o700 });
       writeFileSync(join(hostDir, 'fwd.cjs'), FORWARDER_SOURCE);
       this.hostBridgeDir = hostDir;
       this.bridgeDir = this.remapsTmp ? '/tmp/.helix' : hostDir;
+      if (!nodeVisible) {
+        // Packaged Node may live under Downloads or /tmp; never mount its host parent into the sandbox.
+        copyFileSync(process.execPath, join(hostDir, 'node'), constants.COPYFILE_FICLONE);
+        chmodSync(join(hostDir, 'node'), 0o500);
+        this.bridgeNode = join(this.bridgeDir, 'node');
+      }
     }
     if (opts.egress && this.hostBridgeDir) {
       this.egressOn = true;
@@ -362,7 +369,7 @@ export class LocalSandbox {
     const d = this.bridgeDir;
     if (!d || (!egress && !expose.length)) return '';
     const fwd = (mode: string, sock: string, port: number, tag: string) =>
-      `${process.execPath} ${d}/fwd.cjs ${mode} ${sock} ${port} ${d}/ready.${tag}.$$ </dev/null >/dev/null 2>&1 & ` +
+      `${this.bridgeNode} ${d}/fwd.cjs ${mode} ${sock} ${port} ${d}/ready.${tag}.$$ </dev/null >/dev/null 2>&1 & ` +
       `for _helix_i in $(seq 150); do [ -e ${d}/ready.${tag}.$$ ] && break; sleep 0.02; done; rm -f ${d}/ready.${tag}.$$; `;
     let out = `PATH="$PATH:/usr/sbin:/sbin" ip link set lo up 2>/dev/null; `;
     if (egress) out += fwd('tcp', `${d}/egress.sock`, this.proxyPort, 'egress');

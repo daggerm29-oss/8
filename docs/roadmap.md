@@ -90,6 +90,9 @@
   - User approvals are recorded in plan §0.3, 2026-11-10. F-MDL-1 is Done; F-AGT-1 remains Partial with evidenced M0 part and open R1.16/R1.47 M1 work. The original failed gate artifact evals/results/g0-2-scope-2026-11-10.json is retained unchanged. No checker relaxation, requirement deletion, live OpenAI/OAuth claim or R0.8 waiver. M0 is not complete while R0.8 is open; do not start M1.
   - Accept [A-local]: `node scripts/check-scope.mjs --milestone M0` → every row naming M0 is Done, or (split rows) its M0 part carries an `M0 part: Evidence:` entry
 
+<!-- execution-milestone: M1 -->
+> Execution-order decision (user-authorized 2026-11-10, after PR #22 merged): continue M1 from R1.1 while R0.8 remains postponed and unfinished. M0 is not formally complete; no requirement, acceptance criterion, evidence, or exit gate is waived. This supersedes earlier notes saying not to start M1. Work remains within M1 until its original tasks and gates pass.
+
 ## M1 — MVP, grounded single agent
 
 - [x] Plan Mode (F-AGT-2)
