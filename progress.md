@@ -11,13 +11,13 @@
 
 > These are **checklist completion** numbers (ticked items with recorded evidence ÷ all items). They are not a measure of product quality or release readiness; human launch gates in `docs/roadmap.md` are not counted.
 
-**Overall checklist completion: 35%** (69/196 roadmap items)  
+**Overall checklist completion: 36%** (70/196 roadmap items)  
 **Current milestone:** M0 Foundations  
 **Next task:** R0.8 CI pipeline (plan §15.1, §15.7) [§35.6]
 
 | Milestone | Progress | Items | Status |
 | --- | --- | --- | --- |
-| M0 Foundations | █████████░ 91% | 21/23 | In progress |
+| M0 Foundations | ██████████ 96% | 22/23 | In progress |
 | M1 MVP, grounded single agent | ███░░░░░░░ 33% | 26/79 | Partly built early |
 | M2 Precision and efficiency | █████░░░░░ 45% | 22/49 | Partly built early |
 | M3 Parallel and background | ░░░░░░░░░░ 0% | 0/20 | Not started |
@@ -28,11 +28,11 @@
 
 ## Current task notes (overwrite when the task changes)
 
-- R0.3 remains open: no OpenAI Platform key, no OAuth claim. Both adapters 23/23 A-local; Gemini live preserved; FR-1 live low/high thinking + temperature/max-output checks pass, now Done (ad1386e). One-package adapter proof passes. Decision comparison: docs/r0-3-auth-decision.md; approval required before changing acceptance.
-- R0.8: green PR CI 42822113350 at b6260eb (engine 160/160, all three backends, PTY, Electron, red-team, scope); identical-current-workflow negative 42828757024 fails its exact assertion. Dispatch HTTP 403 and uncertified nightly provisioning keep full written R0.8 open. Evidence: evals/results/r0-8-ci-2026-11-10.json.
-- G0.1 PASSED: actual CLI fixes 3/3 real local-container fixtures; restart after live tool preserves completed IDs; 16 provider responses, 0% token/cost delta, $0.0156774 published Standard reference valuation, not an invoice; evals/results/m0-exit-gemini-default-2026-11-10T14-06-10-730Z.json (e13fe20). Prior unpriced failed artifact retained unchanged.
-- R0.10 passed: primary tool/step/checkpoint/span/ledger cost attribution, unknown cost not zero; focused trace/cancel 8/8, p95 container 135 ms / unshare 7 ms (4167ca9). G0.2 still rejects F-MDL-1 and F-AGT-1; original §12 assigns editable Plan Mode/Explore to M1, but no row remapping or deferral has been made pending approval.
-- PR #19 untouched; no M1 work. After VM reset install podman/crun/bubblewrap before containment checks; no unisolated fallback.
+- R0.3 DONE / F-MDL-1 Done: explicit user-approved OpenAI M0 live-smoke exemption in plan §0.3. Both adapters 23/23 A-local; package/degradation gateway 11/11; Gemini live listing + two authenticated configuration/access responses 2/2 (28 models), fresh artifact fr-1-gemini-controls-2026-11-10T14-50-33-405Z.json. No OpenAI key, OAuth or billing claim.
+- G0.2 DONE: exact strict M0 scope command exits 0, all 154 IDs retained; scope guardrails 14/14, tsc clean. F-AGT-1 stays Partial across approved original M0/M1 split; R1.16 and new R1.47 retain M1 editable-plan/nested-Explore coverage (documentation only). Previous failed scope/exit artifacts retained unchanged.
+- R0.8 remains OPEN: prior green host CI and current-workflow seeded negative remain proven; exact dispatch HTTP 403 and uncertified nightly reference/full-HTS provisioning are not waived. No M1 implementation, no merge, PR #19 untouched.
+- Current full engine run ONCE: 157/165 pass, 8 container-conformance failures, 0 skipped (126.2 s). Podman cached boot ID differs after workspace reboot; one fresh isolated-storage recovery attempt fails with cannot re-exec process to join the existing user namespace, so focused container recovery checks never start. Earlier 166/166 artifact remains historical, not today's result.
+- Resume R0.8 authorization/reference provisioning and restore the container verification runtime before claiming a new full pass. Actual live G0.1/R0.10 evidence is preserved; no unisolated fallback or containment change. M0 remains incomplete; Safe to merge: no.
 
 ## Ideas parking lot (one line each, max 15 — do not implement)
 
@@ -64,8 +64,8 @@
 
 ## Last session (overwrite each session, max 5 lines)
 
-- 2026-11-10 PR #22, M0 only: G0.1 and R0.10 complete; FR-1 → Done. R0.3, full R0.8 and G0.2 remain open. No M1, no merge, PR #19 untouched; original requirements/checker/milestone mapping unchanged.
-- Full engine suite run ONCE at session end: `HELIX_SANDBOX_BACKENDS=local-container,local-unshare,local-os node --disable-warning=ExperimentalWarning --test --test-concurrency=1 "test/**/*.test.ts"` → 166/166, 0 failed/skipped (157.8 s). TypeScript clean; CLI 11/11; provider A-local 23/23; scope mutations 11/11; primary trace/cancel 8/8; exit helper 3/3.
-- Exact live G0.1 passes: 3/3 actual CLI container fixtures, restart/no completed-call replay, 16 provider responses, 0% token/cost delta, $0.0156774 Standard reference valuation (not an invoice). JSON: evals/results/m0-exit-gemini-default-2026-11-10T14-06-10-730Z.json; final verification: evals/results/m0-session-verification-2026-11-10.json.
-- Host CI 42822113350 green; fresh current-workflow negative 42828757024 fails its intentional assertion. Dispatch denied HTTP 403; registered reference runners = 0. New code-checkpoint CI 42831708686/42831695530 was still running when checked; not claimed green.
-- Safe to merge: no. Strict M0 scope still rejects only F-MDL-1/F-AGT-1 (saved g0-2-scope-2026-11-10.json). Approval options: docs/r0-3-auth-decision.md; resume only after explicit auth/acceptance and original M0/M1 mapping decisions.
+- 2026-11-10 PR #22 approval follow-up: both explicit §0.3 decisions recorded; R0.3 and G0.2 complete, F-MDL-1 → Done, F-AGT-1 → Partial with evidenced M0 / open M1. Added R1.47 only to preserve missing original Explore coverage; no M1 implementation, no merge, PR #19 untouched.
+- Full engine suite ONCE: `HELIX_SANDBOX_BACKENDS=local-container,local-unshare,local-os node --disable-warning=ExperimentalWarning --test --test-concurrency=1 "test/**/*.test.ts"` → 157/165, 8 failed, 0 skipped (126183 ms), exit 1: Podman stale boot ID. Single isolated-storage recovery fails at namespace re-exec before focused tests; no passing full-suite claim.
+- Narrow checks PASS: both adapters 23/23 A-local (7 live-only skips); Gemini live discovery/configuration 2/2, 0 skipped; gateway/package/degradation 11/11; scope guardrails 14/14, strict M0 gate exit 0, tsc clean. Evidence: evals/results/m0-approval-session-verification-2026-11-10.json and g0-2-scope-approved-2026-11-10.json; previous failed/historical evidence unchanged.
+- Existing PR CI is green at saved checkpoint 6fd0907 (runs 42832595714/42832584814), not proof of the approval-session checkpoint. Original positive/negative CI evidence remains; R0.8 dispatch authorization and reference/nightly certification are still blocked and not exempted.
+- Safe to merge: no — R0.8 is open and fresh full/container verification is not green. M0 is not complete; next task remains R0.8. Scope-checker semantics and all original acceptance criteria except the explicitly approved M0 OpenAI live smoke remain unchanged.
