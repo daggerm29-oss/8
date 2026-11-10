@@ -4,6 +4,16 @@
 > **Status:** authoritative blueprint for implementation. Last research refresh: 2026-11-06.
 > **Evidence tags** follow `plan.md` §0.1: [D] documented, [S] search-indexed, [K] prior knowledge, [A] our design or assumption.
 > **Notation:** interfaces are written as TypeScript-style type signatures to make module contracts precise. They are design contracts, not implementation code.
+> **Authority:** `plan.md` defines WHAT to build and wins any conflict (plan §0.3). This document defines HOW the **complete** system works. It describes the required target, not an optional "end state". `docs/roadmap.md` may reach that target in increments, but it may not replace a design here with a simpler one. See §0.
+
+---
+
+## 0. Use of this document by build tasks
+
+- **Required design.** Each section describes the design Helix must reach in the milestone that plan §12 assigns. A simpler implementation (for example a heuristic instead of a language server, a hash embedder instead of a semantic model, or a host process instead of a sandboxed one) is allowed only as a **declared increment**: the roadmap task names it, the requirement stays **Partial**, and a later roadmap task completes the design in the same or the assigned milestone.
+- **Deviations are recorded.** If an implementation must differ from a design here for good reason, record an `IMPL-ADR` in `docs/decisions.md` that names the section, the difference, and the roadmap task that closes the gap. An `IMPL-ADR` cannot remove a requirement; only plan §0.3 change control can.
+- **Verification is part of the design.** A component is not complete until the checks in its section and in §35 (testing and verification architecture, implementing plan §15) pass. Checks prove only what they assert. A test of a reduced behavior does not verify the full requirement.
+- **Rejected items stay rejected.** §31.5 lists the controls that enforce X19–X21. No task may weaken them.
 
 ---
 
@@ -2244,6 +2254,91 @@ flowchart LR
 | ADR-021 | **JSON-RPC 2.0 for the Engine API** | gRPC; REST | Streaming notifications, stdio + WS, familiarity (LSP/MCP), simple tooling | Manual backpressure handling | — |
 | ADR-022 | **Cloud control plane as one service over Postgres + S3 + Postgres queue** | Kafka/NATS + K8s microservices | Operational simplicity | Throughput ceiling (high) | Queue latency or throughput limits reached |
 | ADR-023 | **No time-based roadmap; milestone gates with exit criteria** | Calendar roadmap | Exit criteria tie progress to measurable outcomes | Planning needs separate capacity estimates | — |
+| ADR-024 | **Executable verification architecture (§35); external gates never simulated** | Checklist ticks as progress; mocked benchmarks | Every requirement is verified by a repeatable command against its original acceptance criterion; results are auditable | Live and reference-hardware runs cost money and need dedicated runners | — |
+
+---
+
+## 35. Testing and verification architecture
+
+This section implements plan §15 (QA strategy), §15.7 (performance testing), and §15.8 (release quality gates). Every roadmap task cites one acceptance command from the layers below. A requirement is Done only when the checks for its **original** acceptance criterion pass (plan §0.3).
+
+### 35.1 Verification classes
+
+Each acceptance command has one class. The class decides where it runs and what its result may prove.
+
+| Class | Runs where | Needs | May prove |
+|---|---|---|---|
+| **A-local** | Any Linux dev box, the v0 workspace, or the Linux CI job | Nothing external. Fakes, recorded fixtures, local emulators | Engine mechanics, policies, parsers, security controls, UI behavior, deterministic benchmarks |
+| **A-host** | Hosted CI runners (`macos-latest`, `windows-latest`) | A real macOS or Windows OS | Platform support (NFR-6), OS keychains, Seatbelt, WSL2 isolation |
+| **A-ref** | A pinned reference-hardware runner (plan §17: 8-core, 16 GB, NVMe) | That runner | PERF budgets, scale (NFR-2), load (NFR-3) |
+| **A-live** | CI job with provider secrets, or a build session with keys | Live provider APIs and their cost | Agent outcome objectives O1–O3, O5 (live part), router and cache savings, ledger reconciliation |
+| **E** (external) | Outside the build | People or third parties | Usability (X-M1.1), competitive hands-on (X-M1.2), partner approval (X-M2.1), pilots, SOC 2, independent pen test (X-M4.x) |
+
+Rules:
+
+1. **Fakes prove mechanics, not outcomes.** A fake provider, fake server, or synthetic fixture may verify how the Engine behaves. It never satisfies an A-live or A-ref acceptance criterion, an objective (O1–O7), or an exit gate. The M2 offline eval (`evals/m2-eval.ts`, fake provider, synthetic element→source page) is an example: valid for mechanics, not for the M2 gate.
+2. **Class E is never automated away.** A self-run study, a simulated user, or an internal red-team does not pass an E gate. E gates are recorded with the evidence type listed in `docs/roadmap.md`.
+3. **A test proves only what it asserts.** A test of a reduced behavior keeps the requirement Partial. Acceptance commands state the expected result in terms of the original criterion.
+4. **Evidence is reproducible.** Each passing run records command, result, commit SHA, and an artifact path when the run produces one (`evals/results/`, `bench/results/`). Any session can re-run it.
+
+### 35.2 Test layers and locations
+
+| Layer | Location | Runner | Covers |
+|---|---|---|---|
+| Unit + property | `packages/*/test/*.test.ts` | `node --test` | Diff/patch engine, lease manager, context packer (property-based, plan §15.1), parsers, policy |
+| Integration | `packages/engine/test/*.test.ts` | `node --test --test-concurrency=1` | Engine + sandbox backends, egress, masking, MCP, preview, git |
+| Sandbox conformance | `packages/engine/test/sandbox-conformance.test.ts` | `node --test`, `HELIX_SANDBOX_BACKENDS=<list>` | One suite run against every `SandboxProvider` (§16.1): exec, PTY, limits, mounts, egress, secrets, lifecycle |
+| Provider conformance | `packages/providers/conformance/` | `node --test` | Streaming, tool round-trip, structured output, cancellation, rate-limit retry; recorded fixtures plus nightly live smoke |
+| MCP conformance | `packages/engine/test/mcp-conformance.test.ts` | `node --test` | Reference MCP servers, spec revision, extensions (§14.1) |
+| Contract | `packages/protocol/test/` | `node --test` | JSON-RPC schemas and backward compatibility (§22.3) |
+| Desktop E2E | `packages/desktop/e2e/*.spec.ts` | Playwright for Electron | Workbench panels, layout, monitor, preview tabs, accessibility (axe-core) |
+| CLI golden | `apps/cli/test/` | `node --test` | `helix run`, `helix -p` output and exit codes |
+| Security red-team | `packages/engine/test/redteam/` | `node --test` | Plan §15.5 escape, exfiltration, and injection cases (§35.4) |
+| Fuzzing | `fuzz/` | `node fuzz/run.mjs --time <s>` | RPC surface, patch applier, secret scanner |
+| Benchmarks | `bench/` | `node bench/run.mjs` | PERF-1…13, scale, load (§35.5) |
+| Agent and retrieval evals | `evals/` | `node evals/<name>.ts` | HTS, retrieval, browser, router, cache, element→source (§35.3) |
+| Scope check | `scripts/check-scope.mjs` | `node` | Document consistency (§35.6) |
+
+### 35.3 Benchmark fixtures and evaluation harnesses
+
+| Harness | Fixture | Metric (plan ref) | Class |
+|---|---|---|---|
+| `evals/hts/` Helix Task Suite | ≥ 300 tasks in 30 pinned OSS repos (TS, Python, Go, Rust, Java): feature, bugfix, refactor, UI tweak, migration, test-writing; hidden acceptance tests; browser assertions for UI tasks; HTS-lite = 30-task subset | O1 success, O2 browser verification, O3 tokens vs naive harness, interventions, gate-skip rate, unrelated-test regressions (§15.2) | A-live (the validator `evals/hts/validate.mjs` is A-local) |
+| Naive baseline harness | Same tasks; retrieval, tool search, snapshots, cache disabled | O3 denominator | A-live |
+| `evals/retrieval-eval.ts` | Held-out real PRs: PR description → edited files and symbols | O5 Recall@10, MRR, tokens per recall point (§15.3) | A-local |
+| `evals/browser-eval.ts` | Fixture web apps with injected bugs: layout overflow, failed fetch, console error, a11y violation | Detection rate, tokens per detection, false positives (§15.4) | A-live |
+| `evals/e2s-eval.ts --suite real` | Real React, Vue, Svelte apps built with the Helix compiler plugins, no hand-placed attributes | Element→source accuracy ≥ 95% (F-VIS-1) | A-local |
+| `evals/precision-eval.ts` | Reference sets for TS, Python, Go, Rust | Reference precision ≥ 0.95 (F-IDX-2) | A-local |
+| `evals/tool-search-eval.ts` | 200-tool MCP server + task set | ≤ 3k tool tokens/turn, ≤ 2 pp success drop (F-MCP-2) | A-live |
+| `evals/router-eval.ts`, `evals/cache-eval.ts` | HTS-lite | ≥ 30% cost cut ≤ 3 pp drop (F-MDL-5); cache-hit ≥ 60% (F-TOK-4) | A-live |
+| `bench/` generator | Deterministic synthetic 1M LOC and 5M LOC repos, plus 1k-file checkpoint fixture | PERF-1…13, NFR-2 | A-ref |
+| Diagnostic corpus | Real outputs of tsc, eslint, pytest, jest, vitest, go, cargo, mypy, webpack, vite, next, docker | ≥ 95% parse accuracy (F-TRM-2) | A-local |
+| Dev-server fixtures | 25 framework apps | ≥ 90% detection (F-PRV-1) | A-local |
+
+Fixtures are pinned by commit or content hash so results are comparable across runs. Live evals record model IDs, prompts version, and ledger totals in their result JSON.
+
+### 35.4 Security and red-team suite
+
+`packages/engine/test/redteam/` holds one file per threat family from plan §15.5 and §25.3: sandbox escape (mount tricks, `/proc`, symlink races, Docker socket, metadata IP 169.254.169.254, DNS exfiltration), credential exfiltration (env dump, proxy bypass, memory dump, sentinel to an unbound host), prompt injection (repo files, web pages, MCP output) against approvals and policy, dependency confusion and typosquat. Each case runs against every sandbox backend and every tool path of §16.3, including MCP stdio servers and the browser. The release gate O4 counts findings with severity ≥ High. The internal suite is necessary for O4 but does not replace the independent pen test (X-M4.3).
+
+### 35.5 Performance harness
+
+`bench/run.mjs` measures each PERF budget with warm-up, ≥ 30 samples, and p95. Results go to `bench/results/<sha>.json`. CI compares against the stored baseline on the reference runner and fails on a regression > 10% (plan §15.7). Budgets that need the desktop (PERF-1, PERF-2, PERF-13) run through Playwright for Electron on the same runner.
+
+### 35.6 CI pipeline and scope check
+
+| Job | Trigger | Runs | Class |
+|---|---|---|---|
+| `ci-linux` | Every push and PR | `npx tsc -p tsconfig.helix.json`, all A-local tests, conformance suites, desktop E2E (headless), red-team, `scripts/check-scope.mjs` | A-local |
+| `ci-macos`, `ci-windows` | Every PR | Platform tests (sandbox, keychain, WSL2) | A-host |
+| `bench-ref` | Nightly and on PRs labeled `perf` | `bench/run.mjs --all` with regression gate | A-ref |
+| `evals-live` | Nightly and on demand (`gh workflow run evals-live`) | HTS-lite, browser eval, router/cache evals; full HTS before each milestone gate | A-live |
+
+`scripts/check-scope.mjs` fails the build when: the requirement status table does not contain exactly the 154 baseline IDs; a task ID cited in that table is not defined in the roadmap; a ticked item lacks an evidence line; a row marked Done has no evidence; or a roadmap item, exit gate, or requirement row that exists on `main` was removed without a plan §0.3 change-log entry; or a row cites a task from a milestone later than every milestone in its milestone cell. With `--milestone M<n>` it also fails unless every row whose last milestone is M<n> is Done with evidence and every split row naming M<n> carries an `M<n> part: Evidence:` entry (roadmap split-row rule).
+
+### 35.7 Release quality gates (plan §15.8)
+
+A release needs: zero open Critical or High security findings; HTS success not below the previous release by more than 2 pp; all PERF budgets met on the reference runner; crash-free sessions ≥ 99.5%. These are evaluated by the jobs above and recorded as evidence on the release PR.
 
 ---
 

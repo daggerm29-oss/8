@@ -11,25 +11,26 @@
 
 > These are **checklist completion** numbers (ticked items with recorded evidence ÷ all items). They are not a measure of product quality or release readiness; human launch gates in `docs/roadmap.md` are not counted.
 
-**Overall checklist completion: 66%** (59/89 roadmap items)  
-**Current milestone:** M3 Parallel and background  
-**Next task:** General subagents + task DAG scheduler (F-ORC-2) [§10.3]
+**Overall checklist completion: 30%** (59/194 roadmap items)  
+**Current milestone:** M0 Foundations  
+**Next task:** R0.1 `local-container` sandbox backend (F-SBX-1, SEC-2) [§16.1, §16.2]
 
 | Milestone | Progress | Items | Status |
 | --- | --- | --- | --- |
-| M0 Foundations | ██████████ 100% | 11/11 | Done |
-| M1 MVP, grounded single agent | ██████████ 100% | 26/26 | Done |
-| M2 Precision and efficiency | ██████████ 100% | 22/22 | Done |
-| M3 Parallel and background | ░░░░░░░░░░ 0% | 0/12 | In progress |
-| M4 Team and ecosystem | ░░░░░░░░░░ 0% | 0/9 | Not started |
+| M0 Foundations | █████░░░░░ 50% | 11/22 | In progress |
+| M1 MVP, grounded single agent | ███░░░░░░░ 33% | 26/78 | Partly built early |
+| M2 Precision and efficiency | █████░░░░░ 45% | 22/49 | Partly built early |
+| M3 Parallel and background | ░░░░░░░░░░ 0% | 0/20 | Not started |
+| M4 Team and ecosystem | ░░░░░░░░░░ 0% | 0/16 | Not started |
 | M5 Platform | ░░░░░░░░░░ 0% | 0/5 | Not started |
 | M6 Collaboration | ░░░░░░░░░░ 0% | 0/4 | Not started |
 <!-- progress:end -->
 
 ## Current task notes (overwrite when the task changes)
 
-- Next: M3 "General subagents + task DAG scheduler (F-ORC-2)" [§10.3]. Work for it AND "Write leases + worktrees" already exists in the open PR from branch `helix/session-2026-11-09-m3-orchestration` (split out of PR #18). After #18 is merged, continue on that PR; do not rebuild them.
-- Known M3 review issues to fix there first: shared-mode write-lease bypass, worktree lease leak.
+- Next: M0 R0.1 `local-container` sandbox backend (F-SBX-1, SEC-2) [§16.1, §16.2]. This matches the dashboard above. Accept: `node --test test/sandbox-conformance.test.ts` with `HELIX_SANDBOX_BACKENDS=local-container,local-unshare` (see `docs/roadmap.md`).
+- Risk for R0.1: the v0 VM has no Docker or Podman (see Environment notes). If neither can run, record a `Blocked:` line and do not tick the task.
+- Parked: draft PR #19 (`helix/session-2026-11-09-m3-orchestration`) holds M3 "General subagents + task DAG scheduler (F-ORC-2)" and "Write leases + worktrees". Do not continue it until M3 is the current milestone (AGENTS.md §3). Then reuse it, and first fix its known review issues: shared-mode write-lease bypass and worktree lease leak.
 
 ## Ideas parking lot (one line each, max 15 — do not implement)
 
@@ -48,7 +49,7 @@
 - Progress dashboard: `node scripts/progress.mjs`
 - Typecheck: `npx tsc -p tsconfig.helix.json`
 - Focused test: `cd packages/engine && node --disable-warning=ExperimentalWarning --test --test-concurrency=1 test/<file>.test.ts`
-- Full engine suite (end of task only, ~5–8 min, timeout ≥ 600 s): same command with `"test/**/*.test.ts"` (`pnpm test` can hang in the v0 VM)
+- Full engine suite (once per session, right before SESSION SUMMARY; ~5–8 min, timeout ≥ 600 s): same command with `"test/**/*.test.ts"` (`pnpm test` can hang in the v0 VM)
 - CLI tests: `pnpm --filter @helix/cli test`
 - Workbench (service `helix-workbench`, port 4100): `bash -lc "set -a; . ./.env.development.local; set +a; exec node --disable-warning=ExperimentalWarning packages/engine/src/main.ts --ws 4100 --ui --host 0.0.0.0 --allow-host '*' --no-auth"`
 - Desktop: `pnpm --filter @helix/desktop setup` (fetch Electron), test `cd packages/desktop && node --test test/desktop.test.mjs`
@@ -62,4 +63,4 @@
 
 - 2026-11-08 (PR #17): M2 tree-sitter symbols (`@vscode/tree-sitter-wasm`), local hash embeddings + `vector` retriever, domain extractors + `domain_map`, CDP telemetry + `preview_snapshot`.
 - Migrations v5 (embeddings) and v6 (domain tables) clear index rows, so the first index after upgrade fully re-extracts.
-- Full engine suite 91/91 at session end. Next: Element→source (see Current task notes).
+- Full engine suite 91/91 at session end. Next: see Current task notes.

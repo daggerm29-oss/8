@@ -1,12 +1,15 @@
-# Helix — Roadmap checklist (single source of truth for progress)
+# Helix — Roadmap (work breakdown of the original scope)
 
-> Percentages in `progress.md` are computed from this file by `node scripts/progress.mjs`. Never type percentages by hand.
-> Only **top-level** checkboxes (`- [ ]` at the start of a line) are counted. Indented sub-bullets are for splitting work and are not counted.
-> Do not add, remove, or reword top-level items unless the user asks. Tick an item only when its Accept line passes.
+> **Authority:** this file divides the scope of `plan.md` into small tasks. It does not define or override scope (plan §0.3). Scope source: `plan.md` §5, §6–§8, §12, §15–§17, §19 at baseline `f474234`, plus the plan §0.3 change log. Architecture refs are in brackets.
+> **Tasks are not requirements.** A ticked task proves only its Accept line. A requirement is Done only when its full original acceptance criterion passes; until then it is Partial, even if every task citing it is ticked. Requirement status is tracked separately from task ticks.
+> **Milestone exit gates** reinstate plan §12 exit criteria. A milestone is complete only when its tasks are ticked and its gates pass. External gates (people outside the build) pass only with real evidence; simulated or mocked results never count.
+> Percentages in `progress.md` are computed from this file by `node scripts/progress.mjs` and measure **task checklist completion only**. Never type percentages by hand.
+> Only **top-level** checkboxes (`- [ ]` at the start of a line) are counted. Indented sub-bullets split work and are not counted.
+> Items may be added to cover original requirements. Items, gates, and requirement rows are never removed, narrowed, or moved to a later milestone without a plan §0.3 change-log entry. Tick an item only when its Accept command produces the expected result.
 > Every ticked item needs an indented evidence line directly under it, or the script does not count it:
 > `  - Evidence: <test/eval command> → <actual result, e.g. "12/12 pass">; commit <sha>; artifact <path, if any>`
-> Items marked "(deferred from M1)" were cut from the original M1 spec to ship the MVP sooner; they are still required scope.
-> Scope source: `plan.md` §12. Architecture refs are in brackets.
+> **Accept lines:** every open task has `Accept [class]: <command> → <expected result>`. Classes (architecture §35.1): **A-local** (any Linux box or the v0 workspace, no external services), **A-host** (real macOS/Windows CI runner), **A-ref** (reference-hardware runner), **A-live** (live provider APIs). Commands run from `packages/engine/` unless they start with `cd`, `node evals/`, `node bench/`, `node scripts/`, `pnpm`, or `gh`. Fakes and synthetic fixtures prove mechanics only; they never satisfy an A-live/A-ref criterion, an objective, or an exit gate. External gates (class E) are listed in tables per milestone and are never build tasks.
+> Items marked "(deferred from M1)" were moved out of the original M1 spec without a change-log entry. They remain M1 scope: the M1 exit gate is not met until they pass.
 
 ## M0 — Foundations
 
@@ -18,59 +21,103 @@
   - Evidence: legacy, built in sessions 1–16 before evidence rule (see docs/history/progress-sessions-1-16.md)
 - [x] Provider adapter framework + conformance suite (F-MDL-1)
   - Evidence: legacy, built in sessions 1–16 before evidence rule (see docs/history/progress-sessions-1-16.md)
+  - Requirement status: Partial (F-MDL-1): no structured output, rate-limit retry not in suite → R0.3
 - [x] Gemini adapter (F-MDL-2)
   - Evidence: legacy, built in sessions 1–16 before evidence rule (see docs/history/progress-sessions-1-16.md)
+  - Requirement status: Partial (F-MDL-2): no image input, explicit caching, key validation → R1.35
 - [x] OpenAI adapter, API-key mode (F-MDL-3)
   - Evidence: legacy, built in sessions 1–16 before evidence rule (see docs/history/progress-sessions-1-16.md)
 - [x] Local sandbox v0 (F-SBX-1)
   - Evidence: legacy, built in sessions 1–16 before evidence rule (see docs/history/progress-sessions-1-16.md)
+  - Requirement status: Partial (F-SBX-1): original M0 backend is `local-container`; unisolated fallback → R0.1, R0.2
 - [x] Tool framework: fs, shell, exact search
   - Evidence: legacy, built in sessions 1–16 before evidence rule (see docs/history/progress-sessions-1-16.md)
 - [x] Primary agent loop + restart resume (F-AGT-1)
   - Evidence: legacy, built in sessions 1–16 before evidence rule (see docs/history/progress-sessions-1-16.md)
 - [x] Ledger v0 (F-TOK-1)
   - Evidence: legacy, built in sessions 1–16 before evidence rule (see docs/history/progress-sessions-1-16.md)
+  - Requirement status: Unverified (FR-31): ±1% reconciliation and attribution not re-checked → R0.4
 - [x] CLI `helix -p` + live M0 exit eval (3/3 fixtures)
   - Evidence: legacy, built in sessions 1–16 before evidence rule (see docs/history/progress-sessions-1-16.md)
+  - Requirement status: Partial: M0 exit required a container; `helix run` missing → G0.1, R0.7
+
+### M0 scope restoration (plan §12 M0)
+
+- [ ] **R0.1 `local-container` sandbox backend** (F-SBX-1, SEC-2) [§16.1, §16.2] — Podman/Docker backend with gVisor (`runsc`) when available, as the default local backend; same `SandboxProvider` contract and policy as `local-unshare`; backend conformance suite run against every backend. Done when: the conformance suite passes on `local-container` and `local-unshare`, and the host home is unreadable from inside both.
+  - Accept [A-local]: `node --test test/sandbox-conformance.test.ts` with `HELIX_SANDBOX_BACKENDS=local-container,local-unshare` → every conformance case passes on both backends (exec, PTY, timeouts, env scrub, mounts, egress via proxy); `cat ~/.ssh/id_*` and `ls $HOME` from inside fail on both; runsc used when present (reported in output)
+- [ ] **R0.2 Fail closed; explicit `local-os` light mode** (SEC-1, SEC-2, FR-19, F-SBX-1) [§16.2, §25.5] — remove the silent `local-process` fallback; when no isolating backend is available the Engine refuses to run agent processes. `local-os` light mode (bubblewrap on Linux, Seatbelt on macOS) only for a repo the user marks trusted, with a permanent workbench indicator and an audit event. Done when: no agent process ever starts unisolated without an explicit trusted-repo opt-in.
+  - Accept [A-local]: `node --test test/fail-closed.test.ts` → with no isolating backend (PATH without unshare/podman/docker) `task.create` returns `sandbox_unavailable` and no child process is spawned; trusted-repo `local-os` opt-in runs, emits `sandbox.light_mode` audit event, and `workbench.status` reports `isolation: "light"`; `local-process` provider no longer exists (`grep -r local-process src` → 0 hits)
+- [ ] **R0.3 Provider conformance completion** (F-MDL-1, FR-5, FR-1) [§7.1, §7.2] — structured output (response schema) in the IR and both adapters; rate-limit retry case; explicit degradation of unsupported features; live model listing exercised. Done when: the conformance suite covers streaming, tool round-trip, structured output, cancellation, and rate-limit retry for Gemini and OpenAI.
+  - Accept [A-local]: `cd packages/providers/conformance && node --test` → new cases pass for both adapters against recorded fixtures: structured output returns schema-valid JSON, 429 with Retry-After is retried then succeeds, unsupported parallel tool calls degrade to serial with a `capability.degraded` note; live listing smoke (`HELIX_LIVE=1`) lists ≥ 1 model per provider
+- [ ] **R0.4 Ledger attribution and reconciliation** (FR-31, F-TOK-1) [§29.6] — every call attributed to agent, task, tool, provider, model, role; provider-reported usage wins; reconciliation report. Done when: ledger totals match recorded provider usage within ±1%.
+  - Accept [A-local]: `node --test test/ledger-reconcile.test.ts` → over 50 recorded provider responses, every ledger row has agent, task, tool, provider, model, role; summed tokens and cost differ from provider-reported totals by ≤ 1%
+- [ ] **R0.5 Trace and audit completeness** (NFR-10, F-OBS-1, F-OBS-3, SEC-9) [§26.1, §26.5] — one span per agent step and tool call with tokens, latency, tool I/O refs; audit chain covers every §26.5 event category. Done when: a scripted run produces the full span tree and one audit event per category, and the chain verifies.
+  - Accept [A-local]: `node --test test/trace-audit.test.ts` → a scripted fake-model task yields one span per step and per tool call with token, latency, and tool-I/O-ref attributes; the audit log has ≥ 1 event for each §26.5 category; `audit.verify` → ok; editing one row → verify fails at that row
+- [ ] **R0.6 Agent loop guarantees** (F-AGT-1) [§9.2] — checkpoint ID on every tool call; cancel stops the loop and its sandbox processes within 1 s. Done when: cancel latency p95 ≤ 1 s over repeated runs.
+  - Accept [A-local]: `node --test test/cancel.test.ts` → every tool_call row has a checkpoint id; 20 cancels during a running `sleep 30` shell call: p95 time to `task.cancelled` and no live sandbox process ≤ 1000 ms
+- [ ] **R0.7 `helix run` headless/CI command** (FR-34) [§5.7] — non-interactive run with exit codes and machine-readable output, beside `helix -p`. Done when: CLI golden-output tests cover `helix run` and `helix -p`.
+  - Accept [A-local]: `cd apps/cli && node --test test/cli.test.ts` → golden-output tests pass for `helix run --json` (exit 0 on success, 2 on gate failure, 3 on budget stop) and `helix -p`
+- [ ] **R0.8 CI pipeline** (plan §15.1, §15.7) [§35.6] — `ci-linux` job on every push and PR (tsc, all A-local suites, conformance, desktop E2E headless, red-team, scope check); `ci-macos`/`ci-windows` jobs added by R1.37/R2.15; nightly `bench-ref` and `evals-live` jobs with secrets.
+  - Accept [A-host]: `gh workflow run ci.yml --ref <branch> && gh run watch --exit-status` → `ci-linux` green on the branch; a seeded failing test on a scratch branch turns it red
+- [ ] **R0.9 Scope check script** (plan §0.3) [§35.6] — `scripts/check-scope.mjs` enforces the document rules of §35.6.
+  - Accept [A-local]: `node scripts/check-scope.mjs` → prints "154/154 IDs, 0 undefined task refs, 0 ticks without evidence, 0 removed items" and exits 0; exits 1 on a scratch copy with one requirement row deleted, one task removed, or one Evidence line removed
+- [ ] **G0.1 M0 exit gate (plan §12 M0)** — the CLI agent fixes a seeded failing test in 3 fixture repos **inside a container** (`local-container`), ledger totals reconcile with provider usage, and an Engine restart resumes a task.
+  - Accept [A-live]: `HELIX_SANDBOX_PROVIDER=local-container node evals/m0-exit.ts` → 3/3 fixtures fixed inside the container backend, ledger vs provider usage within ±1%, restart-resume check passes; result JSON in `evals/results/`
+- [ ] **G0.2 M0 scope complete** — every requirement row whose milestone cell names M0 has its M0 part passing with evidence (see the split-row rule above the requirement status table).
+  - Accept [A-local]: `node scripts/check-scope.mjs --milestone M0` → every row naming M0 is Done, or (split rows) its M0 part carries an `M0 part: Evidence:` entry
 
 ## M1 — MVP, grounded single agent
 
 - [x] Plan Mode (F-AGT-2)
   - Evidence: legacy, built in sessions 1–16 before evidence rule (see docs/history/progress-sessions-1-16.md)
+  - Requirement status: Partial (F-AGT-2, FR-12): no plan edit/approve → R1.16
 - [x] Self-correction loop (F-AGT-3)
   - Evidence: legacy, built in sessions 1–16 before evidence rule (see docs/history/progress-sessions-1-16.md)
 - [x] Verification gates + baseline (F-AGT-4)
   - Evidence: legacy, built in sessions 1–16 before evidence rule (see docs/history/progress-sessions-1-16.md)
+  - Requirement status: Partial (F-AGT-4): no waiver flow, no gate confirmation → R1.17
 - [x] Whole-toolchain containment (F-SBX-2)
   - Evidence: legacy, built in sessions 1–16 before evidence rule (see docs/history/progress-sessions-1-16.md)
+  - Requirement status: Partial (F-SBX-2): MCP stdio and Chrome run on the host → R1.7
 - [x] Sandbox lifecycle + resources (F-SBX-5)
   - Evidence: legacy, built in sessions 1–16 before evidence rule (see docs/history/progress-sessions-1-16.md)
+  - Requirement status: Partial (F-SBX-5): only wall-time and output limits; no cgroups, snapshots, reaper → R1.8
 - [x] Symbol index, heuristic (F-IDX-1)
   - Evidence: legacy, built in sessions 1–16 before evidence rule (see docs/history/progress-sessions-1-16.md)
+  - Requirement status: Partial (F-IDX-1): 6 of 20 languages, no watcher, SHA-256 not BLAKE3, no Merkle → R1.10
 - [x] Hybrid retrieval (F-IDX-4)
   - Evidence: legacy, built in sessions 1–16 before evidence rule (see docs/history/progress-sessions-1-16.md)
+  - Requirement status: Partial (F-IDX-4): no rerank, graph retriever, dependency expansion; O5 unmeasured → R1.12, G2.2
 - [x] Budgeted context assembler (F-CTX-1)
   - Evidence: legacy, built in sessions 1–16 before evidence rule (see docs/history/progress-sessions-1-16.md)
 - [x] Compaction (F-CTX-2)
   - Evidence: legacy, built in sessions 1–16 before evidence rule (see docs/history/progress-sessions-1-16.md)
 - [x] Project instructions (F-CTX-3)
   - Evidence: legacy, built in sessions 1–16 before evidence rule (see docs/history/progress-sessions-1-16.md)
+  - Requirement status: Partial (F-CTX-3): no CLAUDE.md / .cursor/rules import → R1.14
 - [x] Shadow checkpoints + restore (F-GIT-2)
   - Evidence: legacy, built in sessions 1–16 before evidence rule (see docs/history/progress-sessions-1-16.md)
+  - Requirement status: Partial (F-GIT-2): blob store, not a shadow git object store → R1.29
 - [x] MCP client stdio/HTTP (F-MCP-1)
   - Evidence: legacy, built in sessions 1–16 before evidence rule (see docs/history/progress-sessions-1-16.md)
+  - Requirement status: Partial (F-MCP-1, FR-25): negotiates 2025-06-18, no extensions, not sandboxed → R1.31, R1.7
 - [x] MCP permissions (F-MCP-3)
   - Evidence: legacy, built in sessions 1–16 before evidence rule (see docs/history/progress-sessions-1-16.md)
+  - Requirement status: Partial (F-MCP-3): 2 of 4 trust tiers, no per-server sandbox or pinning → R1.32
 - [x] Human approvals (F-ORC-4)
   - Evidence: legacy, built in sessions 1–16 before evidence rule (see docs/history/progress-sessions-1-16.md)
+  - Requirement status: Partial (F-ORC-4): no batch approval → R1.20
 - [x] Budgets (F-TOK-2)
   - Evidence: legacy, built in sessions 1–16 before evidence rule (see docs/history/progress-sessions-1-16.md)
+  - Requirement status: Partial (F-TOK-2, FR-32): task and day only → R1.33
 - [x] Role-based models + fallback (F-MDL-4)
   - Evidence: legacy, built in sessions 1–16 before evidence rule (see docs/history/progress-sessions-1-16.md)
 - [x] Diagnostic parsers (F-TRM-2)
   - Evidence: legacy, built in sessions 1–16 before evidence rule (see docs/history/progress-sessions-1-16.md)
+  - Requirement status: Partial (F-TRM-2): missing jest/vitest, cargo, mypy, bundlers, docker → R1.26
 - [x] Web workbench: tasks, monitor, steps, diff, file edit, roles, approvals (F-UI-1/2)
   - Evidence: legacy, built in sessions 1–16 before evidence rule (see docs/history/progress-sessions-1-16.md)
+  - Requirement status: Partial (FR-33, F-UI-1): HTML tabs, no Monaco, docking, palette, Problems → R1.1, R1.2
 - [x] Terminal: run-command + PTY (F-TRM-1)
   - Evidence: legacy, built in sessions 1–16 before evidence rule (see docs/history/progress-sessions-1-16.md)
 - [x] **T1 Egress proxy (F-SBX-3)** [§16.5] — Engine HTTP+CONNECT proxy (`packages/engine/src/sandbox/egress.ts`, node:http/net only, no TLS termination). Default allowlist: registry.npmjs.org, pypi.org, files.pythonhosted.org, github.com, codeload.github.com. Bridge into `unshare --net` via bind-mounted Unix socket + in-sandbox TCP→unix forwarder; set `HTTP(S)_PROXY`/`npm_config_proxy` in `LocalSandbox.env()`. Denied host → `egress.denied` event; RPC `egress.allow {workspacePath, host}` persisted (new migration). Accept: allowlisted `curl https://registry.npmjs.org/` works in sandbox; other hosts denied and reported; `curl --noproxy '*'` fails; new `test/egress.test.ts` passes.
@@ -79,16 +126,148 @@
   - Evidence: `node --test test/devserver.test.ts` → 4/4 pass (fixture `npm run dev` starts in sandbox, `GET http://127.0.0.1:<free port>/` → 200 "Hello fixture"; `preview.ready` event; `start_dev_server` tool returns URL; crash reported with output); full engine suite 76/76 pass; commit fbc749f
 - [x] **T3 Preview panel (F-PRV-2)** [§17.1, §17.3] — Workbench "Preview" tab: iframe of dev-server URL + reload. One tab only. Accept: browser check shows the fixture page inside the workbench.
   - Evidence: agent-browser on workbench `:4100` → task in `/tmp/t3-fx`, Preview tab → "Start dev server" → status `npm run dev → http://127.0.0.1:37499/`, iframe visible showing "Hello fixture"; commit 721770f; artifact evals/results/t3-preview-tab.png
+  - Requirement status: Partial (F-PRV-2): one tab only → R1.22
 - [x] **T4 Browser tools, minimal (F-PRV-5)** [§18.5] — Agent tools `preview_screenshot`, `preview_console` (headless Chromium via CDP, else Playwright). No recording. Accept: agent takes a screenshot and reads console errors of the fixture page.
   - Evidence: `node --test test/browser.test.ts` → 1/1 pass (fake-model agent: preview_screenshot before server → error; start_dev_server; preview_screenshot → PNG saved, title "Fixture App", text "Hello fixture", `[error] fixture console error`; preview_console → log, console.error and uncaught exception; off-origin URL rejected); `npx tsc -p tsconfig.helix.json` → 0 errors; commit 69cce75
+  - Requirement status: Partial (F-PRV-5, FR-23): no interaction tools → R1.23
 - [x] **T5 Git panel, minimal (F-GIT-1, F-GIT-5)** [§20.1, §20.6] — Workbench "Git" tab: status, diff, stage all, commit. Agent tools cannot force-push or push to main. Accept: commit from panel appears in `git log`; agent `git push --force` is denied.
   - Evidence: agent-browser on workbench `:4100`, Git tab in `/tmp/t5-repo` → status ` M index.html`/`?? NOTES.md` → Stage all → Commit "Change heading to Hello Helix" → `git log --oneline -1` = `4dcf197 Change heading to Hello Helix`; `node --test test/git.test.ts` → 3/3 pass (RPC status/diff/stage/commit in git log, pre-commit hook not run; fake-model agent `git push --force` and `git push origin main` → "denied by policy" even with preapprove all); tsc 0 errors; commit b28d628; artifact evals/results/t5-git-panel.png
+  - Requirement status: Partial (F-GIT-1, F-GIT-5): no hunks, branches, stash, secret scan → R1.28, R1.30
 - [x] **T6 Explore subagent (F-ORC-1)** [§10.2] — Read-only subagent (find_symbol, code_search, read_file) as tool `explore {question}` returning a short summary. No DAG. Accept: fake-model test shows parent gets the summary and subagent has no write tools.
   - Evidence: `node --test test/explore.test.ts` → 1/1 pass (fake model: parent calls `explore`, subagent request offers only code_search/find_symbol/read_file, brief = question only, its `write_file` call rejected and no file written, find_symbol ran; parent transcript has one tool_result = the summary); tsc 0 errors; commit f20d77a
 - [x] **T7 M1 demo eval** — `fixtures/m1/web-hello` + `evals/m1-demo.ts`: open workspace, ask "change the page heading to Hello Helix", agent installs deps via proxy, starts dev server, edits, screenshot confirms, gates pass, commit from Git panel. Accept: passes once live with Gemini; result in `evals/results/`.
   - Evidence: `node evals/m1-demo.ts` (live gemini-3.5-flash-lite) → M1 DEMO: PASS, 7/7 checks (npm install via egress proxy, start_dev_server, edit_file src/page.js, preview_screenshot text "Hello Helix", `npm test` gate passed attempt 1, git.stageAll+git.commit RPC → `6adc651 Change heading to Hello Helix`), 7 model calls, 9 s; first attempt failed screenshot check (fixture dev script had no reload) → fixed to `node --watch`; commit 92e787a; artifact evals/results/m1-demo-gemini-2026-11-08T13-54-03-813Z.json, evals/results/m1-demo-2026-11-08T13-54-03-813Z.png
 
-Launch gates (human, not counted): O1/O2 benchmarks, 10-user usability study, original M1 exit criteria from plan.md §12 (benchmark targets, eval suite).
+### M1 scope restoration (plan §12 M1, §19 MVP)
+
+Desktop and UI
+- [ ] **R1.1 Electron workbench with Monaco** (FR-33, F-UI-1, PERF-1, PERF-2) [§4.1, §5.1–5.3] — explorer, Monaco editor, agent panel, terminal, preview, Problems, task monitor, SCM, settings in the Electron app, driven by Playwright for Electron. Done when: every FR-33 panel opens and works in the packaged app.
+  - Accept [A-local]: `cd packages/desktop && npx playwright test e2e/workbench.spec.ts` → packaged Electron app: explorer, Monaco editor (open, edit, save round-trip), agent panel, terminal, preview, Problems, task monitor, SCM, settings each open and pass their smoke step
+- [ ] **R1.2 Dockable layout and command palette** (F-UI-1) [§5.2] — dockable panels, saved layouts, fuzzy command palette.
+  - Accept [A-local]: `cd packages/desktop && npx playwright test e2e/layout.spec.ts` → panels dock/undock/move; a saved layout restores after relaunch; palette fuzzy-matches "opn fil" → "Open File" and runs it
+- [ ] **R1.3 Agent Activity Monitor** (F-UI-2, PERF-13) [§5.4] — live tree of agents, subagents, tools, budgets, leases, checkpoints; pause, resume, cancel, rollback.
+  - Accept [A-local]: `cd packages/desktop && npx playwright test e2e/monitor.spec.ts` → a fake-model run with one subagent shows agent → subagent → tool nodes with budget, lease, checkpoint; pause stops new tool calls, resume continues, rollback restores the checkpoint; engine→panel event latency p95 ≤ 50 ms
+- [ ] **R1.4 Electron hardening and crash isolation** (SEC-13, NFR-4, PERF-1) [§5.1] — strict CSP (no `frame-ancestors *`, no `unsafe-inline` scripts), validated IPC allowlist with real channels, sandboxed renderer; engine survives a UI crash; packaged app launched in CI.
+  - Accept [A-local]: `cd packages/desktop && node --test test/hardening.test.mjs && npx playwright test e2e/crash.spec.ts` → CSP has no `frame-ancestors *` and no `unsafe-inline` in script-src; renderer `sandbox: true`, `nodeIntegration: false`; IPC call on an unlisted channel is rejected; killing the renderer leaves the Engine and a running task alive and the reopened window reattaches
+- [ ] **R1.5 Accessibility and i18n** (NFR-9, NFR-12) [§5] — WCAG 2.2 AA: keyboard operation, screen-reader labels, high-contrast theme; all UI strings externalized.
+  - Accept [A-local]: `cd packages/desktop && npx playwright test e2e/a11y.spec.ts && node scripts/check-i18n.mjs` → axe-core reports 0 WCAG 2.2 AA violations on every panel; every panel is reachable and operable by keyboard; high-contrast theme passes contrast checks; 0 hard-coded UI strings outside the message catalog
+- [ ] **R1.6 Ledger dashboard, export, trace viewer** (F-TOK-1, F-OBS-1, FR-33) [§29.6, §26.1] — cost dashboard by agent/task/tool/provider/model, CSV/JSON export, local trace viewer.
+  - Accept [A-local]: `node --test test/ledger-dashboard.test.ts && cd packages/desktop && npx playwright test e2e/ledger.spec.ts` → dashboard totals by agent/task/tool/provider/model equal `ledger.query`; CSV and JSON export round-trip; trace viewer renders the span tree of the R0.5 run
+
+Sandbox
+- [ ] **R1.7 Whole-toolchain containment completion** (F-SBX-2, FR-19, FR-27, F-MCP-1, SEC-1) [§16.3] — MCP stdio servers and headless Chrome run inside sandboxes; nothing agent-initiated runs on the host. Done when: the red-team check "read host home" fails from shell, files, LSPs, dev servers, tests, MCP stdio, hooks, and browser.
+  - Accept [A-local]: `node --test test/redteam-containment.test.ts` → for each of shell, file tools, LSP, dev server, test runner, MCP stdio server, hook, browser: an attempt to read a host-home canary file fails and the canary is absent from all outputs; `ps` on the host shows no MCP server or Chrome outside a sandbox
+- [ ] **R1.8 Sandbox lifecycle and resources** (F-SBX-5, SEC-12, PERF-9) [§16.4] — cgroup CPU/memory/PID/disk limits (ISSUE-005), hydrate/snapshot/suspend/resume, reaper for orphaned sandboxes on Engine start and on a timer; no secrets in snapshots.
+  - Accept [A-local]: `node --test test/sandbox-lifecycle.test.ts` → memory hog killed at its cgroup limit, fork bomb stopped by PID limit, disk filler stopped by quota; snapshot → suspend → resume restores files and processes; orphaned sandboxes from a killed Engine are reaped on next start; no sentinel secret value appears in snapshot bytes
+- [ ] **R1.9 Per-tool egress and network approvals** (F-SBX-3, FR-18) [§16.5, §10.5] — allowlists per workspace and per tool; per-domain network approval class with one-click allow.
+  - Accept [A-local]: `node --test test/egress.test.ts test/net-approval.test.ts` → a host allowed for tool A is denied for tool B; an unknown domain raises a `network` approval; approve-once allows that call only; approve-always persists per workspace
+
+Codebase intelligence
+- [ ] **R1.10 Indexer completion** (F-IDX-1, FR-8, FR-11, PERF-6, PERF-7) [§11.1–11.3, §12.1, §12.4] — file watcher, `.helixignore`, BLAKE3 content hashes and Merkle tree, docs indexing, tree-sitter for the top 20 languages of §12.4.
+  - Accept [A-local]: `node --test test/indexer.test.ts test/treesitter.test.ts` → saving a file re-indexes it through the watcher without a manual call; `.helixignore` paths are absent; content hash is BLAKE3 and the Merkle root changes only along the edited path; Markdown docs indexed; tree-sitter parses one snippet in each of the 20 §12.4 languages with correct symbol ranges
+- [ ] **R1.11 Structural and graph queries** (FR-9) [§12.2, §11.5] — AST-pattern search tool and a general `graph.query`.
+  - Accept [A-local]: `node --test test/structural-search.test.ts test/graph-query.test.ts` → AST pattern `call(fetch, _)` returns exactly the fixture call sites; `graph.query` answers "callers of X", "tests covering F", "files importing M" with expected sets
+- [ ] **R1.12 Retrieval completion** (F-IDX-4, FR-9, PERF-5) [§11.6] — reranker, graph-neighborhood retriever, dependency expansion, packing; retrieval eval harness (Recall@k, MRR, tokens per recall point) from plan §15.3.
+  - Accept [A-local]: `node evals/retrieval-eval.ts --suite fixtures/retrieval/smoke` → harness reports Recall@10, MRR, tokens per recall point; rerank, graph-neighborhood retriever and dependency expansion appear in `why`; smoke suite Recall@10 not lower than without them
+- [ ] **R1.13 Semantic embeddings** (F-IDX-6, FR-9) [§12.3] — a real semantic embedding model (bundled local model, or provider embeddings such as `gemini-embedding-2`) on AST-aligned chunks, lazy prioritization, embedding cost in the ledger. `helix-local-hash-v1` stays only as an offline fallback and is labeled lexical.
+  - Accept [A-local]: `node --test test/semantic-embed.test.ts` → with the semantic model, paraphrase queries with no shared identifier words ("make a string lowercase" → `toLower`) rank the target in top 3 for ≥ 8/10 fixture pairs where `helix-local-hash-v1` scores ≤ 3/10; embedding cost appears in the ledger; vectors computed lazily (open files first)
+
+Context and agent
+- [ ] **R1.14 Instruction import** (F-CTX-3, FR-30) [§13.5] — import `CLAUDE.md` and `.cursor/rules` beside AGENTS.md/HELIX.md, with the documented precedence order.
+  - Accept [A-local]: `node --test test/instructions.test.ts` → `CLAUDE.md` and `.cursor/rules/*.mdc` are imported; precedence global → root → nested holds; conflicting rules resolve in the documented order shown in `context.explain`
+- [ ] **R1.15 Context metrics** (F-CTX-1, F-CTX-2) [§13.2, §13.4] — measure stable-prefix ratio (≥ 90%) and long-horizon success with compaction (≤ 2 pp drop).
+  - Accept [A-live]: `node evals/context-metrics.ts` → stable-prefix ratio ≥ 90% across turns of HTS-lite; long-horizon subset success with compaction within 2 pp of without
+- [ ] **R1.16 Plan review** (FR-12, F-AGT-2) [§9.4] — user can edit and approve the plan (RPC + UI) before any write tool runs.
+  - Accept [A-local]: `node --test test/plan-review.test.ts` → in Plan Mode, `plan.update` edits steps and `plan.approve` is required before any write tool is callable; a write before approval is denied by policy
+- [ ] **R1.17 Gates: confirmation, waivers, minimal retries** (F-AGT-4, F-AGT-3) [§9.5, §9.6] — user confirms inferred gates; "done" needs green gates or a logged waiver; each retry is a minimal diff.
+  - Accept [A-local]: `node --test test/gates.test.ts test/waiver.test.ts` → inferred gates need `gates.confirm`; a task with a red gate ends `done` only with a `gate.waived` audit event carrying reason and user; each retry diff touches only lines related to the reported diagnostic (fixture check)
+- [ ] **R1.18 Hooks completion** (F-AGT-5) [§9.7] — `pre_commit` and `session_start` events; declared hook permissions enforced.
+  - Accept [A-local]: `node --test test/skills.test.ts test/hooks-lifecycle.test.ts` → `pre_commit` hook blocks a commit on non-zero exit; `session_start` runs once per session; a hook writing outside its declared permissions is denied
+- [ ] **R1.19 Atomic changesets** (FR-13) [§9.3, §31.2] — create/edit/rename/delete tools grouped into one changeset with per-hunk accept/reject.
+  - Accept [A-local]: `node --test test/changeset.test.ts` → create + edit + rename + delete form one changeset; rejecting one hunk leaves the others applied; rejecting the changeset restores all four files byte-for-byte
+- [ ] **R1.20 Approval queue completion** (F-ORC-4, FR-18) [§10.5, §25.4] — batch approve/deny; approvable classes for network domain, MCP tool, git push, deploy.
+  - Accept [A-local]: `node --test test/approvals.test.ts` → batch approve of 5 pending requests applies to those 5 only; `git_push` and `deploy` classes are approvable (production deploy stays ask, see R1.46); prompt text cannot change any decision
+
+Preview and browser
+- [ ] **R1.21 Dev-server detection** (F-PRV-1, FR-20) [§17.2, §17.5] — framework and package-manager detection, TCP health, persisted recipe, HMR passthrough; fixture set of 25 frameworks.
+  - Accept [A-local]: `node --test test/devserver-frameworks.test.ts` → on 25 framework fixtures (Next, Vite, Remix, Astro, SvelteKit, Nuxt, Angular, CRA, Gatsby, Express, Fastify, Django, Flask, FastAPI, Rails, Laravel, Spring Boot, Phoenix, Go net/http, Hugo, Jekyll, Eleventy, Storybook, Expo web, Deno Fresh): ≥ 23/25 detected and healthy over TCP; recipe persisted and reused; an edit triggers HMR without a full reload where the framework supports it
+- [ ] **R1.22 Multi-tab preview** (F-PRV-2, FR-21) [§17.1, §17.3, §17.4] — multiple tabs and browser sessions, viewport presets, device and media emulation, route-suggesting URL bar.
+  - Accept [A-local]: `cd packages/desktop && npx playwright test e2e/preview-tabs.spec.ts` → two tabs on two routes with separate sessions (cookies differ); viewport presets and device/media emulation change `window.innerWidth` and `prefers-color-scheme`; URL bar suggests routes from the domain index
+- [ ] **R1.23 Browser automation tools** (F-PRV-5, FR-23) [§18.5] — navigate, click, fill, select, press, scroll, hover, wait_for, assert, screenshot(region), eval, record/replay, addressed by snapshot refs; stale refs return an error.
+  - Accept [A-local]: `node --test test/browser-automation.test.ts` → on a fixture app every tool (navigate, click, fill, select, press, scroll, hover, wait_for, assert, screenshot region, eval, record, replay) succeeds by ref; a ref from an old snapshot returns `stale_ref`; a recorded flow replays to the same final state
+- [ ] **R1.24 Telemetry completion** (F-PRV-3, FR-22) [§18.2, §18.3] — source-mapped stacks, perf marks, Web Vitals, dev-overlay and build-error detection, Problems panel updated within 500 ms.
+  - Accept [A-local]: `node --test test/telemetry.test.ts` → uncaught error stack maps to original `src/` file:line via source maps; Web Vitals and perf marks recorded; Vite and Next dev-overlay build errors detected as structured events; Problems panel shows a new error ≤ 500 ms after it occurs
+- [ ] **R1.25 Snapshot completion** (F-PRV-4, PERF-10) [§18.4, §29.3] — build status, pHash screenshot, token caps (≤ 1,500 full / ≤ 400 diff), ≥ 50% token cut vs screenshot observation.
+  - Accept [A-local]: `node --test test/snapshot.test.ts test/snapshot-budget.test.ts` → snapshot includes build status and pHash; full snapshot ≤ 1,500 tokens and diff ≤ 400 on fixtures; tokens ≥ 50% lower than screenshot observation on the browser eval suite; generation p95 ≤ 400 ms
+
+Terminal and Git
+- [ ] **R1.26 Diagnostic parser coverage** (F-TRM-2) [§19.4] — jest/vitest, cargo, mypy, webpack/vite/next, docker; accuracy corpus ≥ 95%.
+  - Accept [A-local]: `node --test test/parsers-corpus.test.ts` → corpus of real outputs for tsc, eslint, pytest, jest, vitest, go, cargo, mypy, webpack, vite, next, docker: ≥ 95% of diagnostics parsed with correct file, line, severity, message
+- [ ] **R1.27 Terminal history** (F-TRM-1) [§19.2, §19.3] — separate agent and user terminals; command history and exit codes indexed.
+  - Accept [A-local]: `node --test test/terminal-history.test.ts` → agent and user terminals are separate PTYs; every command is stored with exit code and searchable through the index
+- [ ] **R1.28 Source control completion** (F-GIT-1, FR-28) [§20.1, §20.2] — hunk staging, AI commit message, branches, stash, rebase-assist, PR creation from the workbench and CLI using the user's git credentials.
+  - Accept [A-local]: `node --test test/git.test.ts test/scm.test.ts` → stage one hunk of two; AI commit message generated from the staged diff (fake model); create/switch branch; stash and pop; rebase-assist resolves a fixture conflict; `git.createPr` against a local fake GitHub API creates a PR with title and body
+- [ ] **R1.29 Shadow git checkpoints** (F-GIT-2, FR-17, PERF-11) [§20.3] — shadow git object store per step; create ≤ 200 ms, restore ≤ 1 s for 1k files.
+  - Accept [A-local]: `node --test test/shadow-git.test.ts` → each step writes a commit to a shadow git object store outside the user repo; on 1k files create p95 ≤ 200 ms and restore p95 ≤ 1 s; user repo history untouched
+- [ ] **R1.30 Git safeguards completion** (F-GIT-5, SEC-7, FR-29) [§20.6] — history-rewrite, protected-branch, large-deletion, `reset --hard`, and remote-branch-deletion guards; secret scan before commit and push; same rules for agents and CLI.
+  - Accept [A-local]: `node --test test/git-safeguards.test.ts` → force-push, push to protected branch, `reset --hard`, remote branch delete, history rewrite, and deleting > 50 files each need approval for agents and CLI; a staged fake AWS key blocks commit and push with the finding
+
+MCP, tokens, models
+- [ ] **R1.31 MCP spec alignment** (FR-25, F-MCP-1) [§14.1–14.3] — 2026-07-28 revision, extension negotiation (Tasks, Skills over MCP, MCP Apps), user/workspace/org scopes, health checks, backoff, idle shutdown, conformance against reference servers.
+  - Accept [A-local]: `node --test test/mcp-conformance.test.ts` → client negotiates protocol `2026-07-28`; Tasks, Skills over MCP, MCP Apps extensions negotiated when offered and absent otherwise; user/workspace/org scope merge order correct; crashed server restarted with backoff; idle server shut down; reference-server conformance suite passes
+- [ ] **R1.32 MCP trust tiers, per-server sandbox, pinning** (F-MCP-3, SEC-5, FR-27) [§14.6, §25] — verified / org-approved / user-added / untrusted tiers with network and credential scope; each server in its own sandbox and credential scope; version + hash pinning.
+  - Accept [A-local]: `node --test test/mcp-trust.test.ts` → each of 4 tiers gets its network and credential scope; every stdio server runs in its own sandbox with only its bound credentials; a server whose binary hash differs from the pin is refused
+- [ ] **R1.33 Session and org budgets** (FR-32, F-TOK-2) [§29.6] — soft and hard budgets per task, session, day, org; pause and ask.
+  - Accept [A-local]: `node --test test/budgets.test.ts` → soft limit warns and hard limit pauses for each of task, session, day, org; org budget from org policy cannot be raised by a user
+- [ ] **R1.34 Deterministic-first catalog** (F-TOK-3) [§29.2] — catalog of deterministic tools and a check that fails when an LLM call replaces a catalogued deterministic operation.
+  - Accept [A-local]: `node --test test/deterministic-first.test.ts` → catalog lists each deterministic operation; a fixture agent run that asks the model for a catalogued operation (e.g. "find references") is flagged by the check
+- [ ] **R1.35 Gemini completion** (F-MDL-2, F-TOK-4) [§7.1, §7.3] — image parts in the IR (screenshots as images), key validation on entry, deprecated-model hiding, explicit context caching with cache hits in the ledger.
+  - Accept [A-local]: `cd packages/providers/gemini && node --test` → image parts serialize to Gemini inline data; invalid key rejected at `vault.setKey`; deprecated models hidden from `models.list`; `cachedContents` created for a stable prefix and cached tokens recorded in the ledger
+- [ ] **R1.36 Dependency gate v0 coverage** (SEC-8, F-REV-3) [§16.7] — every install path (agent shell, hooks, dev-server start, MCP) goes through the gate; install scripts run sandboxed without secrets.
+  - Accept [A-local]: `node --test test/depgate.test.ts test/depgate-paths.test.ts` → a vulnerable install from a hook, the dev-server start command, and an MCP server is gated like agent `run_shell`; `postinstall` runs in a sandbox whose env has no sentinels or secrets
+
+Platform, quality, security
+- [ ] **R1.37 macOS host support** (NFR-6, FR-6, F-AUTH-1, SEC-2) [§16.2, §8.1] — macOS arm64/x64 run of sandbox (Seatbelt light mode, container backend) and Keychain on a real macOS CI runner.
+  - Accept [A-host]: CI job `macos-latest`: `cd packages/engine && node --test test/sandbox.test.ts test/keychain-macos.test.ts` → passes on macOS arm64 and x64 runners with real Keychain (`security`) and Seatbelt light mode
+- [ ] **R1.38 Performance harness** (NFR-1, PERF-1…13) [§28.5] — 1M LOC fixture generator and benchmarks for every PERF budget on reference hardware, in CI with a ±10% regression gate (plan §15.7).
+  - Accept [A-ref]: `node bench/run.mjs --all --hardware reference` → emits p95 for PERF-1…13 on the generated 1M LOC fixture; CI fails when any metric regresses > 10% vs the stored baseline; report in `bench/results/`
+- [ ] **R1.39 Helix Task Suite (HTS)** (O1, O2, O3) [§30.1] — ≥ 300 tasks across 30 real OSS repos (TS, Python, Go, Rust, Java) with hidden acceptance tests and browser assertions; HTS-lite (30 tasks) for per-PR runs (plan §15.2).
+  - Accept [A-local]: `node evals/hts/validate.mjs` → ≥ 300 tasks across ≥ 30 OSS repos (TS, Python, Go, Rust, Java) each with hidden acceptance tests that fail before and pass on the reference solution; UI tasks have browser assertions; HTS-lite subset of 30 defined
+- [ ] **R1.40 Red-team and fuzzing suite** (O4, SEC-6, F-AUTH-1) [§25, §16] — sandbox escape, credential exfiltration, prompt injection via repo files, pages, MCP; RPC and patch-applier fuzzing; fuzzed secret scanner; dependency-confusion and typosquat cases (plan §15.5).
+  - Accept [A-local]: `node --test test/redteam/*.test.ts && node fuzz/run.mjs --time 600` → all escape (mount tricks, /proc, symlink race, Docker socket, 169.254.169.254, DNS exfil), exfiltration (env dump, proxy bypass) and injection cases are blocked; fuzzers find 0 crashes in RPC and patch applier; secret scanner fuzz recall ≥ 99% on generated secrets; typosquat and dependency-confusion cases denied
+- [ ] **R1.41 Browser and observation eval** (O2) [§18] — fixture apps with injected bugs (layout overflow, failed fetch, console error, a11y violation); detection rate, tokens per detection, false positives (plan §15.4).
+  - Accept [A-live]: `node evals/browser-eval.ts` → fixture apps with injected bugs: detection rate, tokens per detection, false positives reported; result JSON in `evals/results/`
+- [ ] **R1.42 Module boundaries and coverage** (NFR-11) [§31.1] — lint rules enforcing §31.1 dependency rules; ≥ 80% line coverage gate in core packages.
+  - Accept [A-local]: `pnpm lint:boundaries && pnpm test:coverage` → boundary lint fails on a seeded forbidden import and passes on main; core packages ≥ 80% line coverage
+- [ ] **R1.43 Supply chain** (SEC-14) [§25.7] — pinned dependencies, SBOM, signed releases, reproducible engine build.
+  - Accept [A-local]: `node scripts/release-check.mjs` → all dependencies pinned in the lockfile; CycloneDX SBOM generated; two clean engine builds are byte-identical; release artifact signature verifies
+- [ ] **R1.44 Provider data handling** (SEC-11, NFR-7) [§8, §25.9] — per-provider data-handling display, zero-retention selection where offered, org restriction of providers.
+  - Accept [A-local]: `node --test test/provider-data.test.ts` → settings show data-handling text per provider; zero-retention flag sent where supported; org policy denying a provider removes it from routing and role settings
+- [ ] **R1.45 Contract tests** (plan §15.1) [§22.1, §22.3] — JSON-RPC schemas as generated types with backward-compatibility checks.
+  - Accept [A-local]: `node --test test/rpc-contract.test.ts` → generated JSON-RPC types match the schema; removing a field from a v1 method fails the compatibility check
+- [ ] **R1.46 Rejected-item enforcement tests** (X19–X21) [§31.5] — tests that production deploy cannot be set to `allow` at any policy level, that indexing makes no LLM calls, and that screenshots are not taken every step.
+  - Accept [A-local]: `node --test test/rejected-items.test.ts` → production `deploy` stays `ask` under every policy level incl. org; indexing a fixture repo makes 0 model calls; a 20-step UI task captures screenshots only on pHash change or visual mode
+
+Automated exit gates (plan §12 M1, §19 MVP success criteria)
+- [ ] **G1.1 O1 ≥ 55%** — HTS pass rate with all verification gates green, live models.
+  - Accept [A-live]: `node evals/hts/run.mjs --suite full --models live` → success with all gates green ≥ 55%; result JSON with per-task outcome, tokens, cost
+- [ ] **G1.2 O2 ≥ 90%** — share of HTS UI tasks where the agent ran a browser verification loop before claiming done.
+  - Accept [A-live]: `node evals/hts/run.mjs --suite ui --models live --metric browser-verify` → ≥ 90% of UI tasks ran a browser verification loop before `done`
+- [ ] **G1.3 O4 = 0 High** — zero sandbox-escape or credential-exfiltration findings at severity ≥ High in the release red-team suite (R1.40).
+  - Accept [A-local]: `node --test test/redteam/*.test.ts --reporter=json > evals/results/redteam.json` → 0 findings with severity ≥ High
+- [ ] **G1.4 PERF budgets met** — all PERF-1…13 p95 budgets on reference hardware (R1.38).
+  - Accept [A-ref]: `node bench/run.mjs --all --hardware reference --enforce-budgets` → every PERF-1…13 p95 within its plan §17 budget
+- [ ] **G1.5 Ledger reconciliation ±1%** — on a live HTS-lite run.
+  - Accept [A-live]: `node evals/hts/run.mjs --suite lite --models live --reconcile` → ledger totals within ±1% of provider-reported usage
+- [ ] **G1.6 M1 scope complete** — every requirement row whose milestone cell names M1 has its M1 part passing with evidence (split-row rule).
+  - Accept [A-local]: `node scripts/check-scope.mjs --milestone M1` → every row whose last milestone is M1 is Done with evidence; every split row naming M1 carries an `M1 part: Evidence:` entry
+
+External exit gates (plan §12 M1, §15.6; not build tasks, never simulated):
+
+| Gate | Criterion | Evidence required |
+|---|---|---|
+| X-M1.1 | Usability test with 10 P1 users: ≥ 7 complete W1 unaided | Signed study report with per-participant results |
+| X-M1.2 | Competitive hands-on verification (HTS-lite + browser suite on Cursor, Antigravity, Claude Code, v0) | Run logs from real accounts; §3 claims upgraded or refuted |
 
 ## M2 — Precision and efficiency
 
@@ -104,6 +283,7 @@ Launch gates (human, not counted): O1/O2 benchmarks, 10-user usability study, or
   - Evidence: legacy, built in sessions 1–16 before evidence rule (see docs/history/progress-sessions-1-16.md)
 - [x] Precise references via SCIP/LSP (F-IDX-2) [§11.4]
   - Evidence: `node --test test/precise.test.ts test/graph.test.ts` → 4/4 pass (language service in sandbox: a.ts format refs = alias.ts:1,3 + both.ts:1,4; b.ts format = both.ts:4 only; impact output `precise` with alias `total` caller found and `B.format` attributed to b.ts, heuristic mode differs); tsc 0 errors; commit 0606cae
+  - Requirement status: Partial (F-IDX-2): TypeScript language service only; no SCIP → R2.1
   - Minimal tier 2: TypeScript language service (`findReferences`, workspace or Engine `typescript`) runs in its own contained sandbox for TS/JS definitions; `impact` uses it for depth-1 callers (`precision: 'precise'`), heuristic fallback otherwise. No SCIP, no cache. Accept: new `test/precise.test.ts` on a fixture with two unrelated `format` functions, a namespace call `B.format()` and an aliased import shows precise callers = exactly the true references (alias found, `B.format` excluded) while heuristic mode differs.
 - [x] Impact Report attached to Plan Mode artifacts [§11.5]
   - Evidence: `node --test test/plan-impact.test.ts` → 1/1 pass (fake-model Plan Mode: plan.impactArtifactId = impact artifact; direct src/cart.ts, depth-2 src/api.ts, tests test/cart.test.ts, uncovered src/tax.ts, risk 3.58 = 1.58 + 1 + 1 with terms shown, tool result names dependents not in plan); `node --test test/m1.test.ts` → 8/8; tsc 0 errors; commit 972582c
@@ -113,6 +293,7 @@ Launch gates (human, not counted): O1/O2 benchmarks, 10-user usability study, or
   - `extract()` parses TS/JS/Python/Go/Rust/Java with tree-sitter (`@vscode/tree-sitter-wasm`, grammars loaded once at module load) and walks the syntax tree into the same §11.3 symbol model; heuristic regexes stay as fallback (other languages, or WASM unavailable). Imports unchanged. Accept: new `test/treesitter.test.ts` — snippets per language yield `parser: 'tree-sitter'` and symbols the heuristic misses (multi-line signatures, one-line class methods, decorated multi-line Python methods, Java package-private methods; Rust impl fns typed as methods) with correct line ranges; a syntax-broken TS file still yields its intact symbols; `m1`, `graph`, `plan-impact` tests still pass.
 - [x] Local-first vector embeddings in hybrid retrieval (F-IDX-6) [§12.3] (deferred from M1)
   - Evidence: `node --test test/vectors.test.ts test/m1.test.ts test/core.test.ts test/plan-impact.test.ts` → 18/18 pass ("tokenization routine" → src/lexer.ts `tokenizeSource` with why ['vector'] only; identical `clamp` chunks in a.ts/b.ts share one hash, embeddings = chunks − 1; second update() indexes 0 and embeds 0; no `.env` vector; model helix-local-hash-v1; migration v5 applies); tsc 0 errors; commit e63ca2b
+  - Requirement status: Partial (F-IDX-6): lexical feature hashing, not semantic → R1.13
   - Bundled local embedder `helix-local-hash-v1` (signed feature hashing of identifier words + character trigrams, 512-dim, L2-normalized, 5-char prefix + word + trigram features, code keywords skipped; no model download, no network). Each index chunk (header = path + symbol) is embedded into a content-addressed `idx_embeddings` table (hash → vec, model, dim stored per row) so identical chunks are embedded once; `idx_vectors` maps chunks to hashes. `search()` adds a `vector` retriever (brute-force cosine, weight 1.0 natural language / 0.5 identifier queries) to RRF. Secret files are never indexed, so never embedded. Accept: new `test/vectors.test.ts` — query "tokenization routine" (no BM25 term match) returns `src/lexer.ts` `tokenizeSource` with `why: ['vector']`; two identical chunk bodies in different files produce one embedding row; re-running `update()` on unchanged files embeds nothing new; `.env` has no vector; `m1` tests still pass.
 - [x] Domain extractors (F-IDX-5) [§11.7]
   - Evidence: `node --test test/domain.test.ts test/m1.test.ts test/core.test.ts test/vectors.test.ts` → 18/18 pass (11 routes across next/next-page/express/fastapi/flask/gin/net-http with handler + file:line; 4 tables prisma/sql/drizzle with columns, SQL FOREIGN KEY skipped; 4 env keys; `sk_live…` literal absent from all domain tables; edited server/index.ts rows replaced; `domain_map` output lists route/table/key, kind filter works); tsc 0 errors; commit 40bcdfc
@@ -122,12 +303,15 @@ Launch gates (human, not counted): O1/O2 benchmarks, 10-user usability study, or
   - Telemetry: each browser load also records `Network.*` events (method, query-secret-redacted URL, status, type, ms, failure) and dedupes console/exception entries with a count; `preview_console` shows failed requests. Snapshot: `PreviewBrowser.snapshot()` + read-only tool `preview_snapshot {path, full}` returns the §18.4 subset (page/viewport/scroll, pruned AX tree with stable `@e` refs = hash(role, name, landmark path), text digest, focused ref, new console errors/warnings, failed/slow/pending requests) and a ref-level diff vs the previous snapshot of the same URL. No build status, pHash/visual, boxes, or source maps yet. Accept: new `test/snapshot.test.ts` (headless Chrome) on a fixture page — first snapshot lists heading/textbox/button/main refs, a 404 fetch with `?token=` shown redacted, a console error repeated 3× counted once ×3; after the page changes, the second snapshot diff has the removed button, the added link, and the textbox value change while the heading keeps its ref; `browser` test still passes.
 - [x] Element→source + select-and-instruct in preview [§17]
   - Evidence: `node --test test/element-source.test.ts test/snapshot.test.ts` → 2/2 pass (headless Chrome via engine RPC: locate before dev server → "no dev server"; preview.inspect PNG 1280 wide; click (100,60) → button "Save changes" .btn.primary → src/SaveButton.jsx:3:10 attribute confidence 1, chain Toolbar.jsx:4 > SaveButton.jsx:3, slice in context; toolbar div → Toolbar.jsx conf 1; unattributed `<p>` → src/Footer.jsx:4 text conf 0.5 needsConfirm; preview.instruct goal = instruction + SaveButton.jsx:3 + card; confirmed path → conf 1; `../etc/passwd` rejected); tsc 0 errors; agent-browser on workbench `:4100` Preview → Inspect → click button → chip `src/SaveButton.jsx:3` + highlight, click text → chip `src/Footer.jsx:4` + "Low confidence. Confirm the file"; commit 971afe6; artifact evals/results/e2s-inspect-attribute.png, evals/results/e2s-inspect-text.png
+  - Requirement status: Partial (F-VIS-1): attribute/text heuristics only → R2.5
   - `PreviewBrowser.locate(url, x, y)` returns an element card (tag, role, name, text, classes, box, style summary, `data-helix-loc` of the element/ancestors). `preview/locate.ts` maps it to source: strategy 1 `data-helix-loc="<path>:<line>:<col>"` (confidence 1.0 on the element, 0.9 on an ancestor; outer locs = component chain); strategy 4 fallback = literal text (+ className overlap) found via index search (confidence ≤ 0.8, `needsConfirm`). No compiler plugins, React owner stacks or source maps yet. RPCs `preview.inspect` (screenshot as base64), `preview.locate {x,y}`, `preview.instruct {x,y,instruction}` (creates a task whose goal = instruction + element card + source slice). Workbench Preview tab "Inspect" mode: click on the screenshot → chip `file:line` (+ "confirm file" when low confidence) → instruction box → task. Accept: new `test/element-source.test.ts` (headless Chrome) — click on an attributed button maps to its exact `src/…:line` with confidence 1 and chain; click on unattributed text maps to the file that contains it with confidence < 1 and `needsConfirm`; `preview.instruct` RPC creates a task whose goal has the instruction, `file:line`, and element card; browser check of Inspect mode shows the chip in the workbench.
 - [x] Credential masking via TLS-terminating proxy (F-SBX-4) [§16.6]
   - Evidence: `node --test test/masking.test.ts` → 2/2 pass (x509 leaf verified by Node for its host only; sandbox `printenv API_TOKEN` = `helix_sntl_…`, real value absent from env; curl `Authorization: Bearer $API_TOKEN` to api.example.test → upstream saw the real value, 200; JSON body substituted; `$API_TOKEN` in header to other.example.test → 403, upstream got nothing, `secret.exfil_attempt` {API_TOKEN, other.example.test, header x-key}; OTHER_KEY to its own host → real value; sentinel over plain http → 403 + alert; registry.npmjs.org still 200 through the CA bundle); `node --test test/egress.test.ts test/devserver.test.ts test/sandbox.test.ts` → 14/14; tsc 0 errors; commit 58b75e3
+  - Requirement status: Partial (F-SBX-4): MCP not covered, bindings in memory → R2.9
   - Minimal tier: RPC `secrets.bind {workspacePath, name, injectHosts, value?}` (value from param or Engine env; in memory) + `secrets.list`; sandbox env gets a sentinel per binding; per-sandbox CA (pure node:crypto X.509) trusted only via the sandbox's CA-bundle env; proxy terminates TLS only for bound hosts, substitutes sentinels in URL/headers/json-form-text bodies for `injectHosts`, else blocks with 403 + `secret.exfil_attempt`; sentinels never leave over plain HTTP. No structured masking, non-HTTP relays, or pinned-cert fallback. Accept: new `test/masking.test.ts` — sandbox env holds only the sentinel; a bound host receives the real value in a header and a JSON body; the sentinel sent to another host is blocked before reaching it and raises `secret.exfil_attempt`; unbound HTTPS hosts still work; `egress` tests still pass.
 - [x] Model router v1 (F-MDL-5) [§7.6]
   - Evidence: `node --test test/router.test.ts test/roles.test.ts test/models.test.ts` → 14/14 pass (rule table: summarize/explore → flash-lite, plan → pro, edit → flash; edit after failed gate → pro with "escalated M→L after failed gate (1)"; open circuit moved last; breaker opens after 5 consecutive failures and on ok/fail/ok/fail = 50% in window, open circuit skips provider, half-opens after cooldown, probe closes; router_reason on ok + error ledger rows; e2e js-calc: first coder step gemini-mid [M], after failed gate all coder steps gemini-pro with escalation reason, task done); `node --test test/m1.test.ts test/explore.test.ts test/compaction.test.ts` → 13/13; tsc 0 errors; commit bda5c31
+  - Requirement status: Partial (F-MDL-5): step type + failures only → R2.10
   - `models/router.ts`: rule table step type → tier (plan L, edit M, explore/summarize S), tier from model-name tokens (lite/mini/nano/haiku/small S; pro/opus/ultra/large L; else M); the role chain is reordered by tier distance (ties keep configured order), refs with an open breaker go last; edit steps escalate one tier while the task has a failed gate (repeat failures still end at MAX_VERIFY_ATTEMPTS). Gateway breaker per (provider, model) adds a 60 s error-rate window (≥ 4 outcomes, ≥ 50% errors) beside 5 consecutive failures; `isOpen()`; decision + rationale saved in ledger `router_reason`. No learned scorer, no cross-provider candidate expansion. Accept: new `test/router.test.ts` — rule-table picks per step type from a mixed chain, escalation reason after a failed gate (unit + e2e ledger rows), breaker opens on 5 consecutive and on 50% window errors, skips the provider while open, half-opens after cooldown; `roles` and `models` tests still pass.
 - [x] Session replay [§30]
   - Evidence: `node --test test/replay.test.ts` → 1/1 pass (fake-model js-calc run → bundle: 4 model turns with ref + router reason, 3 tool calls read_file/edit_file/run_shell ok, 7-entry timeline, `ghp_…` token absent and shown `[REDACTED:github-token]`; replay after restoring calc.js: identical, 4/4 turns, 3/3 tools, final text matches, 0 extra provider calls, file untouched, `replay` artifact saved; recording with edit_file denied → "tool call 2: edit_file was denied in the recording but is allowed now"; recording cut to 3 turns → "model turn 4 requested but the recording has only 3"); `node --test test/replay.test.ts test/router.test.ts test/roles.test.ts test/m1.test.ts test/core.test.ts` → 23/23; tsc 0 errors; commit 5c59a76
@@ -143,59 +327,368 @@ Launch gates (human, not counted): O1/O2 benchmarks, 10-user usability study, or
   - Skills: `skills/<name>/SKILL.md` and `.helix/skills/<name>/SKILL.md` with front-matter `name`/`description`; only those lines go into the composed context; read-only tool `use_skill {name}` returns the body and `scripts/` list. Hooks: `.helix/hooks.json` `{hooks: [{event: pre_tool|post_tool|task_done, match?, run, timeoutMs?}]}` (JSON, no YAML dependency), run in the task sandbox with HELIX_EVENT/HELIX_TOOL/HELIX_TOOL_ARGS/HELIX_TASK_STATUS; non-zero pre_tool blocks the call; post_tool output appended as untrusted (tainted) tool output; task_done saved as `hook_output` artifact. No pre_commit/session_start, triggers, or tool_search indexing yet. Accept: new `test/skills.test.ts` — skill name+description in the system prompt but not the body, `use_skill` returns the body; a pre_tool hook blocks a matching shell call (command not run); a post_tool hook's output appears in the tool result marked untrusted and cannot see provider keys; a task_done hook runs; an invalid hooks file is rejected.
 - [x] OSV dependency gate (F-REV-3) (deferred from M1)
   - Evidence: `node --test test/depgate.test.ts test/sandbox.test.ts test/agent.test.ts test/egress.test.ts test/replay.test.ts` → 21/21 pass (parseInstall npm/pnpm/pip specs, flags + ./local + requirements.txt skipped, bare `npm install` reads package.json; unversioned left-pad resolved to 1.3.0 via registry and pip requests to 2.32.3 via PyPI before OSV query; requests==2.19.0 → deny "PYSEC-2018-28 (CVE-2018-18074)", `.helix/deps.json` ask → ask; OSV down → ask; fake-model agent: `npm install lodash@4.17.20; touch …` denied with GHSA-29mw-wpgm-hmr9 (CVE-2020-28500), marker file not created, tool_calls status denied; lodash@4.17.21 runs; deps.checked events deny, allow); tsc 0 errors; commit 10684bd
+  - Requirement status: Partial (F-REV-3): OSV only, agent shell only → R1.36, R2.14
   - `policy/depgate.ts`: before a `run_shell` that matches `npm|pnpm|yarn|bun install|i|add` or `pip install`, parse the named packages (bare npm install → package.json deps), resolve missing versions to latest via registry metadata, query OSV `/v1/query` per package (cached per name@version). Vulnerable → `.helix/deps.json` `onVulnerable` (default deny; ask/allow), OSV unreachable → ask (deny in headless). Denial reason lists advisory ids + CVE aliases and is returned to the agent; `deps.checked` audit event. `HELIX_DEP_GATE=off` disables; `HELIX_OSV_URL`/`HELIX_NPM_REGISTRY_URL`/`HELIX_PYPI_URL` override endpoints. No license, typosquat, age, install-script, transitive/lockfile checks. Accept: new `test/depgate.test.ts` (local fake OSV + registry) — a vulnerable pinned npm install from the agent is denied with the advisory id before it runs, a fixed version runs; unversioned packages are resolved before the OSV query; workspace policy `ask` and OSV outage both yield ask.
 - [x] Electron desktop shell + OS keychain (F-AUTH-1) (deferred from M1)
   - Evidence: `node --test test/keychain.test.ts` → 1/1 pass (shim secret-tool: vault.setKey gemini → source keychain, stored under service=helix account=provider:gemini, argv log has no secret, no file under HELIX_HOME contains it, fresh Engine resolves it, GEMINI_API_KEY env overrides, deleteKey clears store, unknown provider/empty key rejected, env {} → keychain none + setKey refused); `cd packages/desktop && node --test test/desktop.test.mjs` → 1/1 pass (headless Electron 38.8.6: engine.spawned → workbench.connected title "Helix Workbench", preload bridge present, `typeof require` undefined; SIGKILL engine → engine.restarting → new pid connected; SIGTERM app → engine stopped; no `#token=` in logs); tsc 0 errors; commit 442358c
+  - Requirement status: Partial (SEC-13): CSP not strict, no IPC allowlist → R1.4
   - Minimal shell + keychain: `packages/desktop/main.cjs` (Electron main) spawns the Engine as its own process (`--ws 0 --ui`), reads the tokenized workbench URL from its stderr, loads it in a `BrowserWindow` (contextIsolation, sandbox, no nodeIntegration, minimal preload, off-origin navigation denied), restarts the Engine with backoff when it dies and reloads, stops it on quit. Vault resolves provider keys env-first, then OS keychain (`vault/keychain.ts`: macOS `security`, Linux libsecret `secret-tool`; no backend → refuse, never plaintext); RPCs `vault.status`, `vault.setKey`, `vault.deleteKey` (key never returned). No packaging, updater, preview WebContentsViews, or Windows Credential Manager yet. Accept: new `packages/engine/test/keychain.test.ts` (shim `secret-tool` on PATH) — `vault.setKey` stores via the keychain with the secret on stdin (not argv), the key is absent from HELIX_HOME, a fresh Engine resolves it (source `keychain`), env overrides it, delete removes it, no backend refuses; new `packages/desktop/test/desktop.test.mjs` (headless Electron) — window title "Helix Workbench" with engine status ok, killing the Engine pid → restarted and reconnected, quitting stops the Engine.
 - [x] Windows support
   - Evidence: `node --test test/windows.test.ts test/sandbox.test.ts test/keychain.test.ts` → 12/12 pass (toWslPath: `C:\\Users\\A B\\proj` → /mnt/c/Users/A B/proj, `\\\\wsl$\\Ubuntu\\home\\ann\\proj` → /home/ann/proj, relative/other UNC rejected; shim wsl.exe sandbox: argv `-d Ubuntu-24.04 --cd <root> --exec bash -c`, output `bar|none|sbx_wsl|/tmp|<root>` so GEMINI_API_KEY filtered and WSLENV has FOO/HELIX_SANDBOX/HOME/CI but no PATH/GEMINI, `sleep 30` timed out at 500 ms, PTY echo `pty-sbx_wsl-42` via `exec script -qfec` inside WSL; shim powershell.exe Credential Manager set/get/delete under `helix:provider:gemini`, secret absent from argv and script; win32 denylist blocks AppData\\Roaming\\Microsoft\\Credentials (any case), Chrome User Data, .SSH, allows project files; F-SBX-2 sandbox + keychain tests unchanged); tsc 0 errors; commit 256e490
+  - Requirement status: Unverified (NFR-6): Linux shims only; WSL has no egress or fs isolation → R2.15
   - Minimal Windows 11 host (NFR-6: native host + WSL2 sandbox backend), built behind seams testable on Linux since no Windows host is available: `sandbox/wsl.ts` maps host paths (`C:\…` → `/mnt/c/…`, `\\wsl$\<distro>\…`/`\\wsl.localhost\<distro>\…` → Linux path) and builds `wsl.exe [-d distro] --cd <path> --exec bash -c <cmd>`; `LocalSandbox` uses provider `wsl` on win32 (or `HELIX_SANDBOX_PROVIDER=wsl`, exe `HELIX_WSL_EXE`), forwards the scrubbed sandbox env through `WSLENV` (names only, never provider secrets), runs the PTY via `script` inside WSL, and kills process trees with `taskkill /T /F` on win32. Keychain: Windows Credential Manager via `powershell.exe -EncodedCommand` (CredWrite/CredRead/CredDelete P/Invoke, secret on stdin). Host denylist gains Windows credential/browser stores, case-insensitive on win32. No egress proxy or fs isolation inside WSL yet. Accept: new `test/windows.test.ts` — path mapping cases incl. spaces and UNC, relative/other UNC rejected; a `wsl` sandbox through a shim `wsl.exe` runs exec with `-d <distro> --cd <path> --exec bash -c`, sees env via `WSLENV` without `GEMINI_API_KEY`, times out a sleep; Credential Manager keychain through a shim `powershell.exe` set/get/delete with the secret absent from argv; `C:\Users\ann\AppData\Roaming\Microsoft\Credentials\x` (any case) denied for a win32 home; `sandbox` + `keychain` tests still pass.
 - [x] M2 eval: cost vs baseline, MCP tokens ≤ 3k/turn at 200 tools, element→source ≥ 95% on fixtures
   - Evidence: `node evals/m2-eval.ts` → M2 EVAL: PASS 5/5 (200 MCP tools registered; MCP tool-definition tokens/turn max 240 vs 28,541 baseline; cost $0.016513 vs $0.078244 = 21.1% of baseline, input tokens 21,217 vs 103,726 — saving is from tool search, both runs' 60k forecast results were already capped at ~15.2k chars by the registry's 16k limit, cache hit 1 in M2; element→source 24/24 = 100% (12 attribute conf 1, 6 ancestor conf 0.9, 6 text conf 0.5)); tsc 0 errors; commit 22666f1; artifact evals/results/m2-eval-2026-11-08T17-40-42-432Z.json
+  - Requirement status: Partial: fake provider, synthetic element→source fixture, O5 not measured. Does not satisfy the M2 exit gate → G2.1–G2.4
   - Offline `evals/m2-eval.ts` (fake Gemini provider reporting input tokens = full request size/4, so the ledger prices runs with the real `gemini-3.8-flash` manifest; no live calls). (1) MCP: a stdio fake server with 200 tools (`evals/fixtures/many-tools-mcp.mjs`); per model turn, MCP tool-definition tokens = declarations of `mcp__*`/`tool_search`/`mcp_read_result` in the request body. (2) Cost: the same scripted MCP task (find + call a forecast tool returning ~60k chars, call it again, answer) with M2 defaults vs a baseline engine (tool search off, cache off, no result truncation); ledger USD compared. (3) Element→source: generated fixture page with 24 targets (12 attributed elements, 6 unattributed children of attributed elements, 6 unattributed text-only elements); click each center through `preview.locate`; correct = right file (and line for attribute hits). Accept: `node evals/m2-eval.ts` → max MCP tool-definition tokens/turn ≤ 3000 with 200 tools; M2 task cost ≤ 50% of baseline; element→source correct ≥ 95%; result JSON in `evals/results/`.
 
-Launch gates (human, not counted): Sign in with ChatGPT (needs OpenAI approval), O3/O5 benchmarks.
+### M2 scope restoration (plan §12 M2)
+
+- [ ] **R2.1 SCIP and language servers** (F-IDX-2) [§11.4] — SCIP ingestion; pyright, gopls, rust-analyzer, jdtls in sandboxes beside the TS language service; confidence per edge. Done when: reference precision ≥ 0.95 on TS, Python, Go, Rust benchmark fixtures.
+  - Accept [A-local]: `node --test test/precise-multilang.test.ts && node evals/precision-eval.ts` → SCIP index ingested; pyright, gopls, rust-analyzer, jdtls run in sandboxes; every edge has a confidence; reference precision ≥ 0.95 on TS, Python, Go, Rust benchmark fixtures
+- [ ] **R2.2 Full code graph** (F-IDX-3, F-TST-1, FR-10, PERF-8) [§11.5] — all §11.5 node and edge types, `graph.query`, coverage-derived test mapping; Impact Report ≤ 500 ms on 1M LOC.
+  - Accept [A-ref]: `node --test test/graph-full.test.ts && node bench/run.mjs --only PERF-8` → all §11.5 node and edge types present on the fixture; coverage-derived test map lists the test that executes a changed symbol; Impact Report p95 ≤ 500 ms on 1M LOC
+- [ ] **R2.3 Domain extractors completion** (F-IDX-5) [§11.7] — docs, git history (blame, co-change), Django, Rails, Spring, ActiveRecord.
+  - Accept [A-local]: `node --test test/domain.test.ts test/domain-more.test.ts` → Django, Rails, Spring routes and ActiveRecord models extracted; docs headings indexed; blame owner and co-change pairs available
+- [ ] **R2.4 Intelligence Explorer** (F-UI-3, FR-33) [§5.5] — dependency, call, and architecture graphs; API/route and DB views.
+  - Accept [A-local]: `cd packages/desktop && npx playwright test e2e/explorer.spec.ts` → dependency, call, architecture graphs and route/DB views render for the fixture and link to source
+- [ ] **R2.5 Element→source via compiler plugins** (F-VIS-1, FR-24) [§18.6] — Babel/SWC/Vite/esbuild plugins inject `data-helix-loc`; React fiber `_debugSource` and owner stack; source maps; real React, Vue, Svelte fixture apps.
+  - Accept [A-local]: `node evals/e2s-eval.ts --suite real` → compiler plugins and React owner stacks in place; on real React, Vue, Svelte fixture apps (no pre-existing `data-helix-loc`) element→source file:line correct ≥ 95%
+- [ ] **R2.6 Select-and-instruct completion** (F-VIS-2) [§18.6] — region select; automatic verification snapshot after the edit.
+  - Accept [A-local]: `node --test test/select-instruct.test.ts` → region select produces a card for every element in the region; after the edit, a verification snapshot is attached to the task
+- [ ] **R2.7 Tool search index and success guard** (F-MCP-2, FR-26) [§14.4] — BM25 + embedding index over tool metadata; success-rate drop ≤ 2 pp vs all tools loaded.
+  - Accept [A-live]: `node evals/tool-search-eval.ts --tools 200` → tool-definition tokens ≤ 3k/turn and task success within 2 pp of all-tools-loaded
+- [ ] **R2.8 MCP result projection and cache keys** (F-MCP-4) [§15.4] — JSONPath projection on stored results; cache keyed by server version + resource version + TTL.
+  - Accept [A-local]: `node --test test/mcp-results.test.ts` → JSONPath projection returns only the requested fields; a server version bump or resource version change invalidates the cache; TTL expiry refetches
+- [ ] **R2.9 Credential masking completion** (F-SBX-4, SEC-4) [§16.6, §8.3, §30.5] — MCP path covered; bindings persisted in the keychain; env/cat/memory-dump inside the sandbox reveal only sentinels.
+  - Accept [A-local]: `node --test test/masking.test.ts test/masking-mcp.test.ts` → an MCP server receives only sentinels; bindings survive Engine restart via keychain; `env`, `cat /proc/self/environ`, and a memory dump in the sandbox contain only sentinels
+- [ ] **R2.10 Router v1 completion** (F-MDL-5, FR-4) [§7.6, §29.5] — features: capability needs, context size, file count, recent failures, budget, latency. Done when: ≥ 30% cost cut with ≤ 3 pp success drop on HTS (live).
+  - Accept [A-live]: `node evals/router-eval.ts` → routing uses capability, context size, file count, failures, budget, latency (shown in `router_reason`); cost ≥ 30% lower than always-flagship with success drop ≤ 3 pp on HTS-lite
+- [ ] **R2.11 Prompt-cache optimizer** (F-TOK-4) [§29.4] — stable prefix plus provider explicit caching; cache-hit ratio ≥ 60% on HTS.
+  - Accept [A-live]: `node evals/cache-eval.ts` → provider cache-hit ratio ≥ 60% of input tokens on HTS-lite
+- [ ] **R2.12 Local review agent** (F-REV-1, FR-36) [§10.2] — reviewer subagent with Impact Report, evidence, checklists; line-anchored comments in the workbench.
+  - Accept [A-local]: `node --test test/review-agent.test.ts` → reviewer subagent on a seeded diff returns line-anchored comments that cite the Impact Report and evidence, and flags the seeded bug
+- [ ] **R2.13 Security analysis** (F-REV-2) [§25.10] — Semgrep-compatible SAST, secret scan, IaC checks on agent changes; zero LLM tokens when there are no findings; baseline labeling; blocking severities.
+  - Accept [A-local]: `node --test test/sast.test.ts` → seeded SQL injection, hard-coded secret, open S3 bucket found; a clean diff costs 0 model tokens; baseline findings labeled pre-existing; blocking severity stops `done`
+- [ ] **R2.14 Dependency risk gate completion** (F-REV-3, SEC-8) [§16.7] — license, typosquat, install-script, package-age, lockfile and transitive checks; allow/ask/deny.
+  - Accept [A-local]: `node --test test/depgate-full.test.ts` → GPL in a permissive-only project → ask; `reqeusts` typosquat → deny; package < 72 h old → ask; install script → sandboxed and reported; vulnerable transitive dep from the lockfile → deny
+- [ ] **R2.15 Windows verification and WSL isolation** (NFR-6, FR-6, F-AUTH-1, SEC-2) [§16.2] — run on a real Windows 11 CI runner; egress proxy and filesystem isolation inside WSL2.
+  - Accept [A-host]: CI job `windows-latest`: `cd packages/engine && node --test test/windows.test.ts test/wsl-isolation.test.ts` → passes on a real Windows 11 runner with WSL2; inside WSL the sandbox cannot read the Windows user profile and egress goes through the proxy
+- [ ] **R2.16 Sign in with ChatGPT behind a flag** (FR-2, F-MDL-3) [§7.4, §8.2] — OIDC + PKCE loopback flow, code-complete, flag off by default.
+  - Accept [A-local]: `node --test test/siwc.test.ts` → against a local fake OIDC server: PKCE loopback flow completes, tokens stored in keychain, refresh rotates; flag off by default hides the option
+- [ ] **R2.17 Artifacts v2 completion** (F-UI-4) [§5.6] — walkthroughs, recordings, review results as linkable artifacts.
+  - Accept [A-local]: `node --test test/artifacts-v2.test.ts` → walkthrough, recording, review-result artifacts created and linkable by id from tasks and PR bodies
+- [ ] **R2.18 Coverage-driven test generation** (F-TST-2) [§9.6] — target selection from uncovered changed symbols, not only agent choice.
+  - Accept [A-local]: `node --test test/testgen-coverage.test.ts` → given a changed file with one uncovered function, testgen targets that function without being told
+- [ ] **R2.19 Naive baseline harness** (O3) [§29.1] — a naive harness (no retrieval, no tool search, no snapshot, no cache) run on the same HTS tasks for O3 comparison.
+  - Accept [A-local]: `node evals/hts/run.mjs --suite lite --harness naive --dry-run` → naive harness runs with retrieval, tool search, snapshot, and caching disabled, verified by its config dump
+- [ ] **R2.20 Plugin interfaces** (NFR-8) [§31.3] — stable plugin interfaces for sandbox backends, deploy adapters, language indexers, tools (providers exist).
+  - Accept [A-local]: `node --test test/plugins.test.ts` → a sample plugin of each kind (sandbox backend, deploy adapter, language indexer, tool) loads through the public interface with no core change
+- [ ] **R2.21 Platform overhead measurement** (NFR-13) [§28.5] — non-LLM compute cost measured against median LLM spend; budget < 20%.
+  - Accept [A-live]: `node evals/overhead-eval.ts` → non-LLM compute cost / median LLM spend on HTS-lite reported; < 20%
+- [ ] **R2.22 Large-repo scale** (NFR-2) [§28.1] — sharded index and lazy vectors; 5M LOC / 200k files on a 16 GB machine with graceful degradation.
+  - Accept [A-ref]: `node bench/run.mjs --scale 5M` → a generated 5M LOC / 200k-file repo indexes on a 16 GB machine without OOM; shards and lazy vectors active; queries degrade gracefully (reported latencies)
+
+Automated exit gates (plan §12 M2)
+- [ ] **G2.1 O3 ≥ −40%** — median tokens per successful HTS task vs the naive baseline (R2.19), live models.
+  - Accept [A-live]: `node evals/hts/run.mjs --suite full --compare naive` → median tokens per successful task ≥ 40% lower than the naive harness
+- [ ] **G2.2 O5 ≥ 0.70** — Recall@10 of edited files on held-out real PRs, retrieval only (R1.12 harness).
+  - Accept [A-local]: `node evals/retrieval-eval.ts --suite heldout-prs` → Recall@10 ≥ 0.70 on held-out real PRs
+- [ ] **G2.3 Element→source ≥ 95%** — on real React, Vue, Svelte fixture apps (R2.5), not synthetic attribute pages.
+  - Accept [A-local]: `node evals/e2s-eval.ts --suite real` → ≥ 95% on real React, Vue, Svelte fixtures
+- [ ] **G2.4 MCP ≤ 3k tool tokens per turn at 200 tools** — with success drop ≤ 2 pp (R2.7).
+  - Accept [A-live]: `node evals/tool-search-eval.ts --tools 200` → ≤ 3k tool tokens/turn and success drop ≤ 2 pp
+- [ ] **G2.5 M2 scope complete** — every requirement row whose milestone cell names M2 has its M2 part passing with evidence (split-row rule).
+  - Accept [A-local]: `node scripts/check-scope.mjs --milestone M2` → every row whose last milestone is M2 is Done with evidence; every split row naming M2 carries an `M2 part: Evidence:` entry
+
+External exit gates (plan §12 M2; not build tasks, never simulated):
+
+| Gate | Criterion | Evidence required |
+|---|---|---|
+| X-M2.1 | Enable Sign in with ChatGPT | Written OpenAI approval or eligibility; R2.16 stays flag-off until then |
 
 ## M3 — Parallel and background
 
 - [ ] General subagents + task DAG scheduler (F-ORC-2) [§10.3]
+  - Accept [A-local]: `node --test test/dag.test.ts` → DAG with write-sets schedules deterministically (same order on 10 runs); a failed node blocks only its dependents; general subagents run with isolated context
 - [ ] Write leases + worktrees + merge agent (F-ORC-3) [§10.4]
+  - Accept [A-local]: `node --test test/lease.test.ts test/merge.test.ts` → parallel agents get per-file leases and worktrees; 3-way merge + reviewer merges a fixture conflict; 0 lost writes across 50 randomized runs
 - [ ] Cloud sandbox provider (+ self-hosted Firecracker option) [§16]
+  - Accept [A-local]: `node --test test/sandbox-conformance.test.ts` with `HELIX_SANDBOX_BACKENDS=cloud-fake,firecracker` → the same conformance suite as R0.1 passes on the cloud provider (against its test endpoint) and on a self-hosted Firecracker microVM
 - [ ] Local and cloud background workers, durable across restarts (F-ORC-5) [§10.6]
+  - Accept [A-local]: `node --test test/workers.test.ts` → a run started in the background survives Engine and worker restarts and finishes; cloud worker uses the same Engine binary
 - [ ] Schedules and triggers [§10.6]
+  - Accept [A-local]: `node --test test/schedules.test.ts` → cron, git-push and webhook triggers each start exactly one run; missed cron ticks during downtime run once after restart
 - [ ] Visual regression [§19]
+  - Accept [A-local]: `node evals/visual-regression.ts` → pHash + SSIM + DOM diff baselines; seeded visual changes detected; false-positive rate ≤ 5% on unchanged fixtures
 - [ ] Bug auto-repro [§19]
+  - Accept [A-local]: `node --test test/repro.test.ts` → from a fixture issue text and stack trace, a failing test is written that fails before the fix and passes after
 - [ ] E2E tests from recordings [§19]
+  - Accept [A-local]: `node --test test/e2e-from-recording.test.ts` → a recorded browser flow becomes a Playwright test that passes on the fixture and fails when the seeded behavior is broken
 - [ ] Fix-history / typed project memory (F-CTX-4) [§13.6]
+  - Accept [A-local]: `node --test test/memory.test.ts` → facts, conventions, decisions, fixes, preferences, pitfalls stored with provenance; a memory citing a changed file is marked stale; user review required before use
 - [ ] Architecture diagrams
+  - Accept [A-local]: `node --test test/arch-diagrams.test.ts` → Mermaid diagram generated from the code graph matches the fixture module structure and updates after a module is added
 - [ ] Inline completion v1
+  - Accept [A-ref]: `cd packages/desktop && npx playwright test e2e/completion.spec.ts` → ghost-text completion appears in Monaco; p95 latency reported; accepting inserts the text; keystroke latency stays ≤ 16 ms
 - [ ] M3 eval: 300-file migration with zero lost writes; visual regression false positives ≤ 5%
+  - Accept [A-live]: `node evals/m3-eval.ts` → 300-file migration completes with 0 lost writes; visual regression false positives ≤ 5%; background durability per G3.1
+
+### M3 scope restoration (plan §12 M3)
+
+> Draft PR #19 (M3 DAG + leases) is parked. It is stacked on an earlier session and has two known defects. Sessions do not continue it until M0–M2 are complete; then R3.3 reuses its work on a fresh branch.
+
+- [ ] **R3.1 Named subagent types** (F-ORC-1) [§10.2] — browser-verify, test-runner, reviewer, researcher, each with restricted tools and a 1.5k-token return budget.
+  - Accept [A-local]: `node --test test/subagent-types.test.ts` → each of browser-verify, test-runner, reviewer, researcher is offered only its tool set and its summary to the parent is ≤ 1,500 tokens
+- [ ] **R3.2 Local concurrency** (NFR-3) [§28.2] — ≥ 8 concurrent local agents per workspace without lost writes or starvation.
+  - Accept [A-local]: `node --test test/concurrency.test.ts` → 8 fake-model agents editing disjoint files in one workspace finish with all writes present and no deadlock
+- [ ] **R3.3 PR #19 defects** (F-ORC-3, FR-16) [§10.4] — fix the shared-mode lease bypass and the worktree lease leak before the leases item can be ticked.
+  - Accept [A-local]: `node --test test/lease.test.ts` → shared-mode write without a lease is denied; worktree removed and lease released when its agent ends or fails
+- [ ] **R3.4 UI consistency analysis** (F-VIS-4) [§18.7] — design tokens vs theme; off-token values flagged.
+  - Accept [A-local]: `node --test test/ui-consistency.test.ts` → off-token color, spacing and font values in a fixture app are flagged with file:line; on-token values are not
+- [ ] **R3.5 Worker durability harness** (F-ORC-5) [§10.6, §27.2] — kill and restart workers mid-run; runs resume idempotently.
+  - Accept [A-local]: `node --test test/worker-durability.test.ts` → killing the worker at 5 random points of a 10-step run: run resumes, every step runs exactly once (idempotency keys)
+- [ ] **R3.6 Local↔cloud handoff** (F-TEAM-3) [§28.4] — move a session between local and cloud via git + session bundle.
+  - Accept [A-local]: `node --test test/handoff.test.ts` → local session exported as git branch + bundle and resumed by a second Engine instance with identical transcript and checkpoints
+
+Automated exit gates (plan §12 M3). The 300-file migration and visual-regression criteria are gated by the "M3 eval" item above; G3.1 covers durability.
+- [ ] **G3.1 Durable background runs** — background runs survive worker restarts with no lost or duplicated steps (R3.5).
+  - Accept [A-local]: `node evals/m3-durability.ts` → 100 background runs with random worker kills: 0 lost and 0 duplicated steps
+- [ ] **G3.2 M3 scope complete** — every requirement row whose milestone cell names M3 has its M3 part passing with evidence (split-row rule).
+  - Accept [A-local]: `node scripts/check-scope.mjs --milestone M3` → every row whose last milestone is M3 is Done with evidence; every split row naming M3 carries an `M3 part: Evidence:` entry
 
 ## M4 — Team and ecosystem
 
 - [ ] Helix Cloud control plane: orgs, RBAC, policies, audit export
+  - Accept [A-local]: `node --test test/control-plane.test.ts` → orgs, RBAC roles, policies enforced on API calls; audit export is hash-chain verifiable
 - [ ] SSO + SCIM (F-AUTH-3) [§8.5]
+  - Accept [A-local]: `node --test test/sso-scim.test.ts` → OIDC and SAML login against local IdP emulators; SCIM create/deactivate user reflected within 60 s
 - [ ] OAuth broker (F-AUTH-2) [§8.2]
+  - Accept [A-local]: `node --test test/oauth-broker.test.ts` → RFC 8252 loopback + PKCE against a fake authorization server; refresh rotation; revocation removes tokens; no foreign credential store is read
 - [ ] PR review bot: GitHub App, then GitLab
+  - Accept [A-local]: `node --test test/review-bot.test.ts` → GitHub App (then GitLab) posts line-anchored review comments on a fake PR with Impact Report
 - [ ] Deploy adapters
+  - Accept [A-local]: `node --test test/deploy.test.ts` → Vercel, Cloudflare, Fly, OCI adapters against fakes: pre-deploy gates run, approval required, rollback restores the previous version, production stays ask
 - [ ] Shared memory and skills
+  - Accept [A-local]: `node --test test/shared-memory.test.ts` → team memory and skills are versioned and require review before they apply to other members
 - [ ] Auto ADRs
+  - Accept [A-local]: `node --test test/auto-adr.test.ts` → a task that changes a module boundary produces a draft ADR artifact citing the diff
 - [ ] App scaffolding templates + integration wizards
+  - Accept [A-local]: `node --test test/scaffold.test.ts` → each template scaffolds, installs through the dependency gate, and passes its own gates
 - [ ] Learned routing priors (opt-in data)
+  - Accept [A-live]: `node evals/router-eval.ts --learned` → with consented outcome data the learned prior beats the rule table on cost at equal success on HTS-lite
 
-Launch gates (human, not counted): 3 design-partner pilots, SOC 2 Type I readiness, external pen test.
+### M4 scope restoration (plan §12 M4)
+
+- [ ] **R4.1 PR integration** (F-GIT-4) [§20.5] — GitHub App PR creation with summary, Impact Report, and evidence.
+  - Accept [A-local]: `node --test test/github-app.test.ts` → against a fake GitHub API: App creates a PR whose body has the summary, Impact Report and evidence artifact links
+- [ ] **R4.2 Issue triggers** (F-ORC-5) [§10.6, §22.5] — background agents started from issues and webhooks.
+  - Accept [A-local]: `node --test test/issue-triggers.test.ts` → a labeled issue webhook starts a background task once (duplicate delivery ignored)
+- [ ] **R4.3 Org policies and team cloud workspaces** (F-TEAM-1, F-TEAM-3) [§25.8, §6.3] — MCP allowlists, sandbox, budget, residency policies; team cloud workspaces.
+  - Accept [A-local]: `node --test test/org-policy.test.ts` → org MCP allowlist, sandbox backend, budget and residency policies override user and workspace settings; team cloud workspace created from policy
+- [ ] **R4.4 KMS vault** (FR-6, F-AUTH-1, SEC-4) [§8.1, §21.4] — KMS-backed credential vault for cloud.
+  - Accept [A-local]: `node --test test/kms-vault.test.ts` → against a local KMS emulator: secrets envelope-encrypted, never in plaintext at rest, decrypted only by the proxy
+- [ ] **R4.5 Cloud session scale** (NFR-3) [§28.3] — ≥ 1,000 concurrent cloud sessions per region (load test).
+  - Accept [A-ref]: `node bench/cloud-load.mjs --sessions 1000` → 1,000 concurrent sessions in one region with p95 control-plane latency within SLO and 0 failed sessions
+- [ ] **R4.6 Control-plane availability** (NFR-5) [§28.3, §27] — 99.9% monthly SLO with monitoring; sandbox auto-restore from snapshot.
+  - Accept [A-local]: `node --test test/control-plane-slo.test.ts` → SLO monitors and alerts configured; killing a sandbox host restores sessions from snapshot
+- [ ] **G4.1 M4 scope complete** — every requirement row whose milestone cell names M4 has its M4 part passing with evidence (split-row rule).
+  - Accept [A-local]: `node scripts/check-scope.mjs --milestone M4` → every row whose last milestone is M4 is Done with evidence; every split row naming M4 carries an `M4 part: Evidence:` entry
+
+External exit gates (plan §12 M4; not build tasks, never simulated):
+
+| Gate | Criterion | Evidence required |
+|---|---|---|
+| X-M4.1 | Pilot with 3 design-partner orgs | Signed pilot reports |
+| X-M4.2 | SOC 2 Type I readiness | Auditor readiness letter |
+| X-M4.3 | Policy enforcement verified by external pen test | Independent tester's report; zero open Critical/High |
 
 ## M5 — Platform
 
 - [ ] Agents-as-code SDK on the Helix Engine
+  - Accept [A-local]: `node --test test/sdk.test.ts` → an agent defined in code runs on the Engine with policy and ledger applied
 - [ ] Execution-flow visualization
+  - Accept [A-local]: `cd packages/desktop && npx playwright test e2e/flow-viz.spec.ts` → a traced run renders as a flow graph linked to source
 - [ ] Specialist small models: rerank, routing, diagnostics extraction
+  - Accept [A-live]: `node evals/small-models.ts` → each specialist model beats its generic baseline on its offline eval (plan §15.2–15.3)
 - [ ] Mobile remote control
+  - Accept [A-local]: `npx playwright test e2e/mobile-remote.spec.ts --project=mobile` → a paired phone sees task status and can approve or cancel
 - [ ] Curated marketplace for skills and MCP bundles
+  - Accept [A-local]: `node --test test/marketplace.test.ts` → a listed skill/MCP bundle installs with pinned hash and trust tier; an unsigned bundle is refused
 
 ## M6 — Collaboration
 
 - [ ] Multiplayer sessions (CRDT)
+  - Accept [A-local]: `node --test test/crdt.test.ts` → two users co-edit while an agent writes under leases; converged documents identical
 - [ ] Voice input
+  - Accept [A-local]: `node --test test/voice.test.ts` → recorded audio fixture transcribed to an agent instruction
 - [ ] Enterprise data-residency regions
+  - Accept [A-local]: `node --test test/residency.test.ts` → org pinned to a region: data and sandboxes created only there
 - [ ] On-prem control plane
+  - Accept [A-local]: `node --test test/onprem.test.ts` → control plane installs from the on-prem bundle and passes the control-plane suite offline
+
+## Requirement status (all 154 original IDs)
+
+> One row per requirement ID in `plan.md` at baseline `f474234`. **Status** starts from `SCOPE_TRACEABILITY.md` rev 2 and is stricter: an audit FV row with a listed residual gap is Partial, not Done. A status changes only when the full original acceptance criterion passes with evidence (AGENTS.md §4). **Milestone** is where plan §5, §6, §11, §12, and §19 require the ID to be Done. **Tasks** are the roadmap items that close the gap; existing items are named by milestone and title.
+>
+> **Split rows.** When the plan delivers one ID across milestones (e.g. "M1 (OSV v0), M2 (full)"), the milestone cell names each part. The first milestone is never postponed: its part must pass at that milestone's scope gate, recorded in the gap cell as `M<n> part: Evidence: <command> → <result>; commit <sha>`. The row stays **Partial** until its last part passes, then becomes **Done**. A task may only close a part in its own milestone or earlier.
+
+| ID | Milestone | Status | Audit | Tasks | Remaining gap vs original AC |
+|---|---|---|---|---|---|
+| FR-1 | M0 | Partial (audit FV, residual gap) | FV | M0 Gemini adapter; R0.3 | Live listing only partially exercised (fake server in tests) |
+| FR-2 | M2 | Partial | RED | R2.16 (enabling = external gate X-M2.1) | SIWC/OIDC+PKCE not implemented |
+| FR-3 | M1 | Done | FV | M1 Role-based models | — |
+| FR-4 | M2 | Partial | RED | M2 Model router v1; R2.10 | No capability, context-size, cost, or latency features in routing |
+| FR-5 | M0 | Done | FV | M0 Provider adapter framework; R0.3 | — |
+| FR-6 | M1 (desktop), M4 (KMS) | Partial | RED | R1.37; R2.15; R4.4 | KMS (cloud) not built; keychains tested only via Linux shims |
+| FR-7 | M4 | Not started | DEF(M4) | M4 OAuth broker | Entire OAuth flow |
+| FR-8 | M1 | Partial | RED | R1.10 | No docs indexing, no file watcher (ISSUE-007), heuristic call edges |
+| FR-9 | M1 | Partial | RED | R1.11; R1.12; R1.13 | No structural (AST pattern) query; no general `graph.query`; vector is not semantic |
+| FR-10 | M1 (import graph), M2 (call graph; plan §19, §11) | Partial (audit FV, residual gap) | FV | M2 Code graph v0; R2.2 | M1 part: impact queries on the import graph without an LLM (re-verify); M2: precision limited by heuristic graph outside TS |
+| FR-11 | M1 | Partial | RED | R1.10 | `.helixignore` not supported |
+| FR-12 | M1 | Partial | RED | R1.16 | No plan edit/approve API before execution found |
+| FR-13 | M1 | Not started | MISS | R1.19 | Rename/delete tools, atomic changeset, per-hunk accept/reject |
+| FR-14 | M1 | Done | FV | M0 tools; M1 parsers | — |
+| FR-15 | M1 (Explore), M3 (general) | Not started | DEF(M3) | M1 T6; M3 General subagents + DAG | General subagents not on `main` |
+| FR-16 | M3 | Not started | DEF(M3) | M3 Write leases + worktrees; R3.3 | Not on `main`; two open defects |
+| FR-17 | M1 | Partial | RED | R1.29 | Not a shadow git object store (see F-GIT-2) |
+| FR-18 | M1 | Partial | RED | R1.9; R1.20 | No per-domain network approval class, no deploy class; push is hard-denied rather than approvable |
+| FR-19 | M1 | Partial | RED | R0.2; R1.7 | MCP servers and Chrome run on host; unisolated `local-process` fallback |
+| FR-20 | M1 | Partial | RED | R1.21 | Framework detection limited; no HMR passthrough verification; no persisted recipe |
+| FR-21 | M1 | Not started | MISS | R1.22 | Multi-tab, sessions, presets, emulation |
+| FR-22 | M1 | Partial | RED | R1.24 | Build errors / dev-overlay detection; source-mapped stacks |
+| FR-23 | M1 | Not started | MISS | R1.23 | All interaction tools |
+| FR-24 | M2 | Partial | RED | R2.5 | Compiler plugins, React owner stack, source maps |
+| FR-25 | M1 | Partial | RED | R1.31 | Spec revision: negotiates `2025-06-18`, not 2026-07-28 (`mcp/client.ts:8`); extension negotiation (Tasks, Skills over MCP, MCP Apps) |
+| FR-26 | M2 | Partial (audit FV, residual gap) | FV | M2 MCP tool search; R2.7 | Success-rate regression (≤ 2 pp) not measured |
+| FR-27 | M1 | Partial | RED | R1.7; R1.32 | Process sandbox and credential scope per server |
+| FR-28 | M1 (worktree M3) | Partial | RED | R1.28; M3 Write leases + worktrees | Branch, rebase-assist, PR creation (unscheduled), hunk staging |
+| FR-29 | M1 | Partial (audit FV, residual gap) | FV | R1.30 | Remote branch deletion and `reset --hard` not specifically tested |
+| FR-30 | M1 (instructions), M3 (memory) | Not started | DEF(M3) | R1.14; M3 typed memory | Typed memory (M3); `CLAUDE.md` / `.cursor/rules` import **not implemented** and not scheduled (only AGENTS.md/HELIX.md loaded) |
+| FR-31 | M0 | Partial (unverified) | NV | R0.4 | Attribution to tool/agent and ±1% reconciliation not re-verified (legacy evidence) |
+| FR-32 | M1 | Partial | RED | R1.33 | Session and org scopes |
+| FR-33 | M1 (all panels except code-intelligence explorer; plan §12 M1), M2 (code-intelligence explorer, F-UI-3) | Partial | RED | R1.1; R1.2; R1.3; R1.6; R2.4 | M1: Monaco editor, Problems, MCP manager, docking, palette; M2: Intelligence Explorer |
+| FR-34 | M0 | Partial | RED | R0.7; G0.1 | `helix run` subcommand not found |
+| FR-35 | M2 (gen), M3 (E2E) | Not started | DEF(M3) | M2 Test generation; M3 E2E from recordings | E2E from recordings |
+| FR-36 | M2 (local), M4 (PR bot) | Not started | MISS | R2.12; M4 PR review bot | Local review agent (M2 scope) not scheduled |
+| FR-37 | M4 | Not started | DEF(M4) | M4 Deploy adapters | All |
+| FR-38 | M4 | Not started | DEF(M4) | M4 control plane; M4 Shared memory and skills | All team features |
+| F-MDL-1 | M0 | Partial | RED | R0.3 | Structured output (no API, no conformance case); rate-limit *retry* is in the gateway, not in the conformance suite |
+| F-MDL-2 | M1 | Partial | RED | R1.35 | Multimodal input (IR has text parts only, `protocol/src/models.ts:29`); explicit context caching (`cachedContents`); key validation on entry; deprecated-model hiding |
+| F-MDL-3 | M2 (SIWC flagged) | Partial | RED | R2.16 | SIWC |
+| F-MDL-4 | M1 | Done | FV | M1 Role-based models | — |
+| F-MDL-5 | M2 | Partial | RED | R2.10 | Only step type + failures; AC measured with fake provider, success drop not measured; learned priors M4 |
+| F-AUTH-1 | M1 (desktop), M4 (KMS) | Partial (unverified) | NV | R1.37; R1.40; R2.15; R4.4 | Fuzzed secret-scanner test absent; KMS; real-OS keychain runs |
+| F-AUTH-2 | M4 | Not started | DEF(M4) | M4 OAuth broker | All |
+| F-AUTH-3 | M4 | Not started | DEF(M4) | M4 SSO + SCIM | All |
+| F-IDX-1 | M1 | Partial | RED | R1.10 | 14 more languages, watcher, BLAKE3 (`IMPL-ADR-004`), Merkle, perf AC |
+| F-IDX-2 | M2 | Partial | RED | R2.1 | SCIP, non-TS LSPs, per-edge confidence, precision benchmark |
+| F-IDX-3 | M2 (import graph M1) | Partial | RED | R2.2 | Most node/edge types, `graph.query`, perf AC |
+| F-IDX-4 | M1 | Partial | RED | R1.12 | Rerank, graph-neighborhood retriever, dependency expansion; Recall@10 (O5) unmeasured |
+| F-IDX-5 | M2 | Partial | RED | R2.3 | Docs, git history (blame, co-change), Django/Rails/Spring, ActiveRecord; no Explorer UI |
+| F-IDX-6 | M1 | Partial | RED | R1.13 | Real semantic model, provider embeddings, lazy prioritization |
+| F-CTX-1 | M1 | Partial (unverified) | NV | R1.15 | Prefix-stability metric not measured (legacy) |
+| F-CTX-2 | M1 | Partial (unverified) | NV | R1.15 | Long-horizon success benchmark absent |
+| F-CTX-3 | M1 | Partial | RED | R1.14 | `CLAUDE.md` / `.cursor/rules` import not implemented |
+| F-CTX-4 | M3 | Not started | DEF(M3) | M3 typed memory | All |
+| F-AGT-1 | M0 | Partial (unverified) | NV | R0.6 | Cancel ≤ 1 s not measured |
+| F-AGT-2 | M1 | Partial | RED | R1.16 | Plan editing/approval UI or API |
+| F-AGT-3 | M1 | Partial (unverified) | NV | R1.17 | "Minimal diff per retry" not verified |
+| F-AGT-4 | M1 | Partial | RED | R1.17 | User waiver flow (no `waive` in code) |
+| F-AGT-5 | M1 | Partial | RED | R1.18 | pre-commit and session-start hooks; declared-permission enforcement for hooks |
+| F-ORC-1 | M1 (Explore), M3 (others) | Partial | RED | M1 T6; R3.1 | 4 named subagent types; none scheduled by name |
+| F-ORC-2 | M3 | Not started | DEF(M3) | M3 General subagents + DAG | Not on `main` |
+| F-ORC-3 | M3 | Not started | DEF(M3) | M3 Write leases + worktrees; R3.3 | Not on `main`; defects open |
+| F-ORC-4 | M1 | Partial | RED | R1.20 | Batch approval not found |
+| F-ORC-5 | M3 (local/cloud), M4 (issue triggers) | Not started | DEF(M3) | M3 workers; M3 Schedules and triggers; R3.5; R4.2 | All |
+| F-SBX-1 | M0 (local), M3 (cloud) | Partial | RED | R0.1; R0.2; M3 Cloud sandbox provider | Containers, gVisor, Seatbelt, bwrap (container backend not scheduled); conformance across backends |
+| F-SBX-2 | M1 | Partial | RED | R1.7 | MCP and browser containment; red-team suite (§15.5) |
+| F-SBX-3 | M1 | Partial (audit FV, residual gap) | FV | R1.9 | Per-tool allowlist |
+| F-SBX-4 | M2 | Partial | RED | R2.9 | MCP path (MCP not sandboxed); memory-dump test; persisted bindings |
+| F-SBX-5 | M1 | Partial | RED | R1.8 | cgroups (ISSUE-005), snapshot/suspend/resume, reaper, PERF-9 |
+| F-PRV-1 | M1 | Partial | RED | R1.21 | Framework fixture set, persisted recipe |
+| F-PRV-2 | M1 | Partial | RED | R1.22 | All extras; no roadmap follow-up |
+| F-PRV-3 | M1 | Partial | RED | R1.24 | Source maps, Web Vitals, perf marks, overlay detection, Problems panel |
+| F-PRV-4 | M1 | Partial | RED | R1.25 | Build status, pHash, token-size AC, browser-task suite |
+| F-PRV-5 | M1 | Partial | RED | R1.23 | All interaction tools; not scheduled |
+| F-TRM-1 | M1 | Partial | RED | R1.27 | History/exit-code indexing (parking lot) |
+| F-TRM-2 | M1 | Partial | RED | R1.26 | jest/vitest, cargo, mypy, webpack/vite/next, docker; accuracy AC |
+| F-GIT-1 | M1 | Partial | RED | R1.28 | Hunk staging, AI message, branches, stash |
+| F-GIT-2 | M1 | Partial | RED | R1.29 | Not a git object store; perf AC unmeasured |
+| F-GIT-3 | M3 | Not started | DEF(M3) | M3 Write leases + worktrees | Not on `main` |
+| F-GIT-4 | M4 | Not started | MISS | R4.1 | PR creation |
+| F-GIT-5 | M1 | Partial | RED | R1.30 | Large-deletion guard, history-rewrite guard, pre-commit secret scan |
+| F-MCP-1 | M1 | Partial | RED | R1.7; R1.31 | Sandbox spawn, org scope, 2026-07-28 spec revision (uses 2025-06-18), extension negotiation, reference-server conformance |
+| F-MCP-2 | M2 | Partial | RED | R2.7 | BM25 + embeddings index (keyword scoring only); success-drop measurement |
+| F-MCP-3 | M1 | Partial | RED | R1.32 | Two of four tiers; network/credential scope per tier |
+| F-MCP-4 | M2 | Partial (unverified) | NV | R2.8 | JSONPath projection and resource-version keys not verified |
+| F-MCP-5 | M2 | Done | FV | M2 MCP prompt-injection defense | — |
+| F-TOK-1 | M0 (ledger), M1 (dashboard) | Partial | RED | R0.4; R1.6 | Dashboard UI and export not found |
+| F-TOK-2 | M1 | Partial | RED | R1.33 | Session and org scopes |
+| F-TOK-3 | M1 | Partial (unverified) | NV | R1.34 | No catalog or enforcement check |
+| F-TOK-4 | M2 | Partial | RED | R1.35; R2.11 | Explicit provider caching; cache-hit metric. Not on roadmap |
+| F-VIS-1 | M2 | Partial | RED | R2.5 | Plugins, fiber, source maps, real-framework fixtures |
+| F-VIS-2 | M2 | Partial | RED | R2.6 | Region select, automatic verification snapshot |
+| F-VIS-3 | M3 | Not started | DEF(M3) | M3 Visual regression | All |
+| F-VIS-4 | M3 | Not started | MISS | R3.4 | All |
+| F-TST-1 | M2 | Partial | RED | R2.2 | Coverage-derived mapping |
+| F-TST-2 | M2 | Partial (audit FV, residual gap) | FV | R2.18 | Automatic targeting of uncovered symbols is agent-driven |
+| F-TST-3 | M3 | Not started | DEF(M3) | M3 E2E tests from recordings | All |
+| F-TST-4 | M3 | Not started | DEF(M3) | M3 Bug auto-repro | All |
+| F-REV-1 | M2 (local), M4 (bot) | Not started | MISS | R2.12; M4 PR review bot | Local review agent |
+| F-REV-2 | M2 | Not started | MISS | R2.13 | All |
+| F-REV-3 | M1 (OSV v0), M2 (full) | Partial | RED | R1.36; R2.14 | License, typosquat, install-script, age checks; installs outside agent `run_shell` |
+| F-UI-1 | M1 | Partial | RED | R1.1; R1.2 | Docking, layouts, palette (unscheduled) |
+| F-UI-2 | M1 | Partial | RED | R1.3 | Tree view, leases, pause/resume (pause in parking lot) |
+| F-UI-3 | M2 | Not started | MISS | R2.4 | All |
+| F-UI-4 | M1 (v1), M2 (v2) | Partial | RED | R2.17 | Walkthroughs, recordings, review results |
+| F-OBS-1 | M0 (spans), M1 (viewer) | Partial | RED | R0.5; R1.6 | Local trace viewer UI |
+| F-OBS-2 | M2 | Done | FV | M2 Session replay | — |
+| F-OBS-3 | M0 (chain), M4 (export) | Partial (unverified) | NV | R0.5; M4 control plane | Coverage of each event category not verified; export is M4 |
+| F-DEP-1 | M4 | Not started | DEF(M4) | M4 Deploy adapters | All |
+| F-TEAM-1 | M4 | Not started | DEF(M4) | R4.3; M4 control plane | MCP, sandbox, budget, residency policies |
+| F-TEAM-2 | M4 | Not started | DEF(M4) | M4 Shared memory and skills | All |
+| F-TEAM-3 | M3 (handoff), M4 (team cloud) | Not started | NI | R3.6; R4.3 | Cloud workspaces and handoff; only partially implied by M3 cloud sandbox and M4 control plane |
+| NFR-1 | M1 | Not started | NI | R1.38; G1.4 | See PERF table |
+| NFR-2 | M2 | Not started | MISS | R2.22 | Sharding, scale test |
+| NFR-3 | M3 (local), M4 (cloud) | Not started | DEF(M3) | R3.2; R4.5 | Concurrency test at 8 agents; cloud scale |
+| NFR-4 | M1 | Partial | RED | R1.4 | Desktop restart-with-backoff covers engine crash, not verified on a real Electron run |
+| NFR-5 | M4 | Not started | NI | R4.6 | All (no SLO item) |
+| NFR-6 | M1 (macOS/Linux), M2 (Windows) | Partial (unverified) | NV | R1.37; R2.15 | No macOS or Windows host verification; WSL lacks egress and fs isolation |
+| NFR-7 | M1 | Partial | RED | R1.44 | Zero-retention selection |
+| NFR-8 | M2 | Partial | RED | R2.20 | Plugin interfaces for other categories |
+| NFR-9 | M1 | Not started | MISS | R1.5 | Audit, high-contrast theme |
+| NFR-10 | M0 | Partial (unverified) | NV | R0.5 | Completeness not verified |
+| NFR-11 | M1 | Not started | MISS | R1.42 | All |
+| NFR-12 | M1 | Not started | MISS | R1.5 | All |
+| NFR-13 | M2 | Not started | MISS | R2.21 | No measurement |
+| SEC-1 | M0 (agent shell/tools), M1 (MCP stdio, browser; plan §12 M1) | Partial | RED | R0.2; R1.7 | M0: fail-closed or explicit opt-in with indicator; M1: MCP servers and Chrome on host |
+| SEC-2 | M0 (Linux), M1 (macOS; plan §19), M2 (Windows; plan §12 M2) | Partial | RED | R0.1; R0.2; R1.37; R2.15 | M0: not true in `local-process` fallback; M1: no real macOS run; M2: WSL |
+| SEC-3 | M1 | Done | FV | M1 T1 Egress proxy | — |
+| SEC-4 | M2 (KMS M4) | Partial | RED | R2.9; R4.4 | KMS; bindings in memory only |
+| SEC-5 | M1 | Not started | MISS | R1.32 | Sandboxing, credential scope, pinning |
+| SEC-6 | M1 | Partial (unverified) | NV | R1.40 | Red-team prompt-injection suite (§15.5) |
+| SEC-7 | M1 | Partial | RED | R1.30 | Pre-commit/pre-push secret scan |
+| SEC-8 | M1 (gate v0, OSV), M2 (full gate; plan §12 M1) | Partial | RED | R1.36; R2.14 | M1: installs from hooks, dev server, MCP bypass the gate; M2: install-script policy |
+| SEC-9 | M0 (export M4) | Partial | RED | R0.5; M4 control plane | Export (M4) |
+| SEC-10 | M4 | Not started | DEF(M4) | M4 OAuth broker | OAuth |
+| SEC-11 | M1 | Not started | MISS | R1.44 | Data-handling display, zero retention |
+| SEC-12 | M1 | Not started | NI | R1.8 | Reaper |
+| SEC-13 | M1 | Partial | RED | R1.4 | CSP is not strict (`frame-ancestors *`, `style-src 'unsafe-inline'`); no IPC channels exist, so there is no allowlist to validate; smoke test does not launch Electron in CI |
+| SEC-14 | M1 | Not started | MISS | R1.43 | Signing, SBOM, reproducibility |
+| PERF-1 | M1 | Not started | NI | R1.1; R1.4; R1.38; G1.4 | No benchmark; blocker: No real Electron run in CI |
+| PERF-2 | M1 | Not started | NI | R1.1; R1.38; G1.4 | No benchmark; blocker: No editor (Monaco missing) |
+| PERF-3 | M1 | Not started | NI | R1.38; G1.4 | No benchmark; blocker: No harness |
+| PERF-4 | M1 | Not started | NI | R1.38; G1.4 | No benchmark; blocker: No 1M LOC fixture |
+| PERF-5 | M1 | Not started | NI | R1.12; R1.38; G1.4 | No benchmark; blocker: Brute-force cosine; no fixture |
+| PERF-6 | M1 | Not started | NI | R1.10; R1.38; G1.4 | No benchmark; blocker: No fixture |
+| PERF-7 | M1 | Not started | NI | R1.10; R1.38; G1.4 | No benchmark; blocker: No watcher (ISSUE-007) |
+| PERF-8 | M1 (import-graph Impact Report; plan §12 M1 exit), M2 (re-met on full graph) | Not started | NI | R1.38; G1.4; R2.2 | No benchmark; blocker: No fixture |
+| PERF-9 | M1 | Not started | NI | R1.8; R1.38; G1.4 | No benchmark; blocker: No suspend/resume |
+| PERF-10 | M1 | Not started | NI | R1.25; R1.38; G1.4 | No benchmark; blocker: No timing assertion |
+| PERF-11 | M1 | Not started | NI | R1.29; R1.38; G1.4 | No benchmark; blocker: No fixture |
+| PERF-12 | M1 | Not started | NI | R1.38; G1.4 | No benchmark; blocker: No fixture |
+| PERF-13 | M1 | Not started | NI | R1.3; R1.38; G1.4 | No benchmark; blocker: No harness |
+
+Totals: **154 IDs**: Done 7, Partial 91, Not started 56. The rejected items X19–X21 are not numbered requirements; task R1.46 keeps their enforcement tested.
+
