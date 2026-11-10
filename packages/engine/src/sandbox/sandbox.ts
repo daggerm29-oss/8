@@ -9,6 +9,7 @@ import { connect, type Socket } from 'node:net';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isDeniedHostPath, Vault } from '../vault/vault.ts';
 import { globalRedactor } from '../util/redact.ts';
+import type { SpanRunner } from '../obs/tracing.ts';
 import { wslEnvList, wslExecArgs, wslFromEnv, type WslConfig } from './wsl.ts';
 import { buildRootfs, clientEnv, containerRuntime, removeContainer, runArgs, type ContainerRuntime } from './container.ts';
 import { bwrapArgv, localOsTool, seatbeltArgv, type LocalOsTool } from './localos.ts';
@@ -262,8 +263,11 @@ export class LocalSandbox {
   private readonly egressOn: boolean = false;
   private readonly egress?: EgressProxy;
 
-  constructor(id: string, root: string, opts: { lightMode?: boolean; roPaths?: string[]; egress?: EgressProxy; wsl?: WslConfig | null; backend?: SandboxBackend } = {}) {
+  private readonly trace?: SpanRunner;
+
+  constructor(id: string, root: string, opts: { lightMode?: boolean; roPaths?: string[]; egress?: EgressProxy; wsl?: WslConfig | null; backend?: SandboxBackend; trace?: SpanRunner } = {}) {
     this.id = id;
+    this.trace = opts.trace;
     this.root = realpathSync(resolve(root));
     this.wsl = opts.wsl !== undefined ? opts.wsl : wslFromEnv();
     const backend = this.wsl ? null : opts.backend ?? resolveBackend({ lightMode: opts.lightMode });
@@ -410,7 +414,17 @@ export class LocalSandbox {
     return env;
   }
 
+  /** One `sandbox.exec` span per command (§26.1): backend, redacted command, exit status, and duration. */
   async exec(command: string, opts: ExecOptions = {}): Promise<ExecResult> {
+    if (!this.trace) return this.execUntraced(command, opts);
+    return this.trace('sandbox.exec', { 'sandbox.id': this.id, 'sandbox.provider': this.provider, command: globalRedactor.redact(command).slice(0, 200) }, async (span) => {
+      const r = await this.execUntraced(command, opts);
+      span.setAttributes({ exit_code: r.exitCode, signal: r.signal, timed_out: r.timedOut, truncated: r.truncated, duration_ms: r.durationMs, output_bytes: r.stdout.length + r.stderr.length, outcome: r.timedOut ? 'timeout' : r.exitCode === 0 ? 'ok' : 'error' });
+      return r;
+    });
+  }
+
+  private async execUntraced(command: string, opts: ExecOptions): Promise<ExecResult> {
     if (this.destroyed) throw new Error(`sandbox ${this.id} is destroyed`);
     const cwd = this.resolvePath(opts.cwd ?? '.', 'read');
     const egress = !!(await this.egressReady);

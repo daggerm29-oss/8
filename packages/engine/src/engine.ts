@@ -86,7 +86,7 @@ function compactionFrom(env: NodeJS.ProcessEnv, opts?: CompactionOptions): Compa
   };
 }
 
-const TOPICS = ['task.*', 'agent.*', 'tool.*', 'model.*', 'verify.*', 'approval.*', 'ledger.*', 'budget.*', 'context.*', 'artifact.*', 'checkpoint.*', 'workspace.*', 'egress.*', 'preview.*', 'secret.*', 'sandbox.*'];
+const TOPICS = ['task.*', 'agent.*', 'tool.*', 'model.*', 'verify.*', 'approval.*', 'ledger.*', 'budget.*', 'context.*', 'artifact.*', 'checkpoint.*', 'workspace.*', 'egress.*', 'preview.*', 'secret.*', 'sandbox.*', 'policy.*', 'git.*', 'deploy.*', 'mcp.*'];
 
 /** Helix Engine (§6.2): composition root for storage, bus, gateway, tools, sandbox, and the task runtime. */
 export class Engine {
@@ -138,6 +138,9 @@ export class Engine {
         this.bus.publish({ topic: 'egress.denied', ws: this.runtime.workspaceFor(ctx.root).id, data: { ...info, sandbox: ctx.sandboxId }, persist: 'audit' });
         this.logger.warn('egress.denied', { ...info, sandbox: ctx.sandboxId });
       },
+      onInject: (info, ctx) => {
+        this.bus.publish({ topic: 'secret.used', ws: this.runtime.workspaceFor(ctx.root).id, data: { name: info.secret, host: info.host, where: info.where, uses: info.uses, sandbox: ctx.sandboxId }, persist: 'audit' });
+      },
       onExfil: (info, ctx) => {
         this.bus.publish({ topic: 'secret.exfil_attempt', ws: this.runtime.workspaceFor(ctx.root).id, data: { ...info, sandbox: ctx.sandboxId }, persist: 'audit' });
         this.logger.warn('secret.exfil_attempt', { ...info, sandbox: ctx.sandboxId });
@@ -151,7 +154,7 @@ export class Engine {
     });
     this.browser = new PreviewBrowser({ outDir: join(this.home, 'screenshots') });
     const tools = builtinTools();
-    this.mcp = new McpManager({ home: this.home, registry: tools, logger: this.logger, config: opts.mcpServers, toolSearchThreshold: opts.mcpToolSearchThreshold });
+    this.mcp = new McpManager({ home: this.home, registry: tools, logger: this.logger, config: opts.mcpServers, toolSearchThreshold: opts.mcpToolSearchThreshold, audit: (topic, data) => this.bus.publish({ topic, ws: 'engine', data, persist: 'audit' }) });
     this.mcpReady = opts.mcp === false ? Promise.resolve([]) : this.mcp.start();
     this.runtime = new TaskRuntime({ db: this.db, bus: this.bus, gateway: this.gateway, ledger: this.ledger, tools, tracer: this.tracer, engineId: this.id, blobs: this.blobs, logger: this.logger, egress: this.egress, devServers: this.devServers, browser: this.browser, taskRetryScale: opts.taskRetryScale, helixHome: this.home, replay: this.replay, indexing: opts.indexing, compaction: compactionFrom(env, opts.compaction),
       depGate: env.HELIX_DEP_GATE === 'off' ? undefined : new DepGate({ osvUrl: env.HELIX_OSV_URL, npmRegistryUrl: env.HELIX_NPM_REGISTRY_URL, pypiUrl: env.HELIX_PYPI_URL }) });
@@ -222,11 +225,17 @@ export class Engine {
         if (!alwaysAllowed) throw new Error(`'always allow' is only supported for MCP tools (got ${tool ?? 'unknown approval'})`);
       }
       this.runtime.approve(p.approvalId, p.approved);
+      if (alwaysAllowed) this.bus.publish({ topic: 'policy.changed', ws: 'engine', data: { change: 'mcp_always_allow', subject: `mcp:${alwaysAllowed.server}/${alwaysAllowed.tool}`, by: 'user' }, persist: 'audit' });
       return { ok: true, alwaysAllowed };
     }));
     peer.handle(Methods.ledgerReconcile, guard<{ task?: string; ws?: string; since?: string; tolerancePct?: number }>((p) => this.gateway.reconcile(p)));
     peer.handle(Methods.ledgerQuery, guard<{ task?: string; ws?: string; entries?: boolean }>((p) => ({ totals: this.ledger.totals(p), entries: p.entries ? this.ledger.entries({ task: p.task }) : undefined })));
-    peer.handle(Methods.budgetsSet, guard<Parameters<Ledger['setBudget']>[0]>((p) => ({ id: this.ledger.setBudget(p) })));
+    peer.handle(Methods.budgetsSet, guard<Parameters<Ledger['setBudget']>[0]>((p) => {
+      const previous = this.ledger.getBudget(p.scope, p.scopeId);
+      const id = this.ledger.setBudget(p);
+      this.bus.publish({ topic: 'budget.override', ws: 'engine', task: p.scope === 'task' ? p.scopeId : undefined, data: { budgetId: id, scope: p.scope, scopeId: p.scopeId, previous: previous ?? null, next: p, by: 'user' }, persist: 'audit' });
+      return { id };
+    }));
     peer.handle(Methods.providersList, guard(() => this.gateway.providers()));
     peer.handle(Methods.modelsList, guard<{ provider: string }>((p) => this.gateway.listModels(p.provider)));
     peer.handle(Methods.sandboxCheck, guard(() => {
@@ -311,6 +320,20 @@ export class Engine {
       return { bindings: this.runtime.artifacts(p.task, 'roles').at(-1)?.data ?? null, usage, fallbacks };
     }));
     peer.handle(Methods.mcpList, guard(async () => { await this.mcpReady; return this.mcp.list(); }));
+    peer.handle(Methods.mcpAdd, guard<{ name: string } & McpServerConfig>(async (p) => {
+      await this.mcpReady;
+      const { name, command, args, env, cwd, url, headers, trust, allowTools, denyTools, timeoutMs } = p;
+      return this.mcp.addServer(name, { command, args, env, cwd, url, headers, trust, allowTools, denyTools, timeoutMs });
+    }));
+    peer.handle(Methods.mcpRemove, guard<{ name: string }>(async (p) => { await this.mcpReady; return this.mcp.removeServer(p.name); }));
+    peer.handle(Methods.mcpTrust, guard<{ name: string; trust: 'trusted' | 'untrusted' }>(async (p) => { await this.mcpReady; return this.mcp.setTrust(p.name, p.trust); }));
+    peer.handle(Methods.auditVerify, guard(() => this.bus.verifyAudit()));
+    peer.handle(Methods.auditExport, guard<{ category?: string; since?: string }>((p) => ({ jsonl: this.bus.exportAudit(p) })));
+    peer.handle(Methods.traceGet, guard<{ task: string }>((p) => {
+      if (typeof p.task !== 'string' || !p.task) throw new Error('task is required');
+      this.bus.flush();
+      return { spans: this.tracer.spansForTask(p.task) };
+    }));
     peer.handle(Methods.fsTree, guard<{ workspacePath: string }>((p) => listWorkspaceFiles(this.knownWorkspace(p.workspacePath))));
     peer.handle(Methods.fsRead, guard<{ workspacePath: string; path: string }>((p) => readWorkspaceFile(this.knownWorkspace(p.workspacePath), p.path)));
     peer.handle(Methods.fsWrite, guard<{ workspacePath: string; path: string; content: string; baseHash: string | null }>((p) => {

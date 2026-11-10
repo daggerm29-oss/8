@@ -133,6 +133,14 @@ export const Methods = {
   taskSteps: 'task.steps',
   /* M1 — MCP (F-MCP-1) */
   mcpList: 'mcp.list',
+  /* R0.5 (§26.5): audited MCP server add, remove, and trust change */
+  mcpAdd: 'mcp.add',
+  mcpRemove: 'mcp.remove',
+  mcpTrust: 'mcp.trust',
+  /* R0.5 (F-OBS-3, SEC-9): audit chain verification and JSONL export */
+  auditVerify: 'audit.verify',
+  auditExport: 'audit.export',
+  traceGet: 'trace.get',
   /* M1 — role-based models (F-MDL-4) */
   modelsRoles: 'models.roles',
   modelsUsage: 'models.usage',

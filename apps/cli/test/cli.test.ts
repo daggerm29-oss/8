@@ -52,3 +52,45 @@ test('helix prints usage and exits 2 without a prompt', async () => {
   assert.equal(r.code, 2);
   assert.match(r.stdout, /Usage:/);
 });
+
+test('helix audit verify / export and helix trace: MCP changes are audited through the engine, the chain verifies, the span tree prints (R0.5)', async () => {
+  const turns: FakeTurn[] = [{ text: 'Nothing to change.', usage: { input: 300, output: 5 } }];
+  const fake = await startFakeProvider('gemini', ({ index }) => turns[Math.min(index, turns.length - 1)]);
+  try {
+    const dir = mkdtempSync(join(tmpdir(), 'helix-cli-'));
+    cpSync(FIXTURE, dir, { recursive: true });
+    const env = { HELIX_HOME: mkdtempSync(join(tmpdir(), 'helix-cli-home-')), GEMINI_API_KEY: fake.apiKey, HELIX_GEMINI_BASE_URL: fake.url, MARKER_FILE: join(dir, 'marker.txt') };
+    const server = fileURLToPath(new URL('../../../packages/engine/test/fixtures/fake-mcp-server.mjs', import.meta.url));
+
+    const added = await run(['mcp', 'add', 'fake', '--', process.execPath, server], env);
+    assert.equal(added.code, 0, added.stderr);
+    assert.match(added.stdout, /added MCP server 'fake' \(connected, \d+ tools\)/);
+    assert.equal((await run(['mcp', 'trust', 'fake', 'trusted'], env)).code, 0);
+
+    const run1 = await run(['-p', 'check it', '-C', dir, '--provider', 'gemini', '-m', 'gemini-3.8-flash', '--json', '-q'], env);
+    assert.equal(run1.code, 0, run1.stderr);
+    const task = JSON.parse(run1.stdout).id as string;
+
+    const trace = await run(['trace', task], env);
+    assert.equal(trace.code, 0, trace.stderr);
+    assert.match(trace.stdout, /^task .* \[done\]$/m);
+    assert.match(trace.stdout, /^ {2}agent\.step model .* \[ok\]$/m);
+    assert.match(trace.stdout, /^ {4}model\.call .*\d+ in\/\d+ out .*\[ok\]$/m);
+
+    assert.equal((await run(['mcp', 'remove', 'fake'], env)).code, 0);
+    assert.equal((await run(['mcp', 'remove', 'fake'], env)).code, 1, 'removing an unknown server fails');
+
+    const verify = await run(['audit', 'verify', '--json'], env);
+    assert.equal(verify.code, 0, verify.stderr);
+    const v = JSON.parse(verify.stdout);
+    assert.equal(v.ok, true);
+    assert.equal(v.categories.mcp, 3, 'add, trust change, remove');
+    assert.ok(v.categories.policy >= 1);
+
+    const exported = (await run(['audit', 'export', '--category', 'mcp'], env)).stdout.trim().split('\n').map((l) => JSON.parse(l));
+    assert.deepEqual(exported.map((e) => e.action), ['server_added', 'trust_changed', 'server_removed']);
+    assert.equal(exported[0].actor, 'user');
+  } finally {
+    await fake.close();
+  }
+});

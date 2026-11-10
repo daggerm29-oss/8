@@ -218,7 +218,13 @@ export class ModelGateway {
             }
           }
           if (!final) throw new ProviderError(c.provider, 'transient', 'stream ended without a final event');
-          span.setAttributes({ 'usage.input_tokens': final.usage.inputTokens, 'usage.cached_input_tokens': final.usage.cachedInputTokens, 'usage.output_tokens': final.usage.outputTokens, 'usage.source': final.usage.source, finish_reason: final.finishReason });
+          const cost = costOf(manifest?.pricing, { inputTokens: final.usage.inputTokens, cachedInputTokens: final.usage.cachedInputTokens, outputTokens: final.usage.outputTokens });
+          span.setAttributes({
+            'usage.input_tokens': final.usage.inputTokens, 'usage.cached_input_tokens': final.usage.cachedInputTokens, 'usage.output_tokens': final.usage.outputTokens,
+            'usage.reasoning_tokens': final.usage.reasoningTokens, 'usage.source': final.usage.source, 'usage.cost_usd': cost ?? undefined,
+            'usage.cache_hit_ratio': final.usage.inputTokens > 0 ? Math.round((final.usage.cachedInputTokens / final.usage.inputTokens) * 1000) / 1000 : 0,
+            latency_ms: Math.round((performance.now() - started) * 10) / 10, finish_reason: final.finishReason, outcome: 'ok',
+          });
           return final;
         });
         const latencyMs = performance.now() - started;

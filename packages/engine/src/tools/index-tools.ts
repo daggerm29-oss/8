@@ -1,7 +1,17 @@
 import { preciseReferences } from '../index/precise.ts';
-import type { Tool } from './registry.ts';
+import type { Tool, ToolContext } from './registry.ts';
 
 const TS_JS = /\.(c|m)?(t|j)sx?$/;
+
+/** Runs one index lookup inside a `retrieval.query` span (§26.1) when the task is traced. */
+async function retrieve<T>(ctx: Pick<ToolContext, 'trace'>, retriever: string, query: string, fn: () => T | Promise<T>, count: (r: T) => number): Promise<T> {
+  if (!ctx.trace) return fn();
+  return ctx.trace('retrieval.query', { retriever, query: query.slice(0, 200) }, async (span) => {
+    const r = await fn();
+    span.setAttributes({ results: count(r) });
+    return r;
+  });
+}
 
 /** Index-backed read tools (F-IDX-1/F-IDX-4). They return nothing useful if the task has no index. */
 export const findSymbol: Tool = {
@@ -10,10 +20,10 @@ export const findSymbol: Tool = {
     description: 'Find where a function, class, method, type, or constant is defined (from the code index). Faster and more precise than text search for identifiers. Returns path:line, kind, and signature; also lists files that import the defining file.',
     inputSchema: { type: 'object', properties: { name: { type: 'string', minLength: 1, description: 'Symbol name or qualified name, e.g. Inventory.total' } }, required: ['name'] },
   },
-  async run(args, { index }) {
+  async run(args, ctx) {
+    const { index } = ctx;
     if (!index) return { content: 'code index unavailable for this task; use search', isError: true };
-    index.update();
-    const hits = index.findSymbol(String(args.name), 15);
+    const hits = await retrieve(ctx, 'symbol', String(args.name), () => { index.update(); return index.findSymbol(String(args.name), 15); }, (h) => h.length);
     if (!hits.length) return { content: `no symbol matching '${args.name}'`, summary: `find_symbol ${args.name}: 0` };
     const lines = hits.map((h) => {
       const deps = index.dependents(h.path);
@@ -30,10 +40,10 @@ export const codeSearch: Tool = {
     description: 'Ranked semantic-ish code search over the index (BM25 + symbol + path, fused). Use natural language or identifiers, e.g. "where are discounts applied". Returns the best matching code slices with line numbers and why each matched.',
     inputSchema: { type: 'object', properties: { query: { type: 'string', minLength: 2 }, path: { type: 'string', description: 'Optional directory prefix to restrict results' }, limit: { type: 'integer', minimum: 1, maximum: 20 } }, required: ['query'] },
   },
-  async run(args, { index }) {
+  async run(args, ctx) {
+    const { index } = ctx;
     if (!index) return { content: 'code index unavailable for this task; use search', isError: true };
-    index.update();
-    const hits = index.search(String(args.query), { limit: Number(args.limit ?? 6), pathPrefix: args.path ? String(args.path) : undefined });
+    const hits = await retrieve(ctx, 'hybrid', String(args.query), () => { index.update(); return index.search(String(args.query), { limit: Number(args.limit ?? 6), pathPrefix: args.path ? String(args.path) : undefined }); }, (h) => h.length);
     if (!hits.length) return { content: 'no results', summary: `code_search: 0` };
     return {
       content: hits.map((h) => `## ${h.path}:${h.startLine}-${h.endLine}${h.symbol ? ` (${h.symbol})` : ''} [${h.why.join('+')}]\n${h.preview}`).join('\n\n'),
@@ -48,11 +58,11 @@ export const domainMap: Tool = {
     description: 'List the app domain from the code index: HTTP routes (method, path, handler), database tables (with columns), and environment/config keys (names only), each with file:line. Use to find the handler for an endpoint, where a table is defined, or which env vars the app reads.',
     inputSchema: { type: 'object', properties: { kind: { type: 'string', enum: ['routes', 'tables', 'config', 'all'], description: 'Which section to list (default all)' } } },
   },
-  async run(args, { index }) {
+  async run(args, ctx) {
+    const { index } = ctx;
     if (!index) return { content: 'code index unavailable for this task; use search', isError: true };
-    index.update();
-    const d = index.domain();
     const kind = String(args.kind ?? 'all');
+    const d = await retrieve(ctx, 'domain', kind, () => { index.update(); return index.domain(); }, (x) => x.routes.length + x.tables.length + x.config.length);
     const sections: string[] = [];
     if (kind === 'all' || kind === 'routes') sections.push(`## Routes (${d.routes.length})\n${d.routes.map((r) => `${r.method} ${r.path} → ${r.handler}  [${r.framework}] ${r.file}:${r.line}`).join('\n') || '(none)'}`);
     if (kind === 'all' || kind === 'tables') sections.push(`## Tables (${d.tables.length})\n${d.tables.map((t) => `${t.name} (${t.columns.join(', ')})  [${t.source}] ${t.file}:${t.line}`).join('\n') || '(none)'}`);
@@ -67,10 +77,10 @@ export const impactTool: Tool = {
     description: 'Impact analysis from the code graph: given a symbol name or a file path, lists call sites (transitively, with depth), importing files, and tests that cover them. Use before changing a function signature or behavior to find everything that may break.',
     inputSchema: { type: 'object', properties: { target: { type: 'string', minLength: 1, description: 'Symbol name (e.g. Inventory.total) or workspace-relative file path' }, depth: { type: 'integer', minimum: 1, maximum: 4 } }, required: ['target'] },
   },
-  async run(args, { index, sandbox }) {
+  async run(args, ctx) {
+    const { index, sandbox } = ctx;
     if (!index) return { content: 'code index unavailable for this task; use search', isError: true };
-    index.update();
-    let r = index.impact(String(args.target), { depth: args.depth === undefined ? 2 : Number(args.depth) });
+    let r = await retrieve(ctx, 'graph', String(args.target), () => { index.update(); return index.impact(String(args.target), { depth: args.depth === undefined ? 2 : Number(args.depth) }); }, (x) => x.callers.length);
     if (r.kind === 'unknown') return { content: `no symbol or indexed file named '${args.target}'`, summary: `impact ${args.target}: unknown` };
     const tsDefs = r.kind === 'symbol' && r.definitions.length <= 8 && r.definitions.every((d) => TS_JS.test(d.path));
     if (tsDefs) {

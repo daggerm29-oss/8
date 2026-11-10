@@ -45,6 +45,11 @@ export function registerToolClass(tool: string, actionClass: ActionClass, reason
   DYNAMIC_CLASS.set(tool, { actionClass, reason, ...(opts.autoAllow ? { autoAllow: true } : {}) });
 }
 
+/** Forgets a dynamically registered class (MCP server removed or reconnected), including any auto-allow. */
+export function unregisterToolClass(tool: string): void {
+  DYNAMIC_CLASS.delete(tool);
+}
+
 export function classify(tool: string, args: unknown): { actionClass: ActionClass; reason: string } {
   const dynamic = DYNAMIC_CLASS.get(tool);
   if (dynamic) return { actionClass: dynamic.actionClass, reason: dynamic.reason };

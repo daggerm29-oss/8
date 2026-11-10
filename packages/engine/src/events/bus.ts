@@ -2,6 +2,7 @@ import type { HelixEvent } from '@helix/protocol';
 import type { Db } from '../storage/db.ts';
 import { parseJson } from '../storage/db.ts';
 import { sha256, ulid } from '../util/ids.ts';
+import { auditFields } from './audit.ts';
 
 export type EventHandler = (event: HelixEvent) => void | Promise<void>;
 
@@ -30,6 +31,18 @@ export function topicMatches(pattern: string, topic: string): boolean {
 }
 
 const GENESIS = '0'.repeat(64);
+
+interface AuditRow {
+  id: number; at: string; ws: string; topic: string; event_id: string; data_json: string; prev_hash: string; hash: string; hash_v: number;
+  category: string | null; actor: string | null; action: string | null; resource: string | null; decision: string | null; rule_id: string | null;
+}
+
+/** v1 rows (written before R0.5) committed to the event only; v2 rows also commit to the §26.5 record fields. */
+function auditHash(version: number, prevHash: string, r: Pick<AuditRow, 'at' | 'ws' | 'topic' | 'event_id' | 'data_json' | 'category' | 'actor' | 'action' | 'resource' | 'decision' | 'rule_id'>): string {
+  const base = `${prevHash}|${r.at}|${r.ws}|${r.topic}|${r.event_id}|`;
+  if (version < 2) return sha256(`${base}${r.data_json}`);
+  return sha256(`${base}${JSON.stringify([r.category, r.actor, r.action, r.resource, r.decision, r.rule_id])}|${r.data_json}`);
+}
 
 /**
  * In-process typed event bus (§23.2). `log` events are batched to SQLite (50 ms or 256 events);
@@ -129,19 +142,44 @@ export class EventBus {
     const prev = this.db.get<{ hash: string }>('SELECT hash FROM audit_log ORDER BY id DESC LIMIT 1');
     const prevHash = prev?.hash ?? GENESIS;
     const dataJson = JSON.stringify(event.data ?? null);
-    const hash = sha256(`${prevHash}|${event.at}|${event.ws}|${event.topic}|${event.id}|${dataJson}`);
-    this.db.run('INSERT INTO audit_log (at, ws, topic, event_id, data_json, prev_hash, hash) VALUES (?, ?, ?, ?, ?, ?, ?)', event.at, event.ws, event.topic, event.id, dataJson, prevHash, hash);
+    const a = auditFields(event);
+    const hash = auditHash(2, prevHash, { at: event.at, ws: event.ws, topic: event.topic, event_id: event.id, data_json: dataJson, category: a.category, actor: a.actor, action: a.action, resource: a.resource, decision: a.decision, rule_id: a.ruleId });
+    this.db.run('INSERT INTO audit_log (at, ws, topic, event_id, data_json, prev_hash, hash, hash_v, category, actor, action, resource, decision, rule_id) VALUES (?, ?, ?, ?, ?, ?, ?, 2, ?, ?, ?, ?, ?, ?)',
+      event.at, event.ws, event.topic, event.id, dataJson, prevHash, hash, a.category, a.actor, a.action, a.resource, a.decision, a.ruleId);
   }
 
   /** Verifies the audit hash chain; returns the id of the first broken row, or null if intact. */
   verifyAuditChain(): number | null {
     let prevHash = GENESIS;
-    for (const row of this.db.all<{ id: number; at: string; ws: string; topic: string; event_id: string; data_json: string; prev_hash: string; hash: string }>('SELECT * FROM audit_log ORDER BY id')) {
-      const expected = sha256(`${prevHash}|${row.at}|${row.ws}|${row.topic}|${row.event_id}|${row.data_json}`);
-      if (row.prev_hash !== prevHash || row.hash !== expected) return row.id;
+    for (const row of this.db.all<AuditRow>('SELECT * FROM audit_log ORDER BY id')) {
+      if (row.prev_hash !== prevHash || row.hash !== auditHash(row.hash_v, prevHash, row)) return row.id;
       prevHash = row.hash;
     }
     return null;
+  }
+
+  /** `audit.verify` (`helix audit verify`, §26.5): chain result plus per-category counts. */
+  verifyAudit(): { ok: boolean; rows: number; brokenAt: number | null; head: string; categories: Record<string, number> } {
+    this.flush();
+    const brokenAt = this.verifyAuditChain();
+    const rows = this.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM audit_log')?.n ?? 0;
+    const head = this.db.get<{ hash: string }>('SELECT hash FROM audit_log ORDER BY id DESC LIMIT 1')?.hash ?? GENESIS;
+    const categories = Object.fromEntries(this.db.all<{ category: string | null; n: number }>('SELECT category, COUNT(*) AS n FROM audit_log GROUP BY category').map((r) => [r.category ?? 'legacy', r.n]));
+    return { ok: brokenAt === null, rows, brokenAt, head, categories };
+  }
+
+  /** JSONL export in the §26.5 record shape (SEC-9: exportable). Optionally one category or a time window. */
+  exportAudit(opts: { category?: string; since?: string } = {}): string {
+    this.flush();
+    const where: string[] = [];
+    const args: string[] = [];
+    if (opts.category) { where.push('category = ?'); args.push(opts.category); }
+    if (opts.since) { where.push('at >= ?'); args.push(opts.since); }
+    const rows = this.db.all<AuditRow>(`SELECT * FROM audit_log ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY id`, ...args);
+    return rows.map((r) => JSON.stringify({
+      seq: r.id, at: r.at, actor: r.actor, action: r.action, resource: r.resource, decision: r.decision, ruleId: r.rule_id, category: r.category,
+      ws: r.ws, topic: r.topic, eventId: r.event_id, details: parseJson(r.data_json, null), prevHash: r.prev_hash, hash: r.hash, hashVersion: r.hash_v,
+    })).join('\n') + (rows.length ? '\n' : '');
   }
 
   /** Replay persisted events after `afterSeq` for reconnecting clients (§23.2). */
