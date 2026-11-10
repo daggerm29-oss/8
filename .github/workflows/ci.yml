@@ -39,6 +39,10 @@ jobs:
         run: node --test packages/engine/test/core.test.ts
       - name: Provider conformance (no live credentials)
         run: pnpm --filter @helix/provider-conformance test
+      - name: Agent exit and restart regressions (fail fast)
+        timeout-minutes: 3
+        working-directory: packages/engine
+        run: node --disable-warning=ExperimentalWarning --test --test-reporter=tap --test-timeout=120000 test/agent.test.ts
       - name: Engine A-local suites and all backend conformance
         timeout-minutes: 12
         working-directory: packages/engine

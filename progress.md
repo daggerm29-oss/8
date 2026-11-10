@@ -29,7 +29,7 @@
 ## Current task notes (overwrite when the task changes)
 
 - R0.3 stays Blocked: the OpenAI API-key live check is intentionally not applicable (user will not use an OpenAI Platform key; ChatGPT OAuth via Codex app-server is NOT implemented or verified). All A-local cases + Gemini live pass (commit 663805d). Do not ask for `OPENAI_API_KEY`.
-- R0.6/R0.7/R0.9 passed (cfda275/29b8ce6/222a759). R0.8 open: run 42810383515 failed js-calc/restart then timed out (12 min). Restart test leaked its fake HTTP server on early assertions; cleanup now registered before assertions (forced-failure process exits; agent tests 7/7, tsc clean). CI uses immediate TAP diagnostics + 120 s per-file deadline. Inspect next push run for underlying runner-specific assertions; never merge the scratch negative branch.
+- R0.6/R0.7/R0.9 passed (cfda275/29b8ce6/222a759). R0.8 open: run 42810383515 failed js-calc/restart then timed out (12 min). Restart test leaked its fake HTTP server on early assertions; cleanup now registered before assertions (forced-failure process exits; agent tests 7/7, tsc clean). CI uses immediate TAP diagnostics + 120 s per-file deadline and an early agent-only fail-fast step. Run 42813269522 still running; cancel API denied (403), job logs unavailable until complete. Inspect next push run for underlying runner-specific assertions; never merge the scratch negative branch.
 - G0.1: 3/3 real Gemini 3.5 Flash Lite fixtures + live-tool restart pass, but unpriced costs cannot satisfy reconciliation (reviewed failed JSON in evals/results/). Default 3.8 Flash had 503/timeout. G0.2 still rejects FR-1, F-MDL-1, F-AGT-1; resume their original acceptance gaps, not M1.
 - Sandbox tests need `sudo dnf install -y podman crun bubblewrap` after a VM reset; conformance: `HELIX_SANDBOX_BACKENDS=local-container,local-unshare,local-os`.
 - Parked: draft PR #19 (M3) is untouched; do not continue it until M3 is the current milestone (AGENTS.md §3). Then first fix its shared-mode write-lease bypass and worktree lease leak.
@@ -65,7 +65,7 @@
 ## Last session (overwrite each session, max 5 lines)
 
 - 2026-11-10 (PR #22, M0 only): R0.1/R0.2/R0.4/R0.5/R0.6/R0.7/R0.9 passed; R0.3/R0.8/G0.1/G0.2 remain open. Parked M3 PR #19 untouched.
-- Final full engine suite: 147/147 passed, 0 skipped; CLI 11/11, scope mutations 11/11, tsc clean, CI YAML valid. Initial full-suite failures were fixed and the full suite rerun.
+- Latest full engine rerun after CI cleanup: 138 passed / 8 failed / 0 skipped; all 8 failures require local-container, currently unavailable after workspace resume (Podman stale boot-ID runtime state; isolated XDG recovery did not repair it). Agent tests 7/7; injected restart assertion exits cleanly; tsc clean. Previous ff48f44 run was 147/147, not evidence for this resumed environment.
 - Live container fixtures + live-tool restart: 3/3, 16 provider calls, 0% token delta; unknown costs keep G0.1 failed. Default Gemini 3.8 had 503/headers timeout. JSON retained in evals/results/.
 - CI failure control: scratch run 42809113863 correctly failed its seeded assertion; main-branch workflow dispatch 404 and push run 42805156815 cancelled, so host CI is not certified green.
 - Safe to merge: no (open host/live/scope gates). Next: see Current task notes; no M1 work.
