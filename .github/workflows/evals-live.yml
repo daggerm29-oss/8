@@ -1,0 +1,48 @@
+name: evals-live
+
+on:
+  schedule:
+    - cron: '47 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  evals-live:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      GEMINI_API: ${{ secrets.GEMINI_API }}
+      HELIX_SANDBOX_PROVIDER: local-container
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - name: Require configured live authentication
+        run: test -n "$GEMINI_API"
+      - name: Install sandbox prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman crun
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - run: pnpm install --frozen-lockfile
+      - name: Available live milestone evaluations
+        run: |
+          node evals/m0-exit.ts
+          node evals/m1-demo.ts
+          node evals/m2-eval.ts
+      - name: Required full evaluation gates (fail visibly until their roadmap harnesses exist)
+        run: |
+          node evals/hts-lite.ts
+          node evals/browser.ts
+          node evals/router-cache.ts
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-evaluations-${{ github.run_id }}
+          path: evals/results/
+          if-no-files-found: warn

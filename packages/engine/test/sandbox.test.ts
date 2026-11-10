@@ -62,6 +62,22 @@ test('sandbox has no network egress when namespaces are available', { skip: !uns
   }
 });
 
+test('FR-14 sandbox output streams before command completion', async () => {
+  const sbx = new LocalSandbox('sbx_stream', workspace());
+  let completed = false;
+  const chunks: Array<{ stream: string; text: string }> = [];
+  try {
+    const result = await sbx.exec('echo first; sleep 0.05; echo second >&2', { onOutput: (stream, text) => {
+      assert.equal(completed, false);
+      chunks.push({ stream, text });
+    } });
+    completed = true;
+    assert.equal(result.exitCode, 0);
+    assert.ok(chunks.some((c) => c.stream === 'stdout' && c.text.includes('first')));
+    assert.ok(chunks.some((c) => c.stream === 'stderr' && c.text.includes('second')));
+  } finally { sbx.destroy(); }
+});
+
 test('sandbox timeout kills the whole process group and output is capped', async () => {
   const sbx = new LocalSandbox('sbx_t3', workspace());
   try {

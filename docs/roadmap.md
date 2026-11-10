@@ -547,9 +547,9 @@ External exit gates (plan §12 M4; not build tasks, never simulated):
 |---|---|---|---|---|---|
 | FR-1 | M0 | Partial (audit FV, residual gap) | FV | M0 Gemini adapter; R0.3 | M0 part: Evidence: `HELIX_LIVE=1 node --test` (conformance) → Gemini live listing 28 chat models (non-chat tts/image/music filtered), live structured call schema-valid; commit 663805d. Remaining: per-request config not re-verified live for thinking level |
 | FR-2 | M2 | Partial | RED | R2.16 (enabling = external gate X-M2.1) | SIWC/OIDC+PKCE not implemented |
-| FR-3 | M1 | Done | FV | M1 Role-based models | — |
+| FR-3 | M1 | Done | FV | M1 Role-based models | Evidence: `node --test test/roles.test.ts` → 3/3 pass, per-role configuration, layered overrides, org restrictions; commit 44604b6 |
 | FR-4 | M2 | Partial | RED | M2 Model router v1; R2.10 | No capability, context-size, cost, or latency features in routing |
-| FR-5 | M0 | Done | FV | M0 Provider adapter framework; R0.3 | — |
+| FR-5 | M0 | Done | FV | M0 Provider adapter framework; R0.3 | Evidence: `cd packages/providers/conformance && node --test` → 23 A-local passes, 6 live skips; both standalone adapter packages implement the same ProviderAdapter without agent-core changes; commit 44604b6 |
 | FR-6 | M1 (desktop), M4 (KMS) | Partial | RED | R1.37; R2.15; R4.4 | KMS (cloud) not built; keychains tested only via Linux shims |
 | FR-7 | M4 | Not started | DEF(M4) | M4 OAuth broker | Entire OAuth flow |
 | FR-8 | M1 | Partial | RED | R1.10 | No docs indexing, no file watcher (ISSUE-007), heuristic call edges |
@@ -558,7 +558,7 @@ External exit gates (plan §12 M4; not build tasks, never simulated):
 | FR-11 | M1 | Partial | RED | R1.10 | `.helixignore` not supported |
 | FR-12 | M1 | Partial | RED | R1.16 | No plan edit/approve API before execution found |
 | FR-13 | M1 | Not started | MISS | R1.19 | Rename/delete tools, atomic changeset, per-hunk accept/reject |
-| FR-14 | M1 | Done | FV | M0 tools; M1 parsers | — |
+| FR-14 | M1 | Done | FV | M0 tools; M1 parsers | Evidence: `node --test test/sandbox.test.ts test/m1.test.ts` → sandbox command execution and live stdout/stderr streaming, structured diagnostics parsers and retry feedback, rollback; checked in R0.9 evidence refresh |
 | FR-15 | M1 (Explore), M3 (general) | Not started | DEF(M3) | M1 T6; M3 General subagents + DAG | General subagents not on `main` |
 | FR-16 | M3 | Not started | DEF(M3) | M3 Write leases + worktrees; R3.3 | Not on `main`; two open defects |
 | FR-17 | M1 | Partial | RED | R1.29 | Not a shadow git object store (see F-GIT-2) |
@@ -586,7 +586,7 @@ External exit gates (plan §12 M4; not build tasks, never simulated):
 | F-MDL-1 | M0 | Partial | RED | R0.3 | Conformance (streaming, tool round-trip, structured output, cancellation, rate-limit retry) passes for both adapters on fakes and Gemini live; explicit logged degradation done (commit 663805d). Missing: OpenAI live run (no key); AC1 "new provider ≤ 1 package" not re-proven; embeddings (R1.13), caching hints (R1.35) |
 | F-MDL-2 | M1 | Partial | RED | R1.35 | Multimodal input (IR has text parts only, `protocol/src/models.ts:29`); explicit context caching (`cachedContents`); key validation on entry; deprecated-model hiding |
 | F-MDL-3 | M2 (SIWC flagged) | Partial | RED | R2.16 | SIWC |
-| F-MDL-4 | M1 | Done | FV | M1 Role-based models | — |
+| F-MDL-4 | M1 | Done | FV | M1 Role-based models | Evidence: `node --test test/roles.test.ts` → 3/3 pass; roles on every ledger row, org denies models/providers, fallback chain; commit 44604b6 |
 | F-MDL-5 | M2 | Partial | RED | R2.10 | Only step type + failures; AC measured with fake provider, success drop not measured; learned priors M4 |
 | F-AUTH-1 | M1 (desktop), M4 (KMS) | Partial (unverified) | NV | R1.37; R1.40; R2.15; R4.4 | Fuzzed secret-scanner test absent; KMS; real-OS keychain runs |
 | F-AUTH-2 | M4 | Not started | DEF(M4) | M4 OAuth broker | All |
@@ -632,7 +632,7 @@ External exit gates (plan §12 M4; not build tasks, never simulated):
 | F-MCP-2 | M2 | Partial | RED | R2.7 | BM25 + embeddings index (keyword scoring only); success-drop measurement |
 | F-MCP-3 | M1 | Partial | RED | R1.32 | Two of four tiers; network/credential scope per tier |
 | F-MCP-4 | M2 | Partial (unverified) | NV | R2.8 | JSONPath projection and resource-version keys not verified |
-| F-MCP-5 | M2 | Done | FV | M2 MCP prompt-injection defense | — |
+| F-MCP-5 | M2 | Done | FV | M2 MCP prompt-injection defense | Evidence: `node --test test/mcp-safety.test.ts` → 3/3 pass; provenance wrapper neutralizes forged tags; tainted output blocks preapproved network follow-up; commit 44604b6 |
 | F-TOK-1 | M0 (ledger), M1 (dashboard) | Partial | RED | R0.4; R1.6 | M0 part: Evidence: `node --test test/ledger-reconcile.test.ts` → ledger totals reconcile with provider-reported usage, max delta 0.0000% over 60 responses; commit 4d47b3f. Remaining (M1): dashboard UI and export → R1.6 |
 | F-TOK-2 | M1 | Partial | RED | R1.33 | Session and org scopes |
 | F-TOK-3 | M1 | Partial (unverified) | NV | R1.34 | No catalog or enforcement check |
@@ -653,7 +653,7 @@ External exit gates (plan §12 M4; not build tasks, never simulated):
 | F-UI-3 | M2 | Not started | MISS | R2.4 | All |
 | F-UI-4 | M1 (v1), M2 (v2) | Partial | RED | R2.17 | Walkthroughs, recordings, review results |
 | F-OBS-1 | M0 (spans), M1 (viewer) | Partial | RED | R0.5; R1.6 | M0 part: Evidence: `node --test test/trace-audit.test.ts` → full span tree (task, agent.step, model.call, tool.call, gate.run, sandbox.exec, retrieval.query, snapshot.build) with tokens, latency, tool I/O refs; `trace.get` RPC and `helix trace`; commit d13622d. Remaining (M1): trace viewer UI in the workbench → R1.6; optional OTLP export exists (`OTEL_EXPORTER_OTLP_ENDPOINT`) but is not exercised against a collector |
-| F-OBS-2 | M2 | Done | FV | M2 Session replay | — |
+| F-OBS-2 | M2 | Done | FV | M2 Session replay | Evidence: `node --test test/replay.test.ts` → 1/1 pass; tool I/O bundle replays offline without side effects and reports divergence; commit 44604b6 |
 | F-OBS-3 | M0 (chain), M4 (export) | Partial | NV | R0.5; M4 control plane | M0 part: Evidence: `node --test test/trace-audit.test.ts` → ≥ 1 audit event for each §26.5 category, chain verifies, an edit fails at that row, append-only triggers; commit d13622d. Remaining (M4): SIEM connectors (JSONL export and `helix audit verify|export` already exist) |
 | F-DEP-1 | M4 | Not started | DEF(M4) | M4 Deploy adapters | All |
 | F-TEAM-1 | M4 | Not started | DEF(M4) | R4.3; M4 control plane | MCP, sandbox, budget, residency policies |
@@ -674,7 +674,7 @@ External exit gates (plan §12 M4; not build tasks, never simulated):
 | NFR-13 | M2 | Not started | MISS | R2.21 | No measurement |
 | SEC-1 | M0 (agent shell/tools), M1 (MCP stdio, browser; plan §12 M1) | Partial | RED | R0.2; R1.7 | M0 part: Evidence: `node --test test/fail-closed.test.ts` → 6/6 (fail closed with 0 spawned processes; `local-os` only via `workspace.trust` lightMode, audited `sandbox.light_mode`, permanent top-bar indicator from `workbench.status`); commit 66ff487; M1: MCP servers and Chrome on host |
 | SEC-2 | M0 (Linux), M1 (macOS; plan §19), M2 (Windows; plan §12 M2) | Partial | RED | R0.1; R0.2; R1.37; R2.15 | M0 part: Evidence: `HELIX_SANDBOX_BACKENDS=local-container,local-unshare,local-os node --test test/sandbox-conformance.test.ts` → 24/24 (`ls $HOST_HOME`, `cat ~/.ssh/id_*` fail in every backend; no unisolated fallback remains); commit 66ff487; M1: no real macOS run; M2: WSL |
-| SEC-3 | M1 | Done | FV | M1 T1 Egress proxy | — |
+| SEC-3 | M1 | Done | FV | M1 T1 Egress proxy | Evidence: `node --test test/egress.test.ts` → 4/4 pass; deny-by-default proxy, direct egress fails, private/loopback/link-local/metadata ranges blocked; commit 44604b6 |
 | SEC-4 | M2 (KMS M4) | Partial | RED | R2.9; R4.4 | KMS; bindings in memory only |
 | SEC-5 | M1 | Not started | MISS | R1.32 | Sandboxing, credential scope, pinning |
 | SEC-6 | M1 | Partial (unverified) | NV | R1.40 | Red-team prompt-injection suite (§15.5) |
