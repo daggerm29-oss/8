@@ -11,17 +11,17 @@
 
 > These are **checklist completion** numbers (ticked items with recorded evidence ÷ all items). They are not a measure of product quality or release readiness; human launch gates in `docs/roadmap.md` are not counted.
 
-**Overall checklist completion: 66%** (59/89 roadmap items)  
-**Current milestone:** M3 Parallel and background  
-**Next task:** General subagents + task DAG scheduler (F-ORC-2) [§10.3]
+**Overall checklist completion: 31%** (59/191 roadmap items)  
+**Current milestone:** M0 Foundations  
+**Next task:** R0.1 `local-container` sandbox backend (F-SBX-1, SEC-2) [§16.1, §16.2]
 
 | Milestone | Progress | Items | Status |
 | --- | --- | --- | --- |
-| M0 Foundations | ██████████ 100% | 11/11 | Done |
-| M1 MVP, grounded single agent | ██████████ 100% | 26/26 | Done |
-| M2 Precision and efficiency | ██████████ 100% | 22/22 | Done |
-| M3 Parallel and background | ░░░░░░░░░░ 0% | 0/12 | In progress |
-| M4 Team and ecosystem | ░░░░░░░░░░ 0% | 0/9 | Not started |
+| M0 Foundations | ██████░░░░ 58% | 11/19 | In progress |
+| M1 MVP, grounded single agent | ███░░░░░░░ 33% | 26/78 | Partly built early |
+| M2 Precision and efficiency | █████░░░░░ 45% | 22/49 | Partly built early |
+| M3 Parallel and background | ░░░░░░░░░░ 0% | 0/20 | Not started |
+| M4 Team and ecosystem | ░░░░░░░░░░ 0% | 0/16 | Not started |
 | M5 Platform | ░░░░░░░░░░ 0% | 0/5 | Not started |
 | M6 Collaboration | ░░░░░░░░░░ 0% | 0/4 | Not started |
 <!-- progress:end -->

@@ -41,6 +41,7 @@ Do not read `plan.md` or `architecture.md` in full. Do not read `docs/history/`.
   - If an open `helix/session-*` PR exists, the user has not merged it yet: check out that branch, `git pull`, and continue on it. Never start from `main` while unmerged work exists.
   - If that open PR's milestone tasks are already 100% (per `node scripts/progress.mjs` on its branch), do not add tasks from the next milestone to it. Only finish fixes requested in its review comments, then end the session (section 5) and ask the user to merge it.
   - If more than one open `helix/session-*` PR exists, continue the one whose base is `main`; never touch a PR stacked on another branch.
+  - Never continue an open PR whose milestone is later than the current milestone (the first milestone with unticked tasks). Leave it as a draft; its work is reused when that milestone starts (example: draft PR #19 for M3 is parked while M0–M2 restoration tasks are open).
   - Otherwise create `helix/session-<YYYY-MM-DD>-<next-task-short-name>` from the latest `main`.
 - **Immediately after your first push** (even if the first task is unfinished): open ONE **draft** PR to `main` for the session branch. Later work pushes to the same branch and PR. Never open a PR per task.
 - Commit and push after every working step, not only at the end of a task.
