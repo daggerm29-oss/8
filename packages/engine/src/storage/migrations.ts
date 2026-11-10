@@ -99,4 +99,28 @@ export const MIGRATIONS: string[] = [
   CREATE INDEX idx_config_path ON idx_config(ws, path);
   DELETE FROM idx_files; DELETE FROM idx_symbols; DELETE FROM idx_imports; DELETE FROM idx_chunks; DELETE FROM idx_refs; DELETE FROM idx_vectors;
   `,
+  /* v7: per-workspace trust and the explicit `local-os` light-mode opt-in (SEC-1, §16.2). NULL = untrusted, full isolation. */ `
+  ALTER TABLE workspace ADD COLUMN trust_json TEXT;
+  `,
+  /* v8: audit log record shape of §26.5 (category, actor, action, resource, decision, rule id) covered by the hash (hash_v 2; older rows keep hash_v 1),
+     and append-only enforcement (SEC-9): UPDATE and DELETE on audit_log abort. */ `
+  ALTER TABLE audit_log ADD COLUMN hash_v INTEGER NOT NULL DEFAULT 1;
+  ALTER TABLE audit_log ADD COLUMN category TEXT;
+  ALTER TABLE audit_log ADD COLUMN actor TEXT;
+  ALTER TABLE audit_log ADD COLUMN action TEXT;
+  ALTER TABLE audit_log ADD COLUMN resource TEXT;
+  ALTER TABLE audit_log ADD COLUMN decision TEXT;
+  ALTER TABLE audit_log ADD COLUMN rule_id TEXT;
+  CREATE INDEX audit_log_category ON audit_log(category);
+  CREATE TRIGGER audit_log_no_update BEFORE UPDATE ON audit_log BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END;
+  CREATE TRIGGER audit_log_no_delete BEFORE DELETE ON audit_log BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END;
+  `,
+  /* v9: every tool invocation, including read-only, denied and interrupted calls, owns a durable checkpoint. */ `
+  ALTER TABLE tool_calls ADD COLUMN checkpoint TEXT REFERENCES checkpoints(id);
+  INSERT INTO checkpoints (id, task, step, files_json, at)
+    SELECT 'ckpt_legacy_' || id, task, step, '[]', at FROM tool_calls;
+  UPDATE tool_calls SET checkpoint = 'ckpt_legacy_' || id;
+  CREATE TRIGGER tool_call_checkpoint_required BEFORE INSERT ON tool_calls WHEN NEW.checkpoint IS NULL
+    BEGIN SELECT RAISE(ABORT, 'tool call requires checkpoint'); END;
+  `,
 ];

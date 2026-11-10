@@ -1,0 +1,18 @@
+{
+  "date": "2026-11-10T14:59:10.316Z",
+  "command": "node scripts/check-scope.mjs --milestone M0",
+  "testedCommit": "e1bf6d26da50a4c9afb156314cfdb00c75239e66",
+  "exitCode": 0,
+  "pass": true,
+  "stdout": "154/154 IDs, 0 undefined task refs, 0 ticks without evidence, 0 removed items\nRequirements Done: 12/154\n",
+  "stderr": "",
+  "approvals": [
+    "Exempt OpenAI smoke",
+    "Approve original split"
+  ],
+  "scopeCheckerRelaxed": false,
+  "FAGT1Status": "Partial",
+  "M1Implemented": false,
+  "R08AcceptanceWaived": false,
+  "priorFailedArtifactPreserved": "evals/results/g0-2-scope-2026-11-10.json"
+}

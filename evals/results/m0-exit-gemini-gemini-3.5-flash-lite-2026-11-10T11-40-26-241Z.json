@@ -1,0 +1,240 @@
+{
+  "at": "2026-11-10T11:40:26.241Z",
+  "pass": false,
+  "gateReview": "Fixtures and live restart passed; token usage reconciles at 0% delta, but all costUsd groups are null (unpriced model). This cannot satisfy G0.1 cost reconciliation. Default gemini-3.8-flash failed with 503 and headers timeout before a tool boundary.",
+  "restartResumed": true,
+  "results": [
+    {
+      "fixture": "js-calc",
+      "status": "done",
+      "model": "gemini-3.5-flash-lite",
+      "steps": 5,
+      "verifyAttempts": 1,
+      "seconds": 10,
+      "ledger": {
+        "calls": 5,
+        "inputTokens": 14541,
+        "cachedInputTokens": 0,
+        "outputTokens": 187,
+        "reasoningTokens": 0,
+        "costUsd": 0,
+        "providerReportedCalls": 5,
+        "estimatedCalls": 0
+      },
+      "reconciliation": {
+        "rows": 5,
+        "providerReportedRows": 5,
+        "estimatedRows": [],
+        "missingAttribution": [],
+        "groups": [
+          {
+            "provider": "gemini",
+            "model": "gemini-3.5-flash-lite",
+            "calls": 5,
+            "ledger": {
+              "inputTokens": 14541,
+              "cachedInputTokens": 0,
+              "outputTokens": 187,
+              "reasoningTokens": 0,
+              "costUsd": null
+            },
+            "providerReported": {
+              "inputTokens": 14541,
+              "cachedInputTokens": 0,
+              "outputTokens": 187,
+              "reasoningTokens": 0,
+              "costUsd": null
+            },
+            "maxDeltaPct": 0
+          }
+        ],
+        "totals": {
+          "ledger": {
+            "inputTokens": 14541,
+            "cachedInputTokens": 0,
+            "outputTokens": 187,
+            "reasoningTokens": 0,
+            "costUsd": 0
+          },
+          "providerReported": {
+            "inputTokens": 14541,
+            "cachedInputTokens": 0,
+            "outputTokens": 187,
+            "reasoningTokens": 0,
+            "costUsd": 0
+          },
+          "maxDeltaPct": 0
+        },
+        "tolerancePct": 1,
+        "ok": true
+      },
+      "reconciled": false,
+      "sandboxes": [
+        {
+          "provider": "local-container",
+          "state": "destroyed"
+        },
+        {
+          "provider": "local-container",
+          "state": "destroyed"
+        }
+      ],
+      "insideContainer": true,
+      "restartedAfterLiveTool": true,
+      "completedCallsNotRepeated": true,
+      "error": null
+    },
+    {
+      "fixture": "py-strings",
+      "status": "done",
+      "model": "gemini-3.5-flash-lite",
+      "steps": 5,
+      "verifyAttempts": 1,
+      "seconds": 6,
+      "ledger": {
+        "calls": 5,
+        "inputTokens": 15104,
+        "cachedInputTokens": 0,
+        "outputTokens": 199,
+        "reasoningTokens": 0,
+        "costUsd": 0,
+        "providerReportedCalls": 5,
+        "estimatedCalls": 0
+      },
+      "reconciliation": {
+        "rows": 5,
+        "providerReportedRows": 5,
+        "estimatedRows": [],
+        "missingAttribution": [],
+        "groups": [
+          {
+            "provider": "gemini",
+            "model": "gemini-3.5-flash-lite",
+            "calls": 5,
+            "ledger": {
+              "inputTokens": 15104,
+              "cachedInputTokens": 0,
+              "outputTokens": 199,
+              "reasoningTokens": 0,
+              "costUsd": null
+            },
+            "providerReported": {
+              "inputTokens": 15104,
+              "cachedInputTokens": 0,
+              "outputTokens": 199,
+              "reasoningTokens": 0,
+              "costUsd": null
+            },
+            "maxDeltaPct": 0
+          }
+        ],
+        "totals": {
+          "ledger": {
+            "inputTokens": 15104,
+            "cachedInputTokens": 0,
+            "outputTokens": 199,
+            "reasoningTokens": 0,
+            "costUsd": 0
+          },
+          "providerReported": {
+            "inputTokens": 15104,
+            "cachedInputTokens": 0,
+            "outputTokens": 199,
+            "reasoningTokens": 0,
+            "costUsd": 0
+          },
+          "maxDeltaPct": 0
+        },
+        "tolerancePct": 1,
+        "ok": true
+      },
+      "reconciled": false,
+      "sandboxes": [
+        {
+          "provider": "local-container",
+          "state": "destroyed"
+        }
+      ],
+      "insideContainer": true,
+      "restartedAfterLiveTool": false,
+      "completedCallsNotRepeated": true,
+      "error": null
+    },
+    {
+      "fixture": "ts-inventory",
+      "status": "done",
+      "model": "gemini-3.5-flash-lite",
+      "steps": 6,
+      "verifyAttempts": 1,
+      "seconds": 66,
+      "ledger": {
+        "calls": 6,
+        "inputTokens": 17130,
+        "cachedInputTokens": 0,
+        "outputTokens": 217,
+        "reasoningTokens": 0,
+        "costUsd": 0,
+        "providerReportedCalls": 6,
+        "estimatedCalls": 0
+      },
+      "reconciliation": {
+        "rows": 6,
+        "providerReportedRows": 6,
+        "estimatedRows": [],
+        "missingAttribution": [],
+        "groups": [
+          {
+            "provider": "gemini",
+            "model": "gemini-3.5-flash-lite",
+            "calls": 6,
+            "ledger": {
+              "inputTokens": 17130,
+              "cachedInputTokens": 0,
+              "outputTokens": 217,
+              "reasoningTokens": 0,
+              "costUsd": null
+            },
+            "providerReported": {
+              "inputTokens": 17130,
+              "cachedInputTokens": 0,
+              "outputTokens": 217,
+              "reasoningTokens": 0,
+              "costUsd": null
+            },
+            "maxDeltaPct": 0
+          }
+        ],
+        "totals": {
+          "ledger": {
+            "inputTokens": 17130,
+            "cachedInputTokens": 0,
+            "outputTokens": 217,
+            "reasoningTokens": 0,
+            "costUsd": 0
+          },
+          "providerReported": {
+            "inputTokens": 17130,
+            "cachedInputTokens": 0,
+            "outputTokens": 217,
+            "reasoningTokens": 0,
+            "costUsd": 0
+          },
+          "maxDeltaPct": 0
+        },
+        "tolerancePct": 1,
+        "ok": true
+      },
+      "reconciled": false,
+      "sandboxes": [
+        {
+          "provider": "local-container",
+          "state": "destroyed"
+        }
+      ],
+      "insideContainer": true,
+      "restartedAfterLiveTool": false,
+      "completedCallsNotRepeated": true,
+      "error": null
+    }
+  ]
+}

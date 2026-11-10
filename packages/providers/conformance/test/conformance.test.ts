@@ -1,14 +1,28 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ProviderError, SseParser, type Message, type ModelRequest, type ProviderAdapter, type StreamEvent } from '@helix/protocol';
-import { GeminiAdapter } from '@helix/provider-gemini';
-import { OpenAIAdapter } from '@helix/provider-openai';
+import { ProviderError, SseParser, parseRetryAfter, parseStructured, streamWithRetry, validateJson, type JsonSchema, type Message, type ModelManifest, type ModelRequest, type ProviderAdapter, type StreamEvent } from '@helix/protocol';
+import { GEMINI_MODELS, GeminiAdapter } from '@helix/provider-gemini';
+import { OPENAI_MODELS, OpenAIAdapter } from '@helix/provider-openai';
 import { startFakeProvider, lastToolResult, type FakeScript } from '../src/index.ts';
 
-const adapters: Array<{ kind: 'gemini' | 'openai'; make: () => ProviderAdapter; model: string }> = [
-  { kind: 'gemini', make: () => new GeminiAdapter(), model: 'gemini-3.8-flash' },
-  { kind: 'openai', make: () => new OpenAIAdapter(), model: 'gpt-5-mini' },
+type Overlay = (m: ModelManifest) => ModelManifest;
+const adapters: Array<{ kind: 'gemini' | 'openai'; make: (overlay?: Overlay) => ProviderAdapter; model: string }> = [
+  { kind: 'gemini', make: (o) => new GeminiAdapter(o ? { models: GEMINI_MODELS.map(o) } : {}), model: 'gemini-3.8-flash' },
+  { kind: 'openai', make: (o) => new OpenAIAdapter(o ? { models: OPENAI_MODELS.map(o) } : {}), model: 'gpt-5-mini' },
 ];
+
+/** Strict-compatible schema (all properties required, no additional properties). */
+const verdictSchema: JsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['verdict', 'confidence', 'files'],
+  properties: {
+    verdict: { type: 'string', enum: ['pass', 'fail'] },
+    confidence: { type: 'number', minimum: 0, maximum: 1 },
+    files: { type: 'array', items: { type: 'string' } },
+  },
+};
+const notices = (events: StreamEvent[]) => events.filter((e): e is Extract<StreamEvent, { type: 'notice' }> => e.type === 'notice');
 
 const tools = [{ name: 'read_file', description: 'Read a file', inputSchema: { type: 'object' as const, properties: { path: { type: 'string' as const } }, required: ['path'] } }];
 
@@ -136,7 +150,7 @@ for (const { kind, make, model } of adapters) {
       const unknown = models.find((m) => m.id === (kind === 'gemini' ? 'gemini-9-test' : 'gpt-5-test'))!;
       assert.equal(unknown.origin, 'live');
       assert.equal(unknown.pricing, null);
-      assert.ok(!models.some((m) => /embedding|tts/.test(m.id)));
+      assert.ok(!models.some((m) => /embedding|tts|image/.test(m.id)), models.map((m) => m.id).join(','));
       const offline = await make().listModels({ apiKey: fake.apiKey, baseUrl: 'http://127.0.0.1:1/v1' });
       assert.ok(offline.every((m) => m.origin === 'bundled'));
     } finally {
@@ -165,13 +179,215 @@ test('transcripts are portable across providers (Gemini accepts an OpenAI-produc
   }
 });
 
+test('validateJson, parseStructured, and parseRetryAfter follow the schema subset and RFC 9110', () => {
+  assert.deepEqual(validateJson({ verdict: 'pass', confidence: 0.5, files: ['a'] }, verdictSchema), []);
+  assert.deepEqual(validateJson({ verdict: 'maybe', confidence: 2, files: [1], extra: true }, verdictSchema).sort(), [
+    '$.confidence: 2 > maximum 1', '$.extra: additional property not allowed', '$.files[0]: expected string, got number', '$.verdict: "maybe" not in enum ["pass","fail"]',
+  ]);
+  assert.deepEqual(validateJson({}, verdictSchema).length, 3);
+  assert.equal(parseStructured('```json\n{"verdict":"fail","confidence":1,"files":[]}\n```', verdictSchema).valid, true);
+  assert.match(parseStructured('not json', verdictSchema).errors[0], /invalid JSON/);
+  assert.equal(parseRetryAfter('7'), 7000);
+  assert.equal(parseRetryAfter(new Date(Date.UTC(2026, 0, 1, 0, 0, 30)).toUTCString(), Date.UTC(2026, 0, 1)), 30_000);
+  assert.equal(parseRetryAfter('soon'), undefined);
+});
+
+for (const { kind, make, model } of adapters) {
+  test(`[${kind}] structured output returns schema-valid JSON`, async () => {
+    const answer = { verdict: 'fail', confidence: 0.8, files: ['src/a.ts'] };
+    const fake = await startFakeProvider(kind, ({ index }) => (index === 0 ? { json: answer } : { text: '{"verdict":"unsure"}' }));
+    try {
+      const auth = { apiKey: fake.apiKey, baseUrl: fake.url };
+      const req: ModelRequest = { model, messages: [{ role: 'user', parts: [{ type: 'text', text: 'judge' }] }], responseFormat: { type: 'json_schema', name: 'verdict', schema: verdictSchema, strict: true } };
+      const events = await collect(make().stream(req, auth, new AbortController().signal));
+      const d = done(events);
+      assert.deepEqual(d.structured, { value: answer, valid: true, errors: [] });
+      const wire = fake.requests.at(-1)!.body;
+      if (kind === 'gemini') {
+        assert.equal(wire.generationConfig.responseMimeType, 'application/json');
+        assert.equal(wire.generationConfig.responseSchema.type, 'OBJECT');
+        assert.deepEqual(wire.generationConfig.responseSchema.properties.verdict, { type: 'STRING', enum: ['pass', 'fail'], format: 'enum' });
+        // Gemini has no strict decode mode: explicit degradation, still validated client-side.
+        assert.deepEqual(notices(events).map((n) => n.feature), ['strict_schema']);
+      } else {
+        assert.deepEqual(wire.text.format, { type: 'json_schema', name: 'verdict', schema: verdictSchema, strict: true });
+        assert.deepEqual(notices(events), []);
+      }
+      // A schema-invalid answer is reported, never passed off as valid.
+      const bad = done(await collect(make().stream(req, auth, new AbortController().signal)));
+      assert.equal(bad.structured?.valid, false);
+      assert.ok(bad.structured!.errors.includes('$.verdict: "unsure" not in enum ["pass","fail"]'), JSON.stringify(bad.structured));
+    } finally {
+      await fake.close();
+    }
+  });
+
+  test(`[${kind}] structured output degrades explicitly when unsupported or not strict-compatible`, async () => {
+    const answer = { verdict: 'pass', confidence: 1, files: [] };
+    const fake = await startFakeProvider(kind, () => ({ json: answer }));
+    try {
+      const auth = { apiKey: fake.apiKey, baseUrl: fake.url };
+      const loose: JsonSchema = { type: 'object', properties: { verdict: { type: 'string' } }, required: ['verdict'] };
+      const strictLoose = done(await collect(make().stream({ model, messages: [{ role: 'user', parts: [{ type: 'text', text: 'x' }] }], responseFormat: { type: 'json_schema', name: 'v', schema: loose, strict: true } }, auth, new AbortController().signal)));
+      assert.equal(strictLoose.structured?.valid, true);
+      if (kind === 'openai') assert.equal(fake.requests.at(-1)!.body.text.format.strict, false, 'non-strict-compatible schema must not be sent strict');
+
+      const noNative = make((m) => ({ ...m, structuredOutput: { supported: false, strict: false } }));
+      const events = await collect(noNative.stream({ model, system: 'judge', messages: [{ role: 'user', parts: [{ type: 'text', text: 'x' }] }], responseFormat: { type: 'json_schema', name: 'verdict', schema: verdictSchema } }, auth, new AbortController().signal));
+      assert.deepEqual(notices(events).map((n) => [n.code, n.feature]), [['capability.degraded', 'structured_output']]);
+      const wire = fake.requests.at(-1)!.body;
+      if (kind === 'gemini') {
+        assert.equal(wire.generationConfig?.responseSchema, undefined);
+        assert.match(wire.systemInstruction.parts[0].text, /^judge\n\nRespond with only a JSON value/);
+      } else {
+        assert.equal(wire.text, undefined);
+        assert.match(wire.instructions, /^judge\n\nRespond with only a JSON value/);
+      }
+      assert.deepEqual(done(events).structured, { value: answer, valid: true, errors: [] });
+    } finally {
+      await fake.close();
+    }
+  });
+
+  test(`[${kind}] 429 with Retry-After is retried after the advertised delay, then succeeds`, async () => {
+    const body = kind === 'gemini'
+      ? { error: { code: 429, message: 'Resource has been exhausted (e.g. check quota).', status: 'RESOURCE_EXHAUSTED' } }
+      : { error: { message: 'Rate limit reached for requests', type: 'requests', code: 'rate_limit_exceeded' } };
+    const fake = await startFakeProvider(kind, ({ index }) => (index === 0 ? { error: { status: 429, body, headers: { 'retry-after': '1' } } } : { text: 'ok after retry' }));
+    try {
+      const retries: Array<{ kind: string; delay: number }> = [];
+      const t0 = performance.now();
+      const events = await collect(streamWithRetry(make(), { model, messages: [{ role: 'user', parts: [{ type: 'text', text: 'x' }] }] }, { apiKey: fake.apiKey, baseUrl: fake.url }, new AbortController().signal, {
+        onRetry: (e, _attempt, delay) => retries.push({ kind: e.kind, delay }),
+      }));
+      const elapsed = performance.now() - t0;
+      assert.deepEqual(retries, [{ kind: 'rate_limit', delay: 1000 }]);
+      assert.ok(elapsed >= 950, `waited ${elapsed} ms, expected >= Retry-After`);
+      assert.equal(fake.requests.filter((r) => r.method === 'POST').length, 2);
+      assert.equal(events.filter((e) => e.type === 'text_delta').map((e) => (e as { text: string }).text).join(''), 'ok after retry');
+      assert.equal(done(events).finishReason, 'stop');
+    } finally {
+      await fake.close();
+    }
+  });
+
+  test(`[${kind}] retry gives up after maxRetries and never retries non-retryable errors`, async () => {
+    const rate = kind === 'gemini' ? { error: { code: 429, message: 'Resource has been exhausted', status: 'RESOURCE_EXHAUSTED' } } : { error: { message: 'Rate limit', type: 'requests', code: 'rate_limit_exceeded' } };
+    const fake = await startFakeProvider(kind, () => ({ error: { status: 429, body: rate, headers: { 'retry-after': '0' } } }));
+    try {
+      const req: ModelRequest = { model, messages: [{ role: 'user', parts: [{ type: 'text', text: 'x' }] }] };
+      await assert.rejects(collect(streamWithRetry(make(), req, { apiKey: fake.apiKey, baseUrl: fake.url }, new AbortController().signal, { maxRetries: 2 })), (e: ProviderError) => e.kind === 'rate_limit');
+      assert.equal(fake.requests.length, 3);
+      await assert.rejects(collect(streamWithRetry(make(), req, { apiKey: 'wrong-key-000000000', baseUrl: fake.url }, new AbortController().signal)), (e: ProviderError) => e.kind === 'auth');
+      assert.equal(fake.requests.length, 4, 'auth errors are not retried');
+    } finally {
+      await fake.close();
+    }
+  });
+
+  test(`[${kind}] unsupported parallel tool calls degrade to serial with a capability.degraded note`, async () => {
+    const script: FakeScript = ({ index, request }) => {
+      if (index === 0) return { toolCalls: [{ name: 'read_file', args: { path: 'a.txt' } }, { name: 'read_file', args: { path: 'b.txt' } }] };
+      if (index === 1) return { toolCalls: [{ name: 'read_file', args: { path: 'b.txt' } }] };
+      return { text: `last: ${lastToolResult(request)}` };
+    };
+    const fake = await startFakeProvider(kind, script);
+    try {
+      const adapter = make((m) => ({ ...m, tools: { ...m.tools, parallel: false } }));
+      const auth = { apiKey: fake.apiKey, baseUrl: fake.url };
+      const messages: Message[] = [{ role: 'user', parts: [{ type: 'text', text: 'read both' }] }];
+      const executed: string[] = [];
+      for (let turn = 0; turn < 3; turn++) {
+        const events = await collect(adapter.stream({ model, messages, tools }, auth, new AbortController().signal));
+        const d = done(events);
+        const calls = d.message.parts.filter((p): p is Extract<typeof p, { type: 'tool_call' }> => p.type === 'tool_call');
+        assert.ok(calls.length <= 1, `turn ${turn}: ${calls.length} calls in one turn`);
+        assert.equal(events.filter((e) => e.type === 'tool_call').length, calls.length);
+        if (turn === 0) {
+          assert.equal(notices(events)[0]?.feature, 'parallel_tool_calls');
+          assert.equal(notices(events)[0]?.code, 'capability.degraded');
+          if (kind === 'openai') assert.equal(fake.requests.at(-1)!.body.parallel_tool_calls, false);
+        }
+        messages.push(d.message);
+        if (!calls.length) {
+          assert.equal((d.message.parts.find((p) => p.type === 'text') as { text: string }).text, 'last: contents of b.txt');
+          break;
+        }
+        const path = (calls[0].args as { path: string }).path;
+        executed.push(path);
+        messages.push({ role: 'tool', parts: [{ type: 'tool_result', callId: calls[0].id, name: 'read_file', content: `contents of ${path}`, provenance: { source: 'repo', trust: 'untrusted', taint: true } }] });
+      }
+      assert.deepEqual(executed, ['a.txt', 'b.txt']);
+    } finally {
+      await fake.close();
+    }
+  });
+}
+
+test('[gemini] LIVE FR-1 discovery, model selection and per-request controls', { skip: process.env.HELIX_LIVE !== '1' ? 'set HELIX_LIVE=1' : !(process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API) ? 'no Gemini API key' : false }, async () => {
+  const { mkdirSync, writeFileSync } = await import('node:fs');
+  const { fileURLToPath } = await import('node:url');
+  const sent: Array<{ url: string; generationConfig: unknown }> = [];
+  const adapter = new GeminiAdapter({ fetch: async (url, init) => {
+    if (init?.body) sent.push({ url: String(url), generationConfig: JSON.parse(String(init.body)).generationConfig });
+    return fetch(url, init);
+  } });
+  const auth = { apiKey: process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API };
+  const model = process.env.HELIX_LIVE_GEMINI_MODEL ?? 'gemini-3.5-flash-lite';
+  const models = await adapter.listModels(auth);
+  assert.ok(models.some((m) => m.id === model && m.origin !== 'bundled'), 'selection must come from live discovery, not a bundled fallback');
+  const responses = [];
+  for (const [reasoningEffort, temperature, maxOutputTokens] of [['low', 0, 512], ['high', 0.3, 1024]] as const) {
+    const request: ModelRequest = { model, messages: [{ role: 'user', parts: [{ type: 'text', text: 'Reply with only the word OK.' }] }], reasoningEffort, temperature, maxOutputTokens };
+    const events = await collect(streamWithRetry(adapter, request, auth, AbortSignal.timeout(90_000), { maxRetries: 1, baseDelayMs: 1000 }));
+    const result = done(events);
+    assert.equal(result.usage.source, 'provider');
+    assert.ok(result.usage.inputTokens > 0 && result.usage.outputTokens > 0);
+    assert.ok(result.message.parts.some((p) => p.type === 'text' && p.text.includes('OK')));
+    assert.equal(notices(events).length, 0, 'supported controls must not silently degrade');
+    assert.deepEqual(sent.at(-1)?.generationConfig, { maxOutputTokens, temperature, thinkingConfig: { thinkingLevel: reasoningEffort } });
+    assert.ok(sent.at(-1)?.url.includes(`/models/${model}:streamGenerateContent`));
+    responses.push({ model, request: { reasoningEffort, temperature, maxOutputTokens }, sent: sent.at(-1), responseId: result.responseId ?? null, finishReason: result.finishReason, usage: result.usage });
+  }
+  const root = new URL('../../../../evals/results/', import.meta.url);
+  mkdirSync(fileURLToPath(root), { recursive: true });
+  const artifact = new URL(`fr-1-gemini-controls-${new Date().toISOString().replace(/[:.]/g, '-')}.json`, root);
+  writeFileSync(fileURLToPath(artifact), JSON.stringify({ at: new Date().toISOString(), pass: true, liveModels: models.filter((m) => m.origin !== 'bundled').map((m) => m.id), accessTestPassed: true, responses }, null, 2));
+  console.log(`FR-1 live evidence: ${fileURLToPath(artifact)}`);
+});
+
+const geminiKey = process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY ?? process.env.GEMINI_API;
+const liveEnabled = process.env.HELIX_LIVE === '1';
 const live = [
-  { kind: 'gemini', key: process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY, make: () => new GeminiAdapter() },
+  { kind: 'gemini', key: geminiKey, make: () => new GeminiAdapter() },
   { kind: 'openai', key: process.env.OPENAI_API_KEY, make: () => new OpenAIAdapter() },
 ] as const;
 
 for (const l of live) {
-  test(`[${l.kind}] LIVE provider call with tool use`, { skip: l.key ? false : `no ${l.kind.toUpperCase()} API key in environment` }, async () => {
+  const skip = !liveEnabled ? 'set HELIX_LIVE=1 to run live provider checks' : l.key ? false : `no ${l.kind.toUpperCase()} API key in environment`;
+  test(`[${l.kind}] LIVE model listing returns >= 1 live model`, { skip }, async () => {
+    const models = await l.make().listModels({ apiKey: l.key });
+    const liveModels = models.filter((m) => m.origin !== 'bundled');
+    console.log(`[${l.kind}] live models: ${liveModels.length} (e.g. ${liveModels.slice(0, 3).map((m) => m.id).join(', ')})`);
+    assert.ok(liveModels.length >= 1, 'expected at least one model confirmed by the provider models endpoint');
+  });
+
+  test(`[${l.kind}] LIVE structured output returns schema-valid JSON`, { skip }, async () => {
+    const adapter = l.make();
+    const model = (l.kind === 'gemini' ? process.env.HELIX_LIVE_GEMINI_MODEL : process.env.HELIX_LIVE_OPENAI_MODEL) ?? adapter.defaultModel;
+    const req: ModelRequest = {
+      model,
+      messages: [{ role: 'user', parts: [{ type: 'text', text: 'The test suite failed in src/a.ts and src/b.ts. Report verdict "fail" with your confidence and the files.' }] }],
+      responseFormat: { type: 'json_schema', name: 'verdict', schema: verdictSchema, strict: true },
+      maxOutputTokens: 1024,
+    };
+    const d = done(await collect(streamWithRetry(adapter, req, { apiKey: l.key }, AbortSignal.timeout(120_000), { maxRetries: 4, baseDelayMs: 2000, onRetry: (e, n, ms) => console.log(`retry ${n + 1} after ${e.kind} in ${ms} ms`) })));
+    console.log(`[${l.kind}] ${model} structured: ${JSON.stringify(d.structured)}`);
+    assert.equal(d.structured?.valid, true, JSON.stringify(d.structured));
+    assert.equal((d.structured!.value as { verdict: string }).verdict, 'fail');
+  });
+
+  test(`[${l.kind}] LIVE provider call with tool use`, { skip }, async () => {
     const adapter = l.make();
     const auth = { apiKey: l.key };
     const req: ModelRequest = {

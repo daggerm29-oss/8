@@ -1,0 +1,12 @@
+{
+  "at": "2026-11-10T14:13:09.454Z",
+  "sha": "74c84f18044d0000de19032571113e397066ba59",
+  "command": "node scripts/check-scope.mjs --milestone M0",
+  "exitCode": 1,
+  "stdout": "154/154 IDs, 0 undefined task refs, 0 ticks without evidence, 0 removed items\nRequirements Done: 11/154\n",
+  "stderr": "F-MDL-1: M0 requirement not Done with evidence\nF-AGT-1: M0 requirement not Done with evidence\n",
+  "pass": false,
+  "originalRequirementTextModified": false,
+  "milestoneMappingChanged": false,
+  "scopeCheckerModified": false
+}

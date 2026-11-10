@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import type { JsonSchema } from '@helix/protocol';
 import type { ToolRegistry } from '../tools/registry.ts';
-import { registerToolClass } from '../policy/policy.ts';
+import { registerToolClass, unregisterToolClass } from '../policy/policy.ts';
 import { McpStdioClient, type McpCallResult, type McpToolInfo } from './client.ts';
 import { McpHttpClient } from './http.ts';
 
@@ -139,7 +139,11 @@ export class McpManager {
   /** Cache hit/miss counters (exposed for tests and `mcp.list` diagnostics). */
   readonly cacheStats = { hits: 0, misses: 0 };
 
-  private readonly o: { home: string; registry: ToolRegistry; logger?: { info: (m: string, d?: Record<string, unknown>) => void; warn: (m: string, d?: Record<string, unknown>) => void }; config?: Record<string, McpServerConfig>; toolSearchThreshold?: number };
+  private readonly o: { home: string; registry: ToolRegistry; logger?: { info: (m: string, d?: Record<string, unknown>) => void; warn: (m: string, d?: Record<string, unknown>) => void }; config?: Record<string, McpServerConfig>; toolSearchThreshold?: number;
+    /** Receives §26.5 audit records (server add, remove, trust change). Details never include headers, env values, or command arguments. */
+    audit?: (topic: string, data: Record<string, unknown>) => void };
+  /** Registry names each connected server contributed, so removal and reconnect can unregister exactly those. */
+  private readonly serverTools = new Map<string, string[]>();
 
   constructor(o: McpManager['o']) {
     this.o = o;
@@ -204,6 +208,74 @@ export class McpManager {
     return null;
   }
 
+  /** Persist a change to `$HELIX_HOME/mcp.json` (inline test configs are memory-only). */
+  private updateFile(mutate: (servers: Record<string, McpServerConfig>) => void): void {
+    if (this.o.config) return;
+    const file = readMcpConfigFile(this.o.home);
+    const key = file.servers ? 'servers' : file.mcpServers ? 'mcpServers' : 'servers';
+    const servers = (file[key] ??= {});
+    mutate(servers);
+    writeMcpConfigFile(this.o.home, file);
+  }
+
+  private describe(name: string, c: McpServerConfig): Record<string, unknown> {
+    const transport = c.url ? 'http' : 'stdio';
+    let target = '';
+    if (c.url) { try { target = new URL(c.url).origin; } catch { target = 'invalid-url'; } } else target = c.command ?? '';
+    return { server: name, transport, target, trust: c.trust ?? 'untrusted', ...(c.args ? { argCount: c.args.length } : {}) };
+  }
+
+  private async disconnect(name: string): Promise<void> {
+    await this.clients.get(name)?.close().catch(() => {});
+    this.clients.delete(name);
+    for (const exposed of this.serverTools.get(name) ?? []) { this.o.registry.unregister(exposed); unregisterToolClass(exposed); }
+    this.serverTools.delete(name);
+    for (const k of [...this.cache.keys()]) if (k.startsWith(`mcp__${name.replace(NAME_RE, '_')}__`)) this.cache.delete(k);
+  }
+
+  /** Add a server at runtime (user action): persisted, connected, and audited as `mcp.server_added` (§26.5). New servers are untrusted unless stated. */
+  async addServer(name: string, config: McpServerConfig): Promise<McpServerStatus> {
+    if (typeof name !== 'string' || !/^[a-zA-Z0-9_.-]{1,40}$/.test(name)) throw new Error('server name must be 1-40 characters of [a-zA-Z0-9_.-]');
+    if (!config || (!config.command && !config.url)) throw new Error('an MCP server needs a command or a url');
+    if (this.status.has(name)) throw new Error(`MCP server '${name}' already exists; remove it first`);
+    const cfg: McpServerConfig = { ...config, trust: config.trust === 'trusted' ? 'trusted' : 'untrusted' };
+    this.updateFile((servers) => { servers[name] = cfg; });
+    await this.startServer(name, cfg);
+    this.applyToolSearch();
+    const status = this.status.get(name)!;
+    this.o.audit?.('mcp.server_added', { ...this.describe(name, cfg), state: status.state, tools: status.tools.length, by: 'user' });
+    return status;
+  }
+
+  /** Remove a server (user action): disconnect it, drop its tools and config, and audit `mcp.server_removed`. */
+  async removeServer(name: string): Promise<{ removed: true; tools: number }> {
+    const status = this.status.get(name);
+    if (!status) throw new Error(`unknown MCP server '${name}'`);
+    const cfg = this.configs.get(name) ?? {};
+    await this.disconnect(name);
+    this.status.delete(name);
+    this.configs.delete(name);
+    this.updateFile((servers) => { delete servers[name]; });
+    this.o.audit?.('mcp.server_removed', { ...this.describe(name, cfg), state: status.state, tools: status.tools.length, by: 'user' });
+    return { removed: true, tools: status.tools.length };
+  }
+
+  /** Change a server's trust (user action). Tool classes depend on trust, so the server reconnects; audited as `mcp.trust_changed`. */
+  async setTrust(name: string, trust: 'trusted' | 'untrusted'): Promise<McpServerStatus> {
+    if (trust !== 'trusted' && trust !== 'untrusted') throw new Error("trust must be 'trusted' or 'untrusted'");
+    const cfg = this.configs.get(name);
+    if (!cfg) throw new Error(`unknown MCP server '${name}'`);
+    const from = cfg.trust ?? 'untrusted';
+    if (from === trust) return this.status.get(name)!;
+    cfg.trust = trust;
+    this.updateFile((servers) => { if (servers[name]) servers[name].trust = trust; });
+    await this.disconnect(name);
+    await this.startServer(name, cfg);
+    this.applyToolSearch();
+    this.o.audit?.('mcp.trust_changed', { ...this.describe(name, cfg), from, to: trust, by: 'user' });
+    return this.status.get(name)!;
+  }
+
   private async startServer(name: string, c: McpServerConfig): Promise<void> {
     if (c.enabled === false) { this.status.set(name, { name, state: 'disabled', tools: [] }); return; }
     this.configs.set(name, c);
@@ -221,6 +293,7 @@ export class McpManager {
       this.clients.set(name, client);
       const filtered = tools.filter((t) => !toolPermitted(c, t.name)).map((t) => t.name);
       const registered = tools.filter((t) => toolPermitted(c, t.name)).map((t) => this.registerTool(name, c, client, t)).filter((t): t is NonNullable<typeof t> => !!t);
+      this.serverTools.set(name, registered.map((t) => t.exposedAs));
       this.status.set(name, { name, state: 'connected', transport, serverInfo: client.serverInfo, tools: registered, ...(filtered.length ? { filtered } : {}) });
       this.o.logger?.info('mcp server connected', { server: name, tools: registered.length });
     } catch (e) {

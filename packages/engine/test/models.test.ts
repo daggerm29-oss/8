@@ -1,8 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { ProviderError } from '@helix/protocol';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
+import { ProviderError, type ProviderAdapter } from '@helix/protocol';
 import { GeminiAdapter } from '@helix/provider-gemini';
 import { OpenAIAdapter } from '@helix/provider-openai';
 import { startFakeProvider, type FakeScript, type FakeServer } from '@helix/provider-conformance';
@@ -28,6 +30,45 @@ function setup(fake: FakeServer, opts: { breaker?: { threshold: number; cooldown
 }
 
 const userMsg = (text: string) => ({ messages: [{ role: 'user' as const, parts: [{ type: 'text' as const, text }] }] });
+
+test('F-MDL-1 AC1 / FR-5: one standalone provider package plugs into the public gateway without agent-core changes', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'helix-provider-package-'));
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: '@fixture/standalone-provider', version: '1.0.0', type: 'module', exports: './index.mjs' }));
+  writeFileSync(join(dir, 'index.mjs'), `export default class StandaloneProvider {
+    id = 'standalone'; defaultModel = 'fixture';
+    bundledModels() { return [{ id: 'fixture', provider: this.id, displayName: 'Fixture', status: 'stable', contextWindow: 4096, maxOutput: 128, modalities: { input: ['text'], output: ['text'] }, tools: { supported: false, parallel: false, strictSchema: false, dialect: 'other' }, caching: { kind: 'none' }, pricing: { inputPerM: 1, outputPerM: 2, asOf: 'fixture' }, origin: 'bundled' }]; }
+    async listModels() { return this.bundledModels(); }
+    async countTokens() { return { inputTokens: 3, exact: false }; }
+    normalizeError(error) { return error; }
+    normalizeUsage(raw) { return { ...raw, source: 'provider', raw }; }
+    async *stream(request, auth, signal) {
+      signal.throwIfAborted();
+      const message = { role: 'assistant', parts: [{ type: 'text', text: 'standalone package response' }] };
+      yield { type: 'text_delta', text: message.parts[0].text };
+      yield { type: 'done', message, finishReason: 'stop', responseId: 'standalone-1', usage: this.normalizeUsage({ inputTokens: 3, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 4, reasoningTokens: 0 }) };
+    }
+  }`);
+  const { default: StandaloneProvider } = await import(pathToFileURL(join(dir, 'index.mjs')).href);
+  const adapter: ProviderAdapter = new StandaloneProvider();
+  const db = new Db(':memory:');
+  const ledger = new Ledger(db);
+  const gateway = new ModelGateway({ adapters: [adapter], vault: new Vault({}), ledger, tracer: new Tracer(db, { otlpEndpoint: null }) });
+  try {
+    assert.deepEqual((await gateway.listModels('standalone')).map((m) => m.id), ['fixture']);
+    const result = await gateway.call({ provider: 'standalone', model: 'fixture', role: 'coder', task: 'package-proof', agent: 'primary', request: userMsg('hello') });
+    assert.equal(result.message.parts[0].type === 'text' && result.message.parts[0].text, 'standalone package response');
+    assert.equal(gateway.reconcile({ task: 'package-proof' }).ok, true);
+    assert.equal(ledger.entries({ task: 'package-proof' })[0].provider, 'standalone');
+  } finally { db.close(); }
+});
+
+test('verified Gemini 3.5 Flash-Lite Standard reference pricing includes thinking output and cached-input discount', () => {
+  const price = new GeminiAdapter().bundledModels().find((m) => m.id === 'gemini-3.5-flash-lite')!.pricing;
+  assert.ok(price);
+  assert.match(price.note!, /ai\.google\.dev\/gemini-api\/docs\/pricing/);
+  assert.equal(costOf(price, { inputTokens: 1_000_000, cachedInputTokens: 200_000, outputTokens: 100_000 }), 0.496);
+  assert.equal(new GeminiAdapter().bundledModels().find((m) => m.id === 'gemini-3.6-flash')!.pricing, null);
+});
 
 test('costOf applies cached-input pricing and returns null for unknown prices', () => {
   const pricing = { inputPerM: 1, cachedInputPerM: 0.1, outputPerM: 10, asOf: 'x' };
@@ -140,4 +181,31 @@ test('gemini 429s: per-minute limits stay retryable, daily quotas become non-ret
   const day = geminiHttpError(429, body('Generate content requests per day limit exceeded on Free Tier.', '62749s'));
   assert.equal(day.kind, 'plan_limit');
   assert.ok(!day.retryable);
+});
+
+test('gateway logs capability degradations and records them on the model.call span (F-MDL-1 AC3)', async () => {
+  const fake = await startFakeProvider('openai', () => ({ toolCalls: [{ name: 'read_file', args: { path: 'a' } }, { name: 'read_file', args: { path: 'b' } }] }));
+  try {
+    const db = new Db(':memory:');
+    const bus = new EventBus(db, { flushMs: 1 });
+    const tracer = new Tracer(db, { otlpEndpoint: null });
+    const logged: Array<{ msg: string; f?: Record<string, unknown> }> = [];
+    const logger = { info: (msg: string, f?: Record<string, unknown>) => void logged.push({ msg, f }), warn: () => {}, error: () => {}, debug: () => {} } as unknown as import('../src/util/log.ts').Logger;
+    const { OPENAI_MODELS } = await import('@helix/provider-openai');
+    const serialOnly = new OpenAIAdapter({ models: OPENAI_MODELS.map((m) => ({ ...m, tools: { ...m.tools, parallel: false } })) });
+    const gateway = new ModelGateway({ adapters: [serialOnly], vault: new Vault({ OPENAI_API_KEY: fake.apiKey, HELIX_OPENAI_BASE_URL: fake.url }), ledger: new Ledger(db, bus), tracer, logger });
+    const seen: string[] = [];
+    const r = await gateway.call({
+      provider: 'openai', model: 'gpt-5-mini', role: 'coder', task: 't1', onEvent: (e) => { if (e.type === 'notice') seen.push(e.feature); },
+      request: { ...userMsg('read'), tools: [{ name: 'read_file', description: 'r', inputSchema: { type: 'object', properties: { path: { type: 'string' } } } }] },
+    });
+    assert.equal(r.message.parts.filter((p) => p.type === 'tool_call').length, 1);
+    assert.deepEqual(seen, ['parallel_tool_calls']);
+    assert.deepEqual(logged.filter((l) => l.msg === 'capability degraded').map((l) => l.f?.feature), ['parallel_tool_calls']);
+    const row = db.get<{ events_json: string }>("SELECT events_json FROM spans WHERE name = 'model.call'");
+    assert.ok(row && JSON.parse(row.events_json).some((e: { name: string }) => e.name === 'capability.degraded'), row?.events_json);
+    assert.equal(fake.requests.at(-1)!.body.parallel_tool_calls, false);
+  } finally {
+    await fake.close();
+  }
 });

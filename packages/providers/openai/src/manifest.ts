@@ -8,6 +8,8 @@ const reasoningModel = {
   modalities: { input: ['text', 'image', 'pdf'] as Array<'text' | 'image' | 'pdf'>, output: ['text'] as Array<'text'> },
   tools: { supported: true, parallel: true, strictSchema: true, dialect: 'openai' as const },
   reasoning: { controls: ['effort'] as Array<'effort'>, returnsSummary: true, statefulItems: true },
+  structuredOutput: { supported: true, strict: true },
+  temperature: false,
   caching: { kind: 'implicit' as const, minTokens: 1024, discount: 0.9 },
   origin: 'bundled' as const,
 };

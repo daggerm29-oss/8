@@ -23,10 +23,11 @@ import { ToolScript, type ReplayAdapter, type SessionBundle } from '../replay/bu
 import type { DepGate } from '../policy/depgate.ts';
 import { formatHookRuns, loadHooks, loadSkills, runHooks, skillsContext, type Hook } from './skills.ts';
 import { buildEvidence, reverify, type ReverifyResult, type VerificationEvidence } from '../artifacts/evidence.ts';
-import type { Tracer } from '../obs/tracing.ts';
+import { StatusCode, type Span, type SpanContext, type Tracer } from '../obs/tracing.ts';
+import { auditIntentOf } from '../events/audit.ts';
 import type { Logger } from '../util/log.ts';
 import type { ToolContext, ToolOutput, ToolRegistry } from '../tools/registry.ts';
-import { LocalSandbox } from '../sandbox/sandbox.ts';
+import { LocalSandbox, SandboxUnavailableError, sandboxStatus } from '../sandbox/sandbox.ts';
 import type { EgressProxy } from '../sandbox/egress.ts';
 import type { DevServers } from '../preview/devserver.ts';
 import type { PreviewBrowser } from '../preview/browser.ts';
@@ -45,6 +46,14 @@ interface TaskRow {
   owner_engine: string | null; created_at: string; updated_at: string; result: string | null; error: string | null;
 }
 
+/** A user's trust decision for a workspace. `lightMode` is the explicit `local-os` opt-in (SEC-1). */
+export interface WorkspaceTrust {
+  trusted: true;
+  lightMode: boolean;
+  at: string;
+  by: 'user';
+}
+
 export interface RuntimeOptions {
   db: Db;
   bus: EventBus;
@@ -55,7 +64,6 @@ export interface RuntimeOptions {
   engineId: string;
   blobs?: BlobStore;
   logger?: Logger;
-  forceProcessSandbox?: boolean;
   /** Engine egress proxy bridged into task sandboxes (F-SBX-3). */
   egress?: EgressProxy;
   /** Workspace dev servers (F-PRV-1) for the `start_dev_server` tool. */
@@ -141,6 +149,8 @@ export class TaskRuntime {
   private readonly o: RuntimeOptions;
   private readonly running = new Map<string, { controller: AbortController; done: Promise<void> }>();
   private readonly approvals = new Map<string, (approved: boolean) => void>();
+  /** Latest `agent.step` span of each running task: the parent of the tool calls that step requested (§26.1). */
+  private readonly stepSpans = new Map<string, SpanContext>();
   /** Per task: `provider/model` refs that failed permanently (F-MDL-4 fallback), in memory only. */
   private readonly demoted = new Map<string, Set<string>>();
   /** Replay tasks: recorded tool results served instead of running tools. */
@@ -279,7 +289,7 @@ export class TaskRuntime {
       const l = s.ledger_entry ? ledger.get(s.ledger_entry) : undefined;
       return {
         id: s.id, index: s.idx, kind: s.kind, status: s.status, startedAt: s.started_at, endedAt: s.ended_at,
-        model: l ? { role: l.role, ref: `${l.provider}/${l.model}`, inputTokens: l.input_tokens, outputTokens: l.output_tokens, costUsd: l.cost_usd ?? 0 } : null,
+        model: l ? { role: l.role, ref: `${l.provider}/${l.model}`, inputTokens: l.input_tokens, outputTokens: l.output_tokens, costUsd: l.cost_usd } : null,
         text: parts.filter((p) => p.type === 'text').map((p) => (p as { text: string }).text).join(''),
         toolCalls: parts.filter((p): p is Extract<Part, { type: 'tool_call' }> => p.type === 'tool_call').map((p) => {
           const c = calls.get(p.id);
@@ -292,6 +302,8 @@ export class TaskRuntime {
   create(p: TaskCreateParams): TaskSummary {
     if (!p.goal?.trim()) throw new Error('goal is required');
     const ws = this.workspace(p.workspacePath);
+    const sbx = this.sandboxStatusFor(ws.path);
+    if (!sbx.backend) throw new SandboxUnavailableError(sbx.reason ?? 'no isolating sandbox backend is available');
     const roles = this.resolveTaskRoles(ws.path, p);
     const main = roles[p.policyProfile === 'plan' ? 'planner' : 'coder'].chain[0];
     const { provider, model } = main;
@@ -306,6 +318,7 @@ export class TaskRuntime {
     this.saveArtifact(id, 'roles', 'Model roles', roles);
     this.addMessage(id, null, { role: 'user', parts: [{ type: 'text', text: p.goal }] });
     this.publish(id, ws.id, 'task.created', { title: p.title ?? p.goal.slice(0, 80), provider, model, roles: summarizeRoles(roles) });
+    this.publish(id, ws.id, 'policy.changed', { change: 'task_policy', subject: `task:${id}`, policyProfile: p.policyProfile ?? 'headless', preapprove: p.preapprove ?? [], sandbox: sbx.backend, by: 'user' }, 'audit');
     if (p.start !== false) this.start(id);
     return this.summary(id);
   }
@@ -335,17 +348,39 @@ export class TaskRuntime {
     const r = this.row(id);
     if (TERMINAL.includes(r.status)) throw new Error(`task ${id} is ${r.status}`);
     const controller = new AbortController();
-    const done = this.loop(id, controller.signal)
-      .catch((error: Error) => {
+    const done = this.o.tracer.withSpan('task', { 'task.id': id, 'ws.id': r.ws, provider: r.provider, model: r.model, policy_profile: r.policy_profile, resumed: r.step_count > 0 }, async (span) => {
+      try {
+        await this.loop(id, controller.signal);
+      } catch (e) {
         if (controller.signal.aborted) return;
+        const error = e as Error;
+        span.recordException(error);
         this.o.logger?.error('task failed', { task: id, error: error.message });
         this.setStatus(id, 'failed', { error: `${error.name}: ${error.message}` });
-      })
+      } finally {
+        this.finishTaskSpan(id, span);
+      }
+    })
+      .catch((error: Error) => this.o.logger?.error('task span failed', { task: id, error: error.message }))
       .finally(() => {
         this.running.delete(id);
         this.o.bus.flush();
       });
     this.running.set(id, { controller, done });
+  }
+
+  /** Closes out the `task` span with the outcome and totals the §26.1 viewer shows (tokens, cost, steps). */
+  private finishTaskSpan(id: string, span: Span): void {
+    this.stepSpans.delete(id);
+    const row = this.o.db.get<TaskRow>('SELECT * FROM tasks WHERE id = ?', id);
+    if (!row) return;
+    const totals = this.o.db.get<{ i: number | null; c: number | null; o: number | null; usd: number | null; calls: number }>(
+      'SELECT SUM(input_tokens) AS i, SUM(cached_input_tokens) AS c, SUM(output_tokens) AS o, SUM(cost_usd) AS usd, COUNT(*) AS calls FROM ledger_entries WHERE task = ?', id);
+    span.setAttributes({
+      'task.status': row.status, 'task.steps': row.step_count, 'task.verify_attempts': row.verify_attempts, outcome: row.status,
+      'usage.input_tokens': totals?.i ?? 0, 'usage.cached_input_tokens': totals?.c ?? 0, 'usage.output_tokens': totals?.o ?? 0, 'usage.cost_usd': totals?.usd ?? 0, 'usage.model_calls': totals?.calls ?? 0,
+    });
+    if (row.status === 'failed') span.setStatus(StatusCode.ERROR, row.error ?? 'task failed');
   }
 
   async wait(id: string, timeoutMs = 0): Promise<ReturnType<TaskRuntime['summary']>> {
@@ -370,7 +405,11 @@ export class TaskRuntime {
       run.controller.abort();
       await run.done;
     }
-    if (!TERMINAL.includes(this.row(id).status)) this.setStatus(id, 'cancelled');
+    if (!TERMINAL.includes(this.row(id).status)) {
+      this.setStatus(id, 'cancelled');
+      this.o.db.run("UPDATE tool_calls SET status = 'cancelled' WHERE task = ? AND status = 'running'", id);
+      this.publish(id, this.row(id).ws, 'task.cancelled', { status: 'cancelled' }, 'audit');
+    }
     return this.summary(id);
   }
 
@@ -383,6 +422,8 @@ export class TaskRuntime {
     const resolve = this.approvals.get(approvalId);
     if (!resolve) throw new Error(`no pending approval ${approvalId}`);
     this.o.db.run('UPDATE approvals SET status = ?, decision_by = ? WHERE id = ?', approved ? 'approved' : 'denied', by, approvalId);
+    const a = this.o.db.get<{ task: string; tool: string; action_class: string }>('SELECT task, tool, action_class FROM approvals WHERE id = ?', approvalId);
+    if (a) this.publish(a.task, this.row(a.task).ws, 'approval.decided', { approvalId, tool: a.tool, actionClass: a.action_class, approved, by }, 'audit');
     this.approvals.delete(approvalId);
     resolve(approved);
   }
@@ -397,6 +438,9 @@ export class TaskRuntime {
         const owner = this.o.db.get<{ stopped_at: string | null; heartbeat_at: string; pid: number }>('SELECT stopped_at, heartbeat_at, pid FROM engine_instances WHERE id = ?', r.owner_engine);
         const alive = owner && !owner.stopped_at && Date.now() - Date.parse(owner.heartbeat_at) < 15_000 && pidAlive(owner.pid);
         if (alive) continue;
+      }
+      for (const a of this.o.db.all<{ id: string; tool: string; action_class: string }>(`SELECT id, tool, action_class FROM approvals WHERE task = ? AND status = 'pending'`, r.id)) {
+        this.publish(r.id, this.row(r.id).ws, 'approval.decided', { approvalId: a.id, tool: a.tool, actionClass: a.action_class, approved: false, by: 'system', reason: 'expired on restart' }, 'audit');
       }
       this.o.db.run(`UPDATE approvals SET status = 'expired' WHERE task = ? AND status = 'pending'`, r.id);
       this.publish(r.id, this.row(r.id).ws, 'task.resumed', { previousOwner: r.owner_engine }, 'audit');
@@ -437,7 +481,7 @@ export class TaskRuntime {
   private async loop(id: string, signal: AbortSignal): Promise<void> {
     const initial = this.row(id);
     const root = this.wsPath(initial.ws);
-    const sandbox = new LocalSandbox(prefixedId('sbx'), root, { forceProcess: this.o.forceProcessSandbox, egress: this.o.egress });
+    const sandbox = this.sandboxFor(root, 'sbx', { task: id });
     this.o.db.run('INSERT INTO sandboxes (id, provider, ws, owner_engine, state, created_at, labels_json) VALUES (?, ?, ?, ?, ?, ?, ?)',
       sandbox.id, sandbox.provider, initial.ws, this.o.engineId, 'running', new Date().toISOString(), json({ task: id }));
     this.setStatus(id, 'running');
@@ -466,6 +510,7 @@ export class TaskRuntime {
         }
       }
     } finally {
+      await sandbox.stopProcesses();
       sandbox.destroy();
       this.o.db.run(`UPDATE sandboxes SET state = 'destroyed', destroyed_at = ? WHERE id = ?`, new Date().toISOString(), sandbox.id);
     }
@@ -550,7 +595,7 @@ export class TaskRuntime {
     if (!row) throw new Error(`unknown artifact ${artifactId}`);
     if (row.kind !== 'verification_evidence') throw new Error(`artifact ${artifactId} is ${row.kind}, not verification_evidence`);
     const root = this.wsPath(this.row(row.task).ws);
-    const sandbox = new LocalSandbox(prefixedId('sbx'), root, { forceProcess: this.o.forceProcessSandbox, egress: this.o.egress });
+    const sandbox = this.sandboxFor(root, 'sbx', { task: row.task, purpose: 'reverify' });
     try {
       return await reverify(artifactId, parseJson<VerificationEvidence>(row.data_json, { assertions: [] } as unknown as VerificationEvidence), (command) => sandbox.exec(command, { timeoutMs: 300_000 }));
     } finally {
@@ -606,6 +651,51 @@ export class TaskRuntime {
       task ? 'SELECT * FROM approvals WHERE task = ? ORDER BY at DESC' : `SELECT * FROM approvals WHERE status = 'pending' ORDER BY at DESC`, ...(task ? [task] : []),
     );
     return rows.map((a) => ({ id: a.id, task: a.task, tool: a.tool, args: parseJson(a.args_json, {}), actionClass: a.action_class, status: a.status, at: a.at }));
+  }
+
+  /** The user's trust decision for a workspace (SEC-1). Untrusted (null) workspaces always get full isolation. */
+  workspaceTrust(path: string): WorkspaceTrust | null {
+    let real: string;
+    try { real = realpathSync(path); } catch { return null; }
+    const row = this.o.db.get<{ trust_json: string | null }>('SELECT trust_json FROM workspace WHERE path = ?', real);
+    return row?.trust_json ? parseJson<WorkspaceTrust | null>(row.trust_json, null) : null;
+  }
+
+  /**
+   * Record the user's trust decision (UI action through `workspace.trust`, never a tool call, §25.6.4). Light mode requires
+   * `trusted`. Audited as `workspace.trust_changed`.
+   */
+  setWorkspaceTrust(path: string, p: { trusted: boolean; lightMode?: boolean }): WorkspaceTrust | null {
+    if (typeof p.trusted !== 'boolean') throw new Error('trusted must be a boolean');
+    if (p.lightMode && !p.trusted) throw new Error('lightMode requires trusted: true (local-os light mode is only for a repo the user marks trusted)');
+    const ws = this.workspace(path);
+    const trust: WorkspaceTrust | null = p.trusted ? { trusted: true, lightMode: !!p.lightMode, at: new Date().toISOString(), by: 'user' } : null;
+    this.o.db.run('UPDATE workspace SET trust_json = ? WHERE id = ?', trust ? json(trust) : null, ws.id);
+    this.o.bus.publish({ topic: 'workspace.trust_changed', ws: ws.id, data: { workspacePath: ws.path, trusted: p.trusted, lightMode: !!trust?.lightMode, by: 'user' }, persist: 'audit' });
+    return trust;
+  }
+
+  /** Backend and isolation agent processes in this workspace would get, or why they are refused. */
+  sandboxStatusFor(path: string): ReturnType<typeof sandboxStatus> & { trust: WorkspaceTrust | null } {
+    const trust = this.workspaceTrust(path);
+    return { ...sandboxStatus({ lightMode: !!trust?.lightMode }), trust };
+  }
+
+  /**
+   * The only way the Engine creates sandboxes for a workspace (tasks, terminals, dev servers, reverify): applies the
+   * user's light-mode opt-in, fails closed with `SandboxUnavailableError`, and audits every light-mode sandbox
+   * (`sandbox.light_mode`, SEC-1).
+   */
+  sandboxFor(root: string, prefix: string, labels: Record<string, string> = {}, extra: { roPaths?: string[] } = {}): LocalSandbox {
+    const trust = this.workspaceTrust(root);
+    const sandbox = new LocalSandbox(prefixedId(prefix), root, { lightMode: !!trust?.lightMode, egress: this.o.egress, roPaths: extra.roPaths, trace: (name, attrs, fn) => this.o.tracer.withSpan(name, attrs, fn) });
+    if (sandbox.isolation === 'light') {
+      const ws = this.workspace(root);
+      const info = sandbox.info();
+      this.o.bus.publish({ topic: 'sandbox.light_mode', ws: ws.id, task: labels.task, data: { sandbox: sandbox.id, workspacePath: ws.path, tool: info.localOs?.tool, purpose: labels.purpose ?? prefix, trustedAt: trust?.at }, persist: 'audit' });
+      this.o.logger?.warn('sandbox.light_mode', { sandbox: sandbox.id, workspace: ws.path });
+    }
+    return sandbox;
   }
 
   workspaces(): Array<{ id: string; path: string; createdAt: string }> {
@@ -702,8 +792,17 @@ export class TaskRuntime {
     return art;
   }
 
-  private async modelTurn(t: TaskRow, messages: Message[], root: string, signal: AbortSignal, context = ''): Promise<void> {
+  /** One `agent.step` span per model step (§26.1); the tool calls it requests hang under it. */
+  private modelTurn(t: TaskRow, messages: Message[], root: string, signal: AbortSignal, context = ''): Promise<void> {
+    return this.o.tracer.withSpan('agent.step', { 'task.id': t.id, 'step.index': t.step_count, 'step.kind': 'model', agent: 'primary', policy_profile: t.policy_profile }, async (span) => {
+      this.stepSpans.set(t.id, span.context());
+      await this.modelTurnBody(t, messages, root, signal, context, span);
+    });
+  }
+
+  private async modelTurnBody(t: TaskRow, messages: Message[], root: string, signal: AbortSignal, context: string, span: Span): Promise<void> {
     const stepId = prefixedId('step');
+    span.setAttribute('step.id', stepId);
     const now = new Date().toISOString();
     this.o.db.run(`INSERT INTO steps (id, task, agent, idx, kind, status, started_at) VALUES (?, ?, 'primary', ?, 'model', 'running', ?)`, stepId, t.id, t.step_count, now);
     this.publish(t.id, t.ws, 'task.step', { stepId, index: t.step_count, kind: 'model' });
@@ -716,7 +815,10 @@ export class TaskRuntime {
     const call = () => this.callRole(t, plan ? 'planner' : 'coder', plan ? 'plan' : 'edit', {
       ws: t.ws, task: t.id, agent: 'primary', step: stepId, signal,
       request: { system, messages: view, tools, toolChoice: 'auto', maxOutputTokens: 8192 },
-      onEvent: (e) => { if (e.type === 'text_delta') this.publish(t.id, t.ws, 'model.delta', { stepId, text: e.text }, 'none'); },
+      onEvent: (e) => {
+        if (e.type === 'text_delta') this.publish(t.id, t.ws, 'model.delta', { stepId, text: e.text }, 'none');
+        else if (e.type === 'notice') this.publish(t.id, t.ws, 'capability.degraded', { stepId, feature: e.feature, detail: e.detail }, 'log');
+      },
     });
     let result: Awaited<ReturnType<typeof call>>;
     for (let attempt = 0; ; attempt++) {
@@ -739,7 +841,13 @@ export class TaskRuntime {
       this.o.db.run('UPDATE tasks SET step_count = step_count + 1, updated_at = ? WHERE id = ?', new Date().toISOString(), t.id);
     });
     const text = result.message.parts.filter((p) => p.type === 'text').map((p) => (p as { text: string }).text).join('');
-    this.publish(t.id, t.ws, 'agent.message', { stepId, text, toolCalls: result.message.parts.filter((p) => p.type === 'tool_call').map((p) => (p as { name: string }).name), costUsd: result.costUsd });
+    const requested = result.message.parts.filter((p) => p.type === 'tool_call').map((p) => (p as { name: string }).name);
+    span.setAttributes({
+      'usage.input_tokens': result.usage.inputTokens, 'usage.cached_input_tokens': result.usage.cachedInputTokens, 'usage.output_tokens': result.usage.outputTokens, 'usage.reasoning_tokens': result.usage.reasoningTokens,
+      'usage.cost_usd': result.costUsd ?? undefined, latency_ms: Math.round(result.latencyMs * 10) / 10, model_attempts: result.attempts, 'model.ref': refString(result.ref), role: plan ? 'planner' : 'coder',
+      'ledger.entry': result.ledgerEntryId, 'tool_calls.requested': requested.length, finish_reason: result.finishReason, outcome: 'ok',
+    });
+    this.publish(t.id, t.ws, 'agent.message', { stepId, text, toolCalls: requested, costUsd: result.costUsd });
   }
 
   /**
@@ -775,6 +883,16 @@ export class TaskRuntime {
     return `explore subagent stopped after ${EXPLORE_MAX_STEPS} steps without a summary`;
   }
 
+  /** Content-addressed blob refs for a tool call's input and output, redacted first, so traces point at I/O without embedding it (NFR-10). */
+  private toolIoRefs(task: string, args: unknown, content: string): Record<string, string> {
+    if (!this.o.blobs) return {};
+    const owner = { kind: 'tool_io', id: task };
+    return {
+      'tool.input_ref': this.o.blobs.put(globalRedactor.redact(json(args)), owner),
+      'tool.output_ref': this.o.blobs.put(globalRedactor.redact(content), owner),
+    };
+  }
+
   /** Browser tools only ever navigate to this workspace's own dev server (never arbitrary URLs). */
   private previewBrowserFor(root: string): ToolContext['previewBrowser'] {
     const { browser, devServers } = this.o;
@@ -786,14 +904,28 @@ export class TaskRuntime {
       if (target.origin !== new URL(info.url).origin) throw new Error(`path must stay on the dev server (${info.url})`);
       return target.href;
     };
-    return { screenshot: (path) => browser.screenshot(urlFor(path)), console: (path) => browser.console(urlFor(path)), snapshot: (path) => browser.snapshot(urlFor(path)) };
+    return { screenshot: (path) => browser.screenshot(urlFor(path)), console: (path) => browser.console(urlFor(path)), snapshot: (path) => this.o.tracer.withSpan('snapshot.build', { path: path ?? '/' }, async (span) => {
+        const snap = await browser.snapshot(urlFor(path));
+        span.setAttributes({ 'snapshot.seq': snap.seq, url: snap.page.url, new_console_errors: snap.console.newErrors.length, failed_requests: snap.network.failed.length, outcome: 'ok' });
+        return snap;
+      }) };
   }
 
   private async runTools(t: TaskRow, calls: Array<Extract<Part, { type: 'tool_call' }>>, sandbox: LocalSandbox, signal: AbortSignal, index?: WorkspaceIndex): Promise<void> {
     const preapprove = parseJson<string[]>(t.preapprove_json, []);
+    const origin = this.o.db.get<{ step_id: string; ledger_entry: string; cost_usd: number | null }>(
+      `SELECT s.id AS step_id, s.ledger_entry, l.cost_usd FROM messages m JOIN steps s ON s.id = m.step LEFT JOIN ledger_entries l ON l.id = s.ledger_entry WHERE m.task = ? AND m.role = 'assistant' ORDER BY m.id DESC LIMIT 1`, t.id,
+    );
     let tainted = this.transcript(t.id).some((m) => m.parts.some((p) => p.type === 'tool_result' && p.provenance?.taint));
     for (const call of calls) {
       if (signal.aborted) return;
+      const existing = this.o.db.get<{ id: string; checkpoint: string }>('SELECT id, checkpoint FROM tool_calls WHERE task = ? AND call_id = ? AND status = ?', t.id, call.id, 'running');
+      const toolId = existing?.id ?? prefixedId('tc');
+      const checkpointId = existing?.checkpoint ?? prefixedId('ckpt');
+      if (!existing) this.o.db.transaction(() => {
+        this.o.db.run('INSERT INTO checkpoints (id, task, step, files_json, at) VALUES (?, ?, ?, ?, ?)', checkpointId, t.id, origin?.step_id ?? null, '[]', new Date().toISOString());
+        this.o.db.run('INSERT INTO tool_calls (id, task, step, call_id, tool, args_json, status, checkpoint, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', toolId, t.id, origin?.step_id ?? 'tools', call.id, call.name, json(call.args), 'running', checkpointId, new Date().toISOString());
+      });
       const decision = evaluate({ tool: call.name, args: call.args, profile: t.policy_profile, preapprove, sandboxHasNetwork: sandbox.info().network, tainted });
       let allowed = decision.verdict === 'allow';
       if (decision.verdict === 'ask') allowed = await this.ask(t, call, decision.actionClass, signal);
@@ -807,44 +939,66 @@ export class TaskRuntime {
           if (!allowed) denyReason = dep.reason;
         }
       }
+      const intent = auditIntentOf(call.name, call.args);
+      if (intent) {
+        this.publish(t.id, t.ws, intent.category === 'git_push' ? 'git.push' : 'deploy.requested', {
+          target: intent.target, decision: allowed ? 'allow' : 'deny', reason: allowed ? decision.reason : denyReason, actionClass: decision.actionClass, callId: call.id,
+          command: globalRedactor.redact(String((call.args as { command?: unknown }).command ?? '')).slice(0, 300),
+        }, 'audit');
+      }
       const started = performance.now();
       const script = this.replays.get(t.id);
       const replayed = script?.next(call, allowed ? 'allowed' : 'denied');
-      const hooks = replayed || !allowed ? [] : this.hooksFor(sandbox.root);
-      const pre = await runHooks(sandbox, hooks, 'pre_tool', { tool: call.name, args: call.args }, signal);
-      const blocked = pre.find((r) => r.exitCode !== 0);
-      if (pre.length) this.publish(t.id, t.ws, 'hook.ran', { event: 'pre_tool', tool: call.name, runs: pre.map((r) => ({ run: r.run, exitCode: r.exitCode })) }, 'audit');
-      let out: ToolOutput = blocked
-        ? { content: `blocked by pre_tool hook \`${blocked.run}\` (exit ${blocked.exitCode})\n${formatHookRuns('pre_tool', pre)}`, isError: true, summary: `hook blocked ${call.name}`, provenance: { source: 'repo', trust: 'untrusted', taint: true, origin: 'hook:pre_tool' } }
-        : replayed && allowed
-        ? replayed
-        : allowed
-        ? await this.o.tracer.withSpan('tool.call', { tool: call.name, 'task.id': t.id, action_class: decision.actionClass }, () =>
-            this.o.tools.run(call.name, call.args, {
+      // One `tool.call` span per call, denied ones included (§26.1), under the agent step that requested it.
+      const out: ToolOutput = await this.o.tracer.withSpan('tool.call', {
+        tool: call.name, 'task.id': t.id, call_id: call.id, 'checkpoint.id': checkpointId, action_class: decision.actionClass, 'policy.decision': allowed ? 'allow' : 'deny', 'policy.reason': decision.reason.slice(0, 200), replayed: Boolean(replayed),
+        'model.cost_known': origin?.cost_usd !== null && origin?.cost_usd !== undefined,
+        'model.cost_basis': 'shared originating model response; non-additive attribution, not an additional tool execution charge',
+      }, async (span) => {
+        span.setAttributes({ 'model.step_id': origin?.step_id, 'model.ledger.entry': origin?.ledger_entry, 'model.cost_usd': origin?.cost_usd ?? undefined });
+        const hooks = replayed || !allowed ? [] : this.hooksFor(sandbox.root);
+        const pre = await runHooks(sandbox, hooks, 'pre_tool', { tool: call.name, args: call.args }, signal);
+        const blocked = pre.find((r) => r.exitCode !== 0);
+        if (pre.length) this.publish(t.id, t.ws, 'hook.ran', { event: 'pre_tool', tool: call.name, runs: pre.map((r) => ({ run: r.run, exitCode: r.exitCode })) }, 'audit');
+        let res: ToolOutput = blocked
+          ? { content: `blocked by pre_tool hook \`${blocked.run}\` (exit ${blocked.exitCode})\n${formatHookRuns('pre_tool', pre)}`, isError: true, summary: `hook blocked ${call.name}`, provenance: { source: 'repo', trust: 'untrusted', taint: true, origin: 'hook:pre_tool' } }
+          : replayed && allowed
+          ? replayed
+          : allowed
+          ? await this.o.tools.run(call.name, call.args, {
               sandbox, signal, index,
+              trace: (name, attrs, fn) => this.o.tracer.withSpan(name, attrs, fn),
               startDevServer: this.o.devServers ? () => this.o.devServers!.start(sandbox.root) : undefined,
               previewBrowser: this.previewBrowserFor(sandbox.root),
               explore: (question) => this.explore(t, question, sandbox, signal, index),
-              beforeWrite: (abs, prev) => this.checkpoint(t, sandbox, abs, prev),
+              beforeWrite: (abs, prev) => this.checkpoint(t, sandbox, abs, prev, checkpointId),
               submitArtifact: t.policy_profile === 'plan' ? (kind, title, data) => {
                 const artId = this.saveArtifact(t.id, kind, title, data);
                 this.publish(t.id, t.ws, 'artifact.created', { artifactId: artId, kind, title });
                 return artId;
               } : undefined,
-            }))
-        : { content: `denied by policy: ${denyReason}`, isError: true, summary: `denied ${call.name}` };
-      if (!blocked && hooks.length && !signal.aborted) {
-        const post = await runHooks(sandbox, hooks, 'post_tool', { tool: call.name, args: call.args }, signal);
-        if (post.length) {
-          this.publish(t.id, t.ws, 'hook.ran', { event: 'post_tool', tool: call.name, runs: post.map((r) => ({ run: r.run, exitCode: r.exitCode })) }, 'audit');
-          out = { ...out, content: `${out.content}\n${formatHookRuns('post_tool', post)}`, provenance: { source: out.provenance?.source ?? 'builtin', trust: 'untrusted', taint: true, origin: 'hook:post_tool' } };
+            })
+          : { content: `denied by policy: ${denyReason}`, isError: true, summary: `denied ${call.name}` };
+        if (!blocked && hooks.length && !signal.aborted) {
+          const post = await runHooks(sandbox, hooks, 'post_tool', { tool: call.name, args: call.args }, signal);
+          if (post.length) {
+            this.publish(t.id, t.ws, 'hook.ran', { event: 'post_tool', tool: call.name, runs: post.map((r) => ({ run: r.run, exitCode: r.exitCode })) }, 'audit');
+            res = { ...res, content: `${res.content}\n${formatHookRuns('post_tool', post)}`, provenance: { source: res.provenance?.source ?? 'builtin', trust: 'untrusted', taint: true, origin: 'hook:post_tool' } };
+          }
         }
-      }
-      if (signal.aborted) return;
+        span.setAttributes({
+          ...this.toolIoRefs(t.id, call.args, res.content),
+          outcome: allowed ? (res.isError ? 'error' : 'ok') : 'denied', is_error: Boolean(res.isError), latency_ms: Math.round((performance.now() - started) * 10) / 10,
+          'tool.result_tokens': Math.ceil(res.content.length / 4), 'tool.data_ref': res.dataRef,
+        });
+        if (res.isError) span.setStatus(StatusCode.ERROR, (res.summary ?? res.content).slice(0, 200));
+        return res;
+      }, undefined, this.stepSpans.get(t.id));
       const durationMs = Math.round(performance.now() - started);
+      this.o.db.run('UPDATE tool_calls SET status = ?, summary = ?, result_tokens = ?, duration_ms = ? WHERE id = ?',
+        signal.aborted ? 'cancelled' : allowed ? (out.isError ? 'error' : 'ok') : 'denied', out.summary ?? null, Math.ceil(out.content.length / 4), durationMs, toolId);
+      if (signal.aborted) return;
       this.o.db.transaction(() => {
-        this.o.db.run('INSERT INTO tool_calls (id, task, step, call_id, tool, args_json, status, summary, result_tokens, duration_ms, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-          prefixedId('tc'), t.id, 'tools', call.id, call.name, json(call.args), allowed ? (out.isError ? 'error' : 'ok') : 'denied', out.summary ?? null, Math.ceil(out.content.length / 4), durationMs, new Date().toISOString());
         this.addMessage(t.id, null, { role: 'tool', parts: [{ type: 'tool_result', callId: call.id, name: call.name, content: out.content, isError: out.isError, provenance: out.provenance ?? { source: 'builtin', trust: 'trusted', taint: false }, ...(out.dataRef ? { dataRef: out.dataRef } : {}) }] });
         if (out.provenance?.taint) tainted = true;
       });
@@ -870,9 +1024,14 @@ export class TaskRuntime {
     this.publish(id, t.ws, 'hook.ran', { event: 'task_done', status: t.status, runs: runs.map((r) => ({ run: r.run, exitCode: r.exitCode })) }, 'audit');
   }
 
-  private checkpoint(t: TaskRow, sandbox: LocalSandbox, abs: string, previous: string | null): void {
+  private checkpoint(t: TaskRow, sandbox: LocalSandbox, abs: string, previous: string | null, checkpointId: string): void {
+    const row = this.o.db.get<{ files_json: string }>('SELECT files_json FROM checkpoints WHERE id = ?', checkpointId)!;
+    const files = parseJson<Array<{ path: string; before: string | null }>>(row.files_json, []);
+    const path = sandbox.relative(abs);
+    if (files.some((file) => file.path === path)) return;
     const ref = previous === null ? null : this.o.blobs ? this.o.blobs.put(previous, { kind: 'checkpoint', id: t.id }) : previous;
-    this.o.db.run('INSERT INTO checkpoints (id, task, step, files_json, at) VALUES (?, ?, ?, ?, ?)', prefixedId('ckpt'), t.id, null, json([{ path: sandbox.relative(abs), before: ref }]), new Date().toISOString());
+    files.push({ path, before: ref });
+    this.o.db.run('UPDATE checkpoints SET files_json = ? WHERE id = ?', json(files), checkpointId);
   }
 
   private ask(t: TaskRow, call: Extract<Part, { type: 'tool_call' }>, actionClass: string, signal: AbortSignal): Promise<boolean> {
@@ -952,20 +1111,43 @@ export class TaskRuntime {
       return;
     }
     const data: BaselineArtifact = { gates: [] };
-    for (const gate of cfg.gates) {
-      const { command } = expandGateCommand(gate, null);
-      const r = await sandbox.exec(command, { timeoutMs: gate.timeoutMs, signal });
-      if (signal.aborted) return;
-      const passed = r.exitCode === 0;
-      const diags = passed ? [] : parseDiagnostics(gate.parser ?? command, `${r.stdout}\n${r.stderr}`, { root: sandbox.root });
-      data.gates.push({ name: gate.name, command, passed, keys: [...new Set(diags.map(diagnosticKey))] });
-    }
+    const interrupted = await this.o.tracer.withSpan('agent.step', { 'task.id': t.id, 'step.kind': 'baseline', agent: 'primary' }, async () => {
+      for (const gate of cfg.gates) {
+        const { command } = expandGateCommand(gate, null);
+        const r = await this.gateRun(t, gate, command, 'baseline', 1, sandbox, signal);
+        if (signal.aborted) return true;
+        const passed = r.exitCode === 0;
+        const diags = passed ? [] : parseDiagnostics(gate.parser ?? command, `${r.stdout}\n${r.stderr}`, { root: sandbox.root });
+        data.gates.push({ name: gate.name, command, passed, keys: [...new Set(diags.map(diagnosticKey))] });
+      }
+      return false;
+    });
+    if (interrupted) return;
     this.saveArtifact(t.id, 'baseline', 'Baseline gate run', data);
     this.publish(t.id, t.ws, 'verify.baseline', { gates: data.gates.map((g) => ({ name: g.name, passed: g.passed, diagnostics: g.keys.length })) }, 'audit');
   }
 
+  /** One `gate.run` span per gate execution (§26.1); the command's own `sandbox.exec` span nests under it. */
+  private gateRun(t: TaskRow, gate: Gate, command: string, phase: 'baseline' | 'verify', attempt: number, sandbox: LocalSandbox, signal: AbortSignal) {
+    return this.o.tracer.withSpan('gate.run', { 'task.id': t.id, gate: gate.name, 'gate.kind': gate.kind, required: gate.required, phase, attempt, command: globalRedactor.redact(command).slice(0, 200) }, async (span) => {
+      const r = await sandbox.exec(command, { timeoutMs: gate.timeoutMs, signal });
+      span.setAttributes({ exit_code: r.exitCode, passed: r.exitCode === 0, timed_out: r.timedOut, duration_ms: r.durationMs, outcome: r.timedOut ? 'timeout' : r.exitCode === 0 ? 'ok' : 'failed' });
+      return r;
+    });
+  }
+
+  /** Verification runs as its own `agent.step` (kind `verify`) so its gates sit in the span tree (§26.1). */
+  private verify(t: TaskRow, last: Message, sandbox: LocalSandbox, signal: AbortSignal, index?: WorkspaceIndex): Promise<boolean> {
+    if (t.policy_profile === 'plan') return this.verifyBody(t, last, sandbox, signal, index);
+    return this.o.tracer.withSpan('agent.step', { 'task.id': t.id, 'step.kind': 'verify', agent: 'primary', attempt: t.verify_attempts + 1 }, async (span) => {
+      const terminal = await this.verifyBody(t, last, sandbox, signal, index);
+      span.setAttribute('outcome', terminal ? this.row(t.id).status : 'retry');
+      return terminal;
+    });
+  }
+
   /** Verification gates (F-AGT-4, §9.6). Returns true when the task reached a terminal state. */
-  private async verify(t: TaskRow, last: Message, sandbox: LocalSandbox, signal: AbortSignal, index?: WorkspaceIndex): Promise<boolean> {
+  private async verifyBody(t: TaskRow, last: Message, sandbox: LocalSandbox, signal: AbortSignal, index?: WorkspaceIndex): Promise<boolean> {
     const finalText = last.parts.filter((p) => p.type === 'text').map((p) => (p as { text: string }).text).join('').trim();
     if (t.policy_profile === 'plan') {
       const plan = this.artifacts(t.id, 'plan').at(-1);
@@ -999,7 +1181,7 @@ export class TaskRuntime {
     const selection = gates.some((g) => g.command.includes(TESTS_PLACEHOLDER)) ? this.selectTests(t.id, sandbox.root, index) : null;
     for (const gate of gates) {
       const { command, selectedTests } = expandGateCommand(gate, selection?.tests ?? null);
-      const r = await sandbox.exec(command, { timeoutMs: gate.timeoutMs, signal });
+      const r = await this.gateRun(t, gate, command, 'verify', attempt, sandbox, signal);
       if (signal.aborted) return true;
       const output = `${r.stdout}\n${r.stderr}${r.timedOut ? `\n[helix] gate '${gate.name}' timed out after ${gate.timeoutMs} ms` : ''}`;
       const passed = r.exitCode === 0;

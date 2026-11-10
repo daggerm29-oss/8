@@ -4,6 +4,10 @@
 > AI sessions: read `AGENTS.md` first. This file is **replaced, not appended**; keep it under 120 lines.
 > Task details and Accept lines: `docs/roadmap.md`. Decisions and known issues: `docs/decisions.md`. Old session log: `docs/history/`.
 
+> **RESUME NOTE: R0.8 is intentionally POSTPONED at the user's request (2026-11-10).** Resume from R0.8 when the user says they are ready, not before. Do not start M1 and do not declare M0 complete. R0.8 stays `[ ]`, its acceptance is unchanged, and it is not waived.
+> Exact Accept [A-host] (docs/roadmap.md R0.8): `gh workflow run ci.yml --ref <branch> && gh run watch --exit-status` → `ci-linux` green on the branch; a seeded failing test on a scratch branch turns it red. Branch: `helix/session-2026-11-10-local-container`.
+> Outstanding blockers: (1) manual dispatch + successful watch not yet done; (2) v0 GitHub App lacks Actions: Read and write (only Vercel can add it; the owner then approves; alternatively the owner runs the command); (3) nightly `bench-ref` needs a registered self-hosted `helix-reference` runner; (4) GitHub Actions secret `GEMINI_API` must be configured and verified (the Vercel env var does not apply to Actions); (5) later-milestone harnesses `bench/run.mjs`, `evals/hts-lite.ts`, `evals/browser.ts`, `evals/router-cache.ts` are not yet available. Nightly schedules also need the workflows on `main`.
+
 ## Dashboard
 
 <!-- progress:start -->
@@ -11,14 +15,14 @@
 
 > These are **checklist completion** numbers (ticked items with recorded evidence ÷ all items). They are not a measure of product quality or release readiness; human launch gates in `docs/roadmap.md` are not counted.
 
-**Overall checklist completion: 30%** (59/194 roadmap items)  
+**Overall checklist completion: 36%** (70/196 roadmap items)  
 **Current milestone:** M0 Foundations  
-**Next task:** R0.1 `local-container` sandbox backend (F-SBX-1, SEC-2) [§16.1, §16.2]
+**Next task:** R0.8 CI pipeline (plan §15.1, §15.7) [§35.6]
 
 | Milestone | Progress | Items | Status |
 | --- | --- | --- | --- |
-| M0 Foundations | █████░░░░░ 50% | 11/22 | In progress |
-| M1 MVP, grounded single agent | ███░░░░░░░ 33% | 26/78 | Partly built early |
+| M0 Foundations | ██████████ 96% | 22/23 | In progress |
+| M1 MVP, grounded single agent | ███░░░░░░░ 33% | 26/79 | Partly built early |
 | M2 Precision and efficiency | █████░░░░░ 45% | 22/49 | Partly built early |
 | M3 Parallel and background | ░░░░░░░░░░ 0% | 0/20 | Not started |
 | M4 Team and ecosystem | ░░░░░░░░░░ 0% | 0/16 | Not started |
@@ -28,9 +32,11 @@
 
 ## Current task notes (overwrite when the task changes)
 
-- Next: M0 R0.1 `local-container` sandbox backend (F-SBX-1, SEC-2) [§16.1, §16.2]. This matches the dashboard above. Accept: `node --test test/sandbox-conformance.test.ts` with `HELIX_SANDBOX_BACKENDS=local-container,local-unshare` (see `docs/roadmap.md`).
-- Risk for R0.1: the v0 VM has no Docker or Podman (see Environment notes). If neither can run, record a `Blocked:` line and do not tick the task.
-- Parked: draft PR #19 (`helix/session-2026-11-09-m3-orchestration`) holds M3 "General subagents + task DAG scheduler (F-ORC-2)" and "Write leases + worktrees". Do not continue it until M3 is the current milestone (AGENTS.md §3). Then reuse it, and first fix its known review issues: shared-mode write-lease bypass and worktree lease leak.
+- R0.3 DONE / F-MDL-1 Done: explicit user-approved OpenAI M0 live-smoke exemption in plan §0.3. Both adapters 23/23 A-local; package/degradation gateway 11/11; Gemini live listing + two authenticated configuration/access responses 2/2 (28 models), fresh artifact fr-1-gemini-controls-2026-11-10T14-50-33-405Z.json. No OpenAI key, OAuth or billing claim.
+- G0.2 DONE: exact strict M0 scope command exits 0, all 154 IDs retained; scope guardrails 14/14, tsc clean. F-AGT-1 stays Partial across approved original M0/M1 split; R1.16 and new R1.47 retain M1 editable-plan/nested-Explore coverage (documentation only). Previous failed scope/exit artifacts retained unchanged.
+- R0.8 POSTPONED by the user (see resume note above); remains OPEN (owner action needed). Dispatch 403 = v0 GitHub App token lacks `actions=write` (header X-Accepted-Github-Permissions). Fix: grant the app "Actions: Read and write", or the owner runs the Accept command. Nightly: no workflows on `main`, 0 `helix-reference` runners, GEMINI_API Actions secret unverified. Not waived.
+- Container runtime RESTORED: VM had been reset (no Podman, crun, bwrap or storage left, so nothing deleted). Reinstalled them; probe picks crun with masked /proc and PTY ok. Focused sandbox/conformance/cancel/fail-closed/egress tests 51/51, 0 skipped, all three backends. Fresh full engine 166/166, 0 skipped.
+- ci-linux green at 2b55cfe (push 42840845440, PR 42840864785) and at 61b7223 (push 42845900460, PR 42846494225). Evidence: evals/results/m0-container-recovery-r0-8-diagnosis-2026-11-10.json. No code, CI or isolation change; no M1, no merge, PR #19 untouched. Safe to merge: no while R0.8 is open.
 
 ## Ideas parking lot (one line each, max 15 — do not implement)
 
@@ -57,10 +63,14 @@
 
 ## Environment notes
 
-- No Docker; `unshare` works; no cgroups; no /proc in sandbox (see `docs/decisions.md`).
+- No Docker. Rootless Podman is installable: `sudo dnf install -y podman crun bubblewrap` (none persist across VM resets; reinstall before sandbox tests; bwrap is the `local-os` backend). Then `pnpm install --frozen-lockfile` (snapshot node_modules can lag the lockfile). runc cannot mask /proc here, so the probe picks crun with masked /proc.
+- Podman "boot ID differs" / "cannot re-exec ... user namespace": state left over from a previous boot. Check `podman ps -a` and `ls ~/.local/share/containers` first, and never delete storage blindly. A fully reset VM has no state, and a fresh install works.
+- `unshare` works; no cgroups; /proc cannot be mounted in a user namespace (locked /proc overmounts); runsc download 404s.
 
 ## Last session (overwrite each session, max 5 lines)
 
-- 2026-11-08 (PR #17): M2 tree-sitter symbols (`@vscode/tree-sitter-wasm`), local hash embeddings + `vector` retriever, domain extractors + `domain_map`, CDP telemetry + `preview_snapshot`.
-- Migrations v5 (embeddings) and v6 (domain tables) clear index rows, so the first index after upgrade fully re-extracts.
-- Full engine suite 91/91 at session end. Next: see Current task notes.
+- 2026-11-10 R0.8/container follow-up on PR #22 (no code change): VM-reset container runtime restored (podman 5.6.1 + crun 1.26 + bwrap 0.12.0, fresh storage, nothing deleted). Probe exit 0; focused conformance 51/51, 0 skipped, all three backends; tsc exit 0 after `pnpm install --frozen-lockfile`.
+- Full engine suite ONCE: `HELIX_SANDBOX_BACKENDS=local-container,local-unshare,local-os node --disable-warning=ExperimentalWarning --test --test-concurrency=1 "test/**/*.test.ts"` → 166/166, 0 failed, 0 skipped (133206 ms), exit 0. Earlier 157/165 failure artifact is retained unchanged.
+- CI at current commit 2b55cfe is green: push 42840845440 and PR 42840864785, ci-linux with every step passing.
+- R0.8 dispatch 403 diagnosed: the v0 GitHub App token lacks `actions=write`. Nightly runs are blocked by no workflows on `main`, 0 `helix-reference` runners and an unverified GEMINI_API Actions secret. Owner action needed; nothing waived.
+- Safe to merge: no while R0.8 is open. M0 is otherwise evidenced; next task R0.8 (owner authorization), not M1.

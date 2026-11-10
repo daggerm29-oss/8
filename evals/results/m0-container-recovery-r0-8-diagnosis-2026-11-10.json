@@ -1,0 +1,83 @@
+{
+  "verifiedAt": "2026-11-10",
+  "repository": "daggerm29-oss/8",
+  "pr": 22,
+  "branch": "helix/session-2026-11-10-local-container",
+  "testedCodeSha": "2b55cfe1a029ff858ffe1ec791fc06999979a2a0",
+  "codeChangedThisSession": false,
+  "containerRuntimeRecovery": {
+    "priorBlocker": "evals/results/m0-approval-session-verification-2026-11-10.json: Podman stale cached boot ID; isolated-storage retry failed at user-namespace re-exec (retained unchanged)",
+    "findingOnResume": "Workspace VM was reset (uptime 3 min). podman, crun and bubblewrap binaries absent; no ~/.local/share/containers, no ~/.config/containers, no /run/user/1000, no /tmp podman/storage-run remnants. There was no surviving container state or user data to preserve or delete.",
+    "actionsTaken": [
+      "sudo dnf install -y podman crun  -> podman 5.6.1, crun 1.26",
+      "sudo dnf install -y bubblewrap  -> bubblewrap 0.12.0 (local-os light backend; also absent after reset, previously undocumented in environment notes)",
+      "pnpm install --frozen-lockfile  -> +1 package (yaml for apps/cli; local node_modules was stale vs lockfile, tsc failed TS2307 before this)"
+    ],
+    "storageDeleted": false,
+    "isolationChanged": false,
+    "fallbackUsed": false,
+    "podmanInfo": "rootless, graphroot=/home/vercel-sandbox/.local/share/containers/storage, runroot=/run/user/1000/containers (per-boot /run), driver=overlay; subuid/subgid 100000:65536",
+    "probe": {
+      "command": "HELIX_SANDBOX_BACKENDS=local-container,local-unshare,local-os node --disable-warning=ExperimentalWarning test/support/container-probe.ts",
+      "result": "exit 0; runc rejected (cannot mount /proc), crun proc=proc rejected, crun proc=masked ok; selected podman+crun, masked /proc, seccomp=true; LocalSandbox.pty() exit=0 (pty-42)"
+    },
+    "focusedConformance": {
+      "command": "cd packages/engine && HELIX_SANDBOX_BACKENDS=local-container,local-unshare,local-os node --disable-warning=ExperimentalWarning --test --test-concurrency=1 test/sandbox.test.ts test/sandbox-conformance.test.ts test/cancel.test.ts test/fail-closed.test.ts test/egress.test.ts",
+      "tests": 51, "passed": 51, "failed": 0, "skipped": 0, "durationMs": 30539,
+      "backends": {
+        "local-container": "podman runtime=crun gvisor=false proc=masked seccomp=true image=host-toolchain-rootfs",
+        "local-unshare": "unshare gvisor=false",
+        "local-os": "bwrap proc=false isolation=light"
+      },
+      "cancelP95Ms": { "local-container": 87, "local-unshare": 4 },
+      "note": "A first focused run before bubblewrap was installed: 28/36, the 8 local-os cases failed 'backend local-os is not available on this host'. local-container cases all passed in that run. Not counted as a pass."
+    },
+    "typecheck": { "command": "npx tsc -p tsconfig.helix.json", "exitCode": 0, "note": "after pnpm install --frozen-lockfile; before it, exit 2 (TS2307 yaml)" }
+  },
+  "fullEngineSuite": {
+    "command": "cd packages/engine && HELIX_SANDBOX_BACKENDS=local-container,local-unshare,local-os node --disable-warning=ExperimentalWarning --test --test-concurrency=1 \"test/**/*.test.ts\"",
+    "tests": 166, "passed": 166, "failed": 0, "cancelled": 0, "skipped": 0, "todo": 0, "durationMs": 133206, "exitCode": 0,
+    "conformancePerBackend": { "local-container": "8/8", "local-unshare": "8/8", "local-os": "8/8" },
+    "cancelP95Ms": { "local-container": 87, "local-unshare": 5 },
+    "leftoverContainers": 0,
+    "note": "Completed run executed once at session end. One earlier start was cancelled before completion because node_modules was stale (tsc TS2307); it produced no result and is not counted."
+  },
+  "currentCommitCi": {
+    "sha": "2b55cfe1a029ff858ffe1ec791fc06999979a2a0",
+    "push": { "run": 42840845440, "url": "https://github.com/daggerm29-oss/8/actions/runs/42840845440", "job": "ci-linux", "conclusion": "success" },
+    "pullRequest": { "run": 42840864785, "url": "https://github.com/daggerm29-oss/8/actions/runs/42840864785", "job": "ci-linux", "conclusion": "success",
+      "allStepsSuccess": ["TypeScript", "local-container runtime capability probe", "Protocol A-local suites 8/8", "Provider conformance 23 pass/7 live-only skip", "Agent exit and restart regressions", "Engine A-local suites and all backend conformance", "CLI A-local suites 11/11", "Desktop E2E headless 1/1 (binary required)", "Red-team regression suites 55/55", "Scope invariants and mutation tests 14/14"] },
+    "benchRefOnPr": "skipped (no 'perf' label; job requires self-hosted runner)",
+    "note": "This session only adds documentation/evidence; CI on the new docs commit is checked separately after push."
+  },
+  "r08DispatchDiagnosis": {
+    "command": "gh workflow run ci.yml --repo daggerm29-oss/8 --ref helix/session-2026-11-10-local-container",
+    "result": "HTTP 403: Resource not accessible by integration",
+    "rawEndpoint": "POST /repos/daggerm29-oss/8/actions/workflows/413190183/dispatches -> 403, header X-Accepted-Github-Permissions: actions=write",
+    "tokenEvidence": "X-OAuth-Scopes empty; 'by integration' message; GET /installation/repositories also 403 -> credential is a GitHub App (v0 integration) token, not a user PAT. Re-run endpoint POST /actions/runs/42832595714/rerun is also 403 with actions=write.",
+    "notTheCause": [
+      "ci.yml declares workflow_dispatch (workflow id 413190183, state active)",
+      "repo Actions enabled, allowed_actions=all",
+      "account permission on repo: admin",
+      "default GITHUB_TOKEN workflow permission (read) does not govern who may dispatch"
+    ],
+    "requiredAuthorization": "The GitHub App used by this v0 workspace needs repository permission 'Actions: Read and write' (actions=write), granted by the repo owner via the app installation settings. Alternative that needs no permission change: the owner runs the exact Accept command or the Actions tab 'Run workflow' on the branch.",
+    "ciRequirementsChanged": false
+  },
+  "nightlyJobsDiagnosis": {
+    "defaultBranchHasWorkflows": false,
+    "evidence": "GET /repos/daggerm29-oss/8/contents/.github/workflows?ref=main -> 404",
+    "consequence": "schedule triggers only fire from the default branch; neither bench-ref nor evals-live can run nightly until the workflows reach main. evals-live (schedule + workflow_dispatch only) has never been registered: GET /actions/workflows/evals-live.yml -> 404 'not found on the default branch'.",
+    "benchRef": "runs-on [self-hosted, helix-reference]; GET /actions/runners -> total_count 0; bench/run.mjs does not exist yet (later roadmap harness).",
+    "evalsLive": "requires GitHub Actions repository secret GEMINI_API. The Vercel project env var GEMINI_API is a separate store and is not visible to GitHub Actions; secret presence could not be verified (GET /actions/secrets -> 403 for this token). evals/hts-lite.ts, evals/browser.ts, evals/router-cache.ts do not exist yet, so the 'Required full evaluation gates' step fails visibly by design.",
+    "workflowYamlParses": { "ci": "push,pull_request,workflow_dispatch", "bench-ref": "schedule,workflow_dispatch,pull_request", "evals-live": "schedule,workflow_dispatch" },
+    "certified": false
+  },
+  "r08Ticked": false,
+  "remainingExternal": [
+    "Grant actions=write to the v0 GitHub App, or owner runs: gh workflow run ci.yml --ref helix/session-2026-11-10-local-container && gh run watch --exit-status",
+    "Register a self-hosted runner labeled helix-reference for bench-ref",
+    "Add GitHub Actions repository secret GEMINI_API for evals-live",
+    "Nightly schedules can only be observed after the workflows exist on main"
+  ]
+}

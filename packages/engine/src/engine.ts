@@ -1,5 +1,5 @@
 import type { CompactionOptions } from './context/compaction.ts';
-import { mkdirSync, writeFileSync, rmSync, readFileSync, realpathSync } from 'node:fs';
+import { mkdirSync, writeFileSync, rmSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { timingSafeEqual } from 'node:crypto';
@@ -26,7 +26,9 @@ import { ReplayAdapter, exportBundle, type SessionBundle } from './replay/bundle
 import { builtinTools } from './tools/builtin.ts';
 import { McpManager, type McpServerConfig, type McpServerStatus } from './mcp/manager.ts';
 import { TaskRuntime } from './agent/runtime.ts';
-import { LocalSandbox, unshareAvailable } from './sandbox/sandbox.ts';
+import { LocalSandbox, SandboxUnavailableError, availableBackends, mountNsAvailable, sandboxStatus, unshareAvailable } from './sandbox/sandbox.ts';
+import { localOsTool } from './sandbox/localos.ts';
+import { containerRuntime } from './sandbox/container.ts';
 import { DEFAULT_EGRESS_ALLOWLIST, EgressProxy, type UpstreamOverride } from './sandbox/egress.ts';
 import { DevServers } from './preview/devserver.ts';
 import { PreviewBrowser } from './preview/browser.ts';
@@ -53,7 +55,6 @@ export interface EngineOptions {
   home?: string;
   env?: NodeJS.ProcessEnv;
   adapters?: ProviderAdapter[];
-  forceProcessSandbox?: boolean;
   /** Test seam for the masking proxy (F-SBX-4): where intercepted requests really go. */
   egressUpstream?: UpstreamOverride;
   retry?: { maxRetries?: number; baseDelayMs?: number; maxDelayMs?: number };
@@ -85,7 +86,7 @@ function compactionFrom(env: NodeJS.ProcessEnv, opts?: CompactionOptions): Compa
   };
 }
 
-const TOPICS = ['task.*', 'agent.*', 'tool.*', 'model.*', 'verify.*', 'approval.*', 'ledger.*', 'budget.*', 'context.*', 'artifact.*', 'checkpoint.*', 'workspace.*', 'egress.*', 'preview.*', 'secret.*'];
+const TOPICS = ['task.*', 'agent.*', 'tool.*', 'model.*', 'verify.*', 'approval.*', 'ledger.*', 'budget.*', 'context.*', 'artifact.*', 'checkpoint.*', 'workspace.*', 'egress.*', 'preview.*', 'secret.*', 'sandbox.*', 'policy.*', 'git.*', 'deploy.*', 'mcp.*'];
 
 /** Helix Engine (§6.2): composition root for storage, bus, gateway, tools, sandbox, and the task runtime. */
 export class Engine {
@@ -117,11 +118,9 @@ export class Engine {
   private http?: Server;
   private closed = false;
   private readonly terminals = new Map<string, LocalSandbox>();
-  private readonly forceProcessSandbox: boolean;
 
   constructor(opts: EngineOptions = {}) {
     this.home = opts.home ?? helixHome();
-    this.forceProcessSandbox = opts.forceProcessSandbox ?? false;
     mkdirSync(this.home, { recursive: true, mode: 0o700 });
     const env = opts.env ?? process.env;
     this.logger = new Logger({ dir: join(this.home, 'logs'), stderr: false, bindings: { engine: this.id } });
@@ -139,6 +138,9 @@ export class Engine {
         this.bus.publish({ topic: 'egress.denied', ws: this.runtime.workspaceFor(ctx.root).id, data: { ...info, sandbox: ctx.sandboxId }, persist: 'audit' });
         this.logger.warn('egress.denied', { ...info, sandbox: ctx.sandboxId });
       },
+      onInject: (info, ctx) => {
+        this.bus.publish({ topic: 'secret.used', ws: this.runtime.workspaceFor(ctx.root).id, data: { name: info.secret, host: info.host, where: info.where, uses: info.uses, sandbox: ctx.sandboxId }, persist: 'audit' });
+      },
       onExfil: (info, ctx) => {
         this.bus.publish({ topic: 'secret.exfil_attempt', ws: this.runtime.workspaceFor(ctx.root).id, data: { ...info, sandbox: ctx.sandboxId }, persist: 'audit' });
         this.logger.warn('secret.exfil_attempt', { ...info, sandbox: ctx.sandboxId });
@@ -146,15 +148,15 @@ export class Engine {
     }, { upstream: opts.egressUpstream });
     this.secretSource = env;
     this.devServers = new DevServers({
-      egress: this.egress, forceProcess: opts.forceProcessSandbox,
+      egress: this.egress, createSandbox: (root) => this.runtime.sandboxFor(root, 'dev', { purpose: 'preview' }),
       onReady: (root, info) => this.bus.publish({ topic: 'preview.ready', ws: this.runtime.workspaceFor(root).id, data: { ...info, workspacePath: root } }),
       onExit: (root, info, code) => this.bus.publish({ topic: 'preview.exited', ws: this.runtime.workspaceFor(root).id, data: { ...info, workspacePath: root, exitCode: code } }),
     });
     this.browser = new PreviewBrowser({ outDir: join(this.home, 'screenshots') });
     const tools = builtinTools();
-    this.mcp = new McpManager({ home: this.home, registry: tools, logger: this.logger, config: opts.mcpServers, toolSearchThreshold: opts.mcpToolSearchThreshold });
+    this.mcp = new McpManager({ home: this.home, registry: tools, logger: this.logger, config: opts.mcpServers, toolSearchThreshold: opts.mcpToolSearchThreshold, audit: (topic, data) => this.bus.publish({ topic, ws: 'engine', data, persist: 'audit' }) });
     this.mcpReady = opts.mcp === false ? Promise.resolve([]) : this.mcp.start();
-    this.runtime = new TaskRuntime({ db: this.db, bus: this.bus, gateway: this.gateway, ledger: this.ledger, tools, tracer: this.tracer, engineId: this.id, blobs: this.blobs, logger: this.logger, forceProcessSandbox: opts.forceProcessSandbox, egress: this.egress, devServers: this.devServers, browser: this.browser, taskRetryScale: opts.taskRetryScale, helixHome: this.home, replay: this.replay, indexing: opts.indexing, compaction: compactionFrom(env, opts.compaction),
+    this.runtime = new TaskRuntime({ db: this.db, bus: this.bus, gateway: this.gateway, ledger: this.ledger, tools, tracer: this.tracer, engineId: this.id, blobs: this.blobs, logger: this.logger, egress: this.egress, devServers: this.devServers, browser: this.browser, taskRetryScale: opts.taskRetryScale, helixHome: this.home, replay: this.replay, indexing: opts.indexing, compaction: compactionFrom(env, opts.compaction),
       depGate: env.HELIX_DEP_GATE === 'off' ? undefined : new DepGate({ osvUrl: env.HELIX_OSV_URL, npmRegistryUrl: env.HELIX_NPM_REGISTRY_URL, pypiUrl: env.HELIX_PYPI_URL }) });
 
     const now = new Date().toISOString();
@@ -177,9 +179,18 @@ export class Engine {
   attach(peer: RpcPeer, opts: { token?: string } = {}): void {
     let initialized = opts.token === undefined;
     const unsubs: Array<() => void> = [];
+    const failClosed = (e: unknown): never => {
+      if (e instanceof SandboxUnavailableError) throw new RpcError(RpcErrorCode.SandboxUnavailable, e.message, { code: e.code });
+      throw e;
+    };
     const guard = <P>(fn: (p: P) => unknown) => (params: unknown) => {
       if (!initialized) throw new RpcError(RpcErrorCode.InvalidRequest, 'call initialize with a valid token first');
-      return fn((params ?? {}) as P);
+      try {
+        const r = fn((params ?? {}) as P);
+        return r instanceof Promise ? r.catch(failClosed) : r;
+      } catch (e) {
+        return failClosed(e);
+      }
     };
     peer.handle(Methods.initialize, (params): InitializeResult => {
       const p = (params ?? {}) as InitializeParams;
@@ -190,7 +201,7 @@ export class Engine {
       }
       initialized = true;
       for (const topic of p.topics ?? []) unsubs.push(this.bus.subscribe(topic, (e) => peer.notify(Notifications.event, e)));
-      return { engineVersion: ENGINE_VERSION, protocolVersion: PROTOCOL_VERSION, engineId: this.id, capabilities: { sandboxProviders: [unshareAvailable() ? 'local-unshare' : 'local-process'], providers: this.gateway.providers().map((x) => x.id), topics: TOPICS } };
+      return { engineVersion: ENGINE_VERSION, protocolVersion: PROTOCOL_VERSION, engineId: this.id, capabilities: { sandboxProviders: availableBackends(), defaultSandbox: sandboxStatus().backend, providers: this.gateway.providers().map((x) => x.id), topics: TOPICS } };
     });
     peer.onClose(() => unsubs.forEach((u) => u()));
     peer.handle(Methods.ping, () => ({ pong: true, at: new Date().toISOString() }));
@@ -214,13 +225,39 @@ export class Engine {
         if (!alwaysAllowed) throw new Error(`'always allow' is only supported for MCP tools (got ${tool ?? 'unknown approval'})`);
       }
       this.runtime.approve(p.approvalId, p.approved);
+      if (alwaysAllowed) this.bus.publish({ topic: 'policy.changed', ws: 'engine', data: { change: 'mcp_always_allow', subject: `mcp:${alwaysAllowed.server}/${alwaysAllowed.tool}`, by: 'user' }, persist: 'audit' });
       return { ok: true, alwaysAllowed };
     }));
+    peer.handle(Methods.ledgerReconcile, guard<{ task?: string; ws?: string; since?: string; tolerancePct?: number }>((p) => this.gateway.reconcile(p)));
     peer.handle(Methods.ledgerQuery, guard<{ task?: string; ws?: string; entries?: boolean }>((p) => ({ totals: this.ledger.totals(p), entries: p.entries ? this.ledger.entries({ task: p.task }) : undefined })));
-    peer.handle(Methods.budgetsSet, guard<Parameters<Ledger['setBudget']>[0]>((p) => ({ id: this.ledger.setBudget(p) })));
+    peer.handle(Methods.budgetsSet, guard<Parameters<Ledger['setBudget']>[0]>((p) => {
+      const previous = this.ledger.getBudget(p.scope, p.scopeId);
+      const id = this.ledger.setBudget(p);
+      this.bus.publish({ topic: 'budget.override', ws: 'engine', task: p.scope === 'task' ? p.scopeId : undefined, data: { budgetId: id, scope: p.scope, scopeId: p.scopeId, previous: previous ?? null, next: p, by: 'user' }, persist: 'audit' });
+      return { id };
+    }));
     peer.handle(Methods.providersList, guard(() => this.gateway.providers()));
     peer.handle(Methods.modelsList, guard<{ provider: string }>((p) => this.gateway.listModels(p.provider)));
-    peer.handle(Methods.sandboxCheck, guard(() => ({ unshare: unshareAvailable() })));
+    peer.handle(Methods.sandboxCheck, guard(() => {
+      const s = sandboxStatus();
+      const lo = localOsTool();
+      return { unshare: unshareAvailable(), mountNs: mountNsAvailable(), container: containerRuntime(), localOs: lo ? { tool: lo.kind, proc: lo.proc } : null, available: availableBackends(), default: s.backend, isolation: s.isolation, reason: s.reason };
+    }));
+    peer.handle(Methods.workbenchStatus, guard<{ workspacePath?: string }>((p) => this.workbenchStatus(p.workspacePath)));
+    peer.handle(Methods.workspaceTrust, guard<{ workspacePath: string; trusted: boolean; lightMode?: boolean }>((p) => {
+      if (typeof p.workspacePath !== 'string' || !p.workspacePath) throw new Error('workspacePath is required');
+      let root: string;
+      try { root = realpathSync(resolve(p.workspacePath)); } catch { throw new Error(`no such workspace: ${p.workspacePath}`); }
+      if (!statSync(root).isDirectory()) throw new Error(`not a directory: ${p.workspacePath}`);
+      const ws = this.runtime.workspaceFor(root);
+      const busy = this.db.all<{ id: string }>('SELECT id FROM tasks WHERE ws = ?', ws.id).find((t) => this.runtime.isRunning(t.id));
+      if (busy) throw new Error(`task ${busy.id} is running in this workspace; wait for it or cancel it before changing trust`);
+      this.runtime.setWorkspaceTrust(root, { trusted: p.trusted, lightMode: p.lightMode });
+      this.terminals.get(root)?.destroy();
+      this.terminals.delete(root);
+      this.devServers.stop(root);
+      return this.workbenchStatus(root);
+    }));
     peer.handle(Methods.eventsReplay, guard<{ ws: string; afterSeq?: number; limit?: number }>((p) => (this.bus.flush(), this.bus.replay(p.ws, p.afterSeq ?? 0, p.limit))));
     peer.handle(Methods.indexUpdate, guard<{ workspacePath: string }>((p) => {
       const idx = this.index(p.workspacePath);
@@ -283,6 +320,20 @@ export class Engine {
       return { bindings: this.runtime.artifacts(p.task, 'roles').at(-1)?.data ?? null, usage, fallbacks };
     }));
     peer.handle(Methods.mcpList, guard(async () => { await this.mcpReady; return this.mcp.list(); }));
+    peer.handle(Methods.mcpAdd, guard<{ name: string } & McpServerConfig>(async (p) => {
+      await this.mcpReady;
+      const { name, command, args, env, cwd, url, headers, trust, allowTools, denyTools, timeoutMs } = p;
+      return this.mcp.addServer(name, { command, args, env, cwd, url, headers, trust, allowTools, denyTools, timeoutMs });
+    }));
+    peer.handle(Methods.mcpRemove, guard<{ name: string }>(async (p) => { await this.mcpReady; return this.mcp.removeServer(p.name); }));
+    peer.handle(Methods.mcpTrust, guard<{ name: string; trust: 'trusted' | 'untrusted' }>(async (p) => { await this.mcpReady; return this.mcp.setTrust(p.name, p.trust); }));
+    peer.handle(Methods.auditVerify, guard(() => this.bus.verifyAudit()));
+    peer.handle(Methods.auditExport, guard<{ category?: string; since?: string }>((p) => ({ jsonl: this.bus.exportAudit(p) })));
+    peer.handle(Methods.traceGet, guard<{ task: string }>((p) => {
+      if (typeof p.task !== 'string' || !p.task) throw new Error('task is required');
+      this.bus.flush();
+      return { spans: this.tracer.spansForTask(p.task) };
+    }));
     peer.handle(Methods.fsTree, guard<{ workspacePath: string }>((p) => listWorkspaceFiles(this.knownWorkspace(p.workspacePath))));
     peer.handle(Methods.fsRead, guard<{ workspacePath: string; path: string }>((p) => readWorkspaceFile(this.knownWorkspace(p.workspacePath), p.path)));
     peer.handle(Methods.fsWrite, guard<{ workspacePath: string; path: string; content: string; baseHash: string | null }>((p) => {
@@ -439,10 +490,26 @@ export class Engine {
   private terminalSandbox(root: string): LocalSandbox {
     let s = this.terminals.get(root);
     if (!s) {
-      s = new LocalSandbox(prefixedId('term'), root, { forceProcess: this.forceProcessSandbox, egress: this.egress });
+      s = this.runtime.sandboxFor(root, 'term', { purpose: 'terminal' });
       this.terminals.set(root, s);
     }
     return s;
+  }
+
+  /**
+   * Isolation the workbench shows permanently (SEC-1): `full`, `light` (trusted repo in `local-os`), `partial` (WSL), or
+   * `none` (agent processes are refused). Engine-wide when no workspace is given.
+   */
+  workbenchStatus(workspacePath?: string) {
+    let root: string | null = null;
+    if (workspacePath) {
+      try { root = realpathSync(resolve(workspacePath)); } catch { throw new Error(`no such workspace: ${workspacePath}`); }
+    }
+    const s = root ? this.runtime.sandboxStatusFor(root) : { ...sandboxStatus(), trust: null };
+    return {
+      isolation: s.isolation, backend: s.backend, reason: s.reason, available: availableBackends(),
+      workspace: root ? { path: root, trusted: !!s.trust?.trusted, lightMode: !!s.trust?.lightMode, trustedAt: s.trust?.at ?? null } : null,
+    };
   }
 
   /** Index for a workspace path (registers the workspace on first use). */

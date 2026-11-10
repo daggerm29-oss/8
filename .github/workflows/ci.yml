@@ -1,0 +1,75 @@
+name: Helix CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci-linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      HELIX_SANDBOX_BACKENDS: local-container,local-unshare,local-os
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+      - name: Install Linux containment and desktop prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman crun bubblewrap libnss3 libatk-bridge2.0-0 libgtk-3-0 libgbm1 libasound2t64
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - run: pnpm install --frozen-lockfile
+      - name: TypeScript
+        run: npx tsc -p tsconfig.helix.json
+      - name: local-container runtime capability probe (diagnostic, fail fast)
+        timeout-minutes: 5
+        working-directory: packages/engine
+        run: node --disable-warning=ExperimentalWarning test/support/container-probe.ts
+      - name: Protocol A-local suites
+        run: node --test packages/engine/test/core.test.ts
+      - name: Provider conformance (no live credentials)
+        run: pnpm --filter @helix/provider-conformance test
+      - name: Agent exit and restart regressions (fail fast)
+        timeout-minutes: 3
+        working-directory: packages/engine
+        run: node --disable-warning=ExperimentalWarning --test --test-reporter=tap --test-timeout=120000 test/agent.test.ts
+      - name: Engine A-local suites and all backend conformance
+        timeout-minutes: 12
+        working-directory: packages/engine
+        run: node --disable-warning=ExperimentalWarning --test --test-reporter=tap --test-timeout=120000 --test-concurrency=1 "test/**/*.test.ts"
+      - name: CLI A-local suites
+        run: pnpm --filter @helix/cli test
+      - name: Install Electron binary
+        run: pnpm --filter @helix/desktop run setup
+      - name: Desktop E2E headless (binary required, no skipped pass)
+        run: |
+          node -e "const fs=require('fs');const e=require('./packages/desktop/node_modules/electron');if(!fs.existsSync(e))process.exit(1)"
+          pnpm --filter @helix/desktop test
+      - name: Red-team regression suites (existing M0-M2 coverage)
+        working-directory: packages/engine
+        run: node --test --test-concurrency=1 test/sandbox.test.ts test/sandbox-conformance.test.ts test/fail-closed.test.ts test/egress.test.ts test/mcp-safety.test.ts test/masking.test.ts test/git.test.ts
+      - name: Scope invariants and mutation tests
+        run: |
+          node --test scripts/check-scope.test.mjs
+          node scripts/check-scope.mjs
+      - name: Retain evaluation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-evidence-${{ github.run_id }}
+          path: evals/results/
+          if-no-files-found: ignore

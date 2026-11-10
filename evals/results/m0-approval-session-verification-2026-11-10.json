@@ -1,0 +1,122 @@
+{
+  "date": "2026-11-10",
+  "repository": "daggerm29-oss/8",
+  "pr": 22,
+  "branch": "helix/session-2026-11-10-local-container",
+  "approvalCheckpoint": "6fd0907374c4b915ddb1a055e46add7bb2b6c7de",
+  "approvedScopeCommit": "e1bf6d26da50a4c9afb156314cfdb00c75239e66",
+  "approvals": [
+    "Exempt OpenAI smoke (Recommended)",
+    "Approve original split (Recommended)"
+  ],
+  "approvalRecord": "plan.md section 0.3, dated 2026-11-10",
+  "R03": {
+    "pass": true,
+    "localCommand": "cd packages/providers/conformance && node --test && cd ../../engine && node --test test/models.test.ts",
+    "providerConformance": { "passed": 23, "failed": 0, "skippedLiveOnly": 7 },
+    "gatewayPackageAndDegradation": { "passed": 11, "failed": 0, "skipped": 0 },
+    "liveCommand": "cd packages/providers/conformance && HELIX_LIVE=1 HELIX_LIVE_GEMINI_MODEL=gemini-3.5-flash-lite node --test --test-name-pattern='\\[gemini\\] LIVE (FR-1|model listing)'",
+    "geminiLive": {
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0,
+      "listedModels": 28,
+      "genuineAccessResponses": 2,
+      "controls": ["thinking low/high", "temperature 0/0.3", "max output 512/1024"],
+      "artifact": "evals/results/fr-1-gemini-controls-2026-11-10T14-50-33-405Z.json"
+    },
+    "testedAdapterSourceCommit": "6fd0907374c4b915ddb1a055e46add7bb2b6c7de",
+    "openaiLiveSmoke": "User-approved exemption from M0 acceptance only; not run or claimed passing",
+    "bothAdaptersFiveLocalCategoriesRetained": true,
+    "onePackageNoCoreChangesProofRetained": true,
+    "chatgptOauthImplementedOrVerified": false,
+    "FMDL3AndFAUTH2AcceptanceChanged": false,
+    "M2SIWCAcceptanceChanged": false
+  },
+  "G02": {
+    "command": "node scripts/check-scope.mjs --milestone M0",
+    "pass": true,
+    "exitCode": 0,
+    "summary": "154/154 IDs, 0 undefined task refs, 0 ticks without evidence, 0 removed items",
+    "requirementsDone": 12,
+    "artifact": "evals/results/g0-2-scope-approved-2026-11-10.json",
+    "originalFailedArtifactPreserved": "evals/results/g0-2-scope-2026-11-10.json"
+  },
+  "focusedChecks": {
+    "scopeGuardrails": { "command": "node --test scripts/check-scope.test.mjs", "passed": 14, "failed": 0, "skipped": 0 },
+    "typescript": { "command": "npx tsc -p tsconfig.helix.json", "exitCode": 0 },
+    "scopeCheckerImplementationUnchanged": true,
+    "incompleteM1StillRejected": true,
+    "missingM0EvidenceStillRejected": true
+  },
+  "fullEngineSuite": {
+    "command": "cd packages/engine && HELIX_SANDBOX_BACKENDS=local-container,local-unshare,local-os node --disable-warning=ExperimentalWarning --test --test-concurrency=1 \"test/**/*.test.ts\"",
+    "testedSourceCommit": "e1bf6d26da50a4c9afb156314cfdb00c75239e66",
+    "executionsThisSession": 1,
+    "tests": 165,
+    "passed": 157,
+    "failed": 8,
+    "skipped": 0,
+    "durationMs": 126183.041174,
+    "exitCode": 1,
+    "pass": false,
+    "failedCases": "All eight explicitly requested local-container sandbox-conformance cases: backend info, exec, env scrub, mounts, timeout, direct egress, proxy egress, PTY",
+    "blocker": "Podman exit 125: current system boot ID differs from cached boot ID after workspace reboot; local-container unavailable",
+    "containerCancellationCaseDiscovered": false,
+    "unshareCancelP95Ms": 12,
+    "targetedRecovery": {
+      "attempts": 1,
+      "method": "Generate isolated temporary Podman vfs graphroot/runroot/tmp_dir; do not delete or mutate existing cached containers",
+      "probeCommand": "CONTAINERS_STORAGE_CONF=<isolated storage.conf> CONTAINERS_CONF=<isolated containers.conf> podman info --format '{{.Host.OCIRuntime.Name}}'",
+      "exitCode": 125,
+      "error": "cannot re-exec process to join the existing user namespace",
+      "focusedContainerChecksStarted": false,
+      "successfulRecoveryClaimed": false
+    },
+    "priorPassing166TestArtifactPreservedAsHistoricalOnly": "evals/results/m0-session-verification-2026-11-10.json"
+  },
+  "R08": {
+    "pass": false,
+    "acceptanceChangedOrWaived": false,
+    "exactDispatchBlocker": "Previously verified HTTP 403: Resource not accessible by integration; not retried or claimed resolved",
+    "nightlyReferenceAndFullHTSCertified": false,
+    "priorPositiveAndSeededNegativeEvidence": "evals/results/r0-8-ci-2026-11-10.json",
+    "priorCheckpointCIObserved": {
+      "headSha": "6fd0907374c4b915ddb1a055e46add7bb2b6c7de",
+      "prRun": 42832595714,
+      "pushRun": 42832584814,
+      "conclusion": "success",
+      "notEvidenceForThisSessionsNewPush": true
+    }
+  },
+  "requirementStatus": {
+    "F-MDL-1": "Done",
+    "F-AGT-1": "Partial: M0 evidenced; M1 visible/editable Plan Mode and nested Explore still open",
+    "F-AGT-1Milestones": "M0 (primary loop), M1 (editable Plan Mode / Explore)",
+    "retainedM1Coverage": ["R1.16", "M1 T6", "R1.47 (new documentation coverage only)"],
+    "done": 12,
+    "total": 154
+  },
+  "checklistOnly": {
+    "overallPct": 36,
+    "done": 70,
+    "total": 196,
+    "M0Pct": 96,
+    "M0Done": 22,
+    "M0Total": 23,
+    "M1Pct": 33,
+    "M2Pct": 45,
+    "M3Pct": 0,
+    "M4Pct": 0,
+    "M5Pct": 0,
+    "M6Pct": 0
+  },
+  "nextTask": "R0.8 CI pipeline",
+  "M1ImplementationStarted": false,
+  "newPullRequestCreated": false,
+  "pr19Touched": false,
+  "merged": false,
+  "M0Complete": false,
+  "safeToMerge": false,
+  "safeToMergeReason": "R0.8 remains open and the fresh full-engine/container verification is not green"
+}

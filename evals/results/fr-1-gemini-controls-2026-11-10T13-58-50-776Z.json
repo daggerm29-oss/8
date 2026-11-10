@@ -1,0 +1,118 @@
+{
+  "at": "2026-11-10T13:58:50.778Z",
+  "pass": true,
+  "liveModels": [
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
+    "gemma-4-26b-a4b-it",
+    "gemma-4-31b-it",
+    "gemini-flash-latest",
+    "gemini-flash-lite-latest",
+    "gemini-pro-latest",
+    "gemini-2.5-flash-lite",
+    "gemini-3-flash-preview",
+    "gemini-3.1-pro-preview",
+    "gemini-3.1-pro-preview-customtools",
+    "gemini-3.1-flash-lite-preview",
+    "gemini-3.1-flash-lite",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-omni-flash-preview",
+    "gemini-omni-1.1-flash",
+    "gemini-omni-1.2-flash",
+    "gemini-3.6-flash",
+    "gemini-3.7-flash",
+    "gemini-3.8-flash",
+    "gemini-4-argon",
+    "antigravity-preview-05-2026",
+    "antigravity-preview-09-2026",
+    "antigravity-preview-latest",
+    "deep-research-max-preview-04-2026",
+    "deep-research-preview-04-2026",
+    "deep-research-pro-preview-12-2025"
+  ],
+  "accessTestPassed": true,
+  "responses": [
+    {
+      "model": "gemini-3.5-flash-lite",
+      "request": {
+        "reasoningEffort": "low",
+        "temperature": 0,
+        "maxOutputTokens": 512
+      },
+      "sent": {
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:streamGenerateContent?alt=sse",
+        "generationConfig": {
+          "maxOutputTokens": 512,
+          "temperature": 0,
+          "thinkingConfig": {
+            "thinkingLevel": "low"
+          }
+        }
+      },
+      "responseId": "EyPzavntH7zN-sAP7onWgQk",
+      "finishReason": "stop",
+      "usage": {
+        "inputTokens": 8,
+        "cachedInputTokens": 0,
+        "cacheWriteTokens": 0,
+        "outputTokens": 1,
+        "reasoningTokens": 0,
+        "source": "provider",
+        "raw": {
+          "promptTokenCount": 8,
+          "candidatesTokenCount": 1,
+          "totalTokenCount": 9,
+          "promptTokensDetails": [
+            {
+              "modality": "TEXT",
+              "tokenCount": 8
+            }
+          ],
+          "serviceTier": "standard"
+        }
+      }
+    },
+    {
+      "model": "gemini-3.5-flash-lite",
+      "request": {
+        "reasoningEffort": "high",
+        "temperature": 0.3,
+        "maxOutputTokens": 1024
+      },
+      "sent": {
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:streamGenerateContent?alt=sse",
+        "generationConfig": {
+          "maxOutputTokens": 1024,
+          "temperature": 0.3,
+          "thinkingConfig": {
+            "thinkingLevel": "high"
+          }
+        }
+      },
+      "responseId": "EyPzarqhPOaQ-8YP26C98AE",
+      "finishReason": "stop",
+      "usage": {
+        "inputTokens": 8,
+        "cachedInputTokens": 0,
+        "cacheWriteTokens": 0,
+        "outputTokens": 80,
+        "reasoningTokens": 79,
+        "source": "provider",
+        "raw": {
+          "promptTokenCount": 8,
+          "candidatesTokenCount": 1,
+          "totalTokenCount": 88,
+          "promptTokensDetails": [
+            {
+              "modality": "TEXT",
+              "tokenCount": 8
+            }
+          ],
+          "thoughtsTokenCount": 79,
+          "serviceTier": "standard"
+        }
+      }
+    }
+  ]
+}

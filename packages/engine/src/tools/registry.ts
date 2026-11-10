@@ -3,11 +3,14 @@ import type { Provenance } from '@helix/protocol';
 import type { JsonSchema, ToolSpec } from '@helix/protocol';
 import type { LocalSandbox } from '../sandbox/sandbox.ts';
 import type { WorkspaceIndex } from '../index/index.ts';
+import type { SpanRunner } from '../obs/tracing.ts';
 
 export interface ToolContext {
   sandbox: LocalSandbox;
   signal: AbortSignal;
   index?: WorkspaceIndex;
+  /** Runs a unit of work inside a trace span (§26.1); absent when the caller is not traced. */
+  trace?: SpanRunner;
   /** Persist a task artifact (plan, report); returns the artifact id (§5.6). */
   submitArtifact?: (kind: string, title: string, data: unknown) => string;
   /** Called with the previous content (null = new file) before any write, for checkpoints (§20.3). */
@@ -103,6 +106,12 @@ export class ToolRegistry {
     this.tools.set(tool.spec.name, tool);
   }
 
+  /** Removes a dynamically registered tool (MCP server removal or reconnect, R0.5). */
+  unregister(name: string): boolean {
+    this.deferred.delete(name);
+    return this.tools.delete(name);
+  }
+
   specs(filter?: (name: string) => boolean): ToolSpec[] {
     return [...this.tools.values()].map((t) => t.spec).filter((s) => !filter || filter(s.name));
   }
@@ -117,6 +126,7 @@ export class ToolRegistry {
     const errors = validate(tool.spec.inputSchema, args);
     if (errors.length) return { content: `invalid arguments: ${errors.join('; ')}`, isError: true };
     try {
+      ctx.signal.throwIfAborted();
       const out = await tool.run(args as Record<string, unknown>, ctx);
       return { ...out, content: truncate(out.content) };
     } catch (error) {

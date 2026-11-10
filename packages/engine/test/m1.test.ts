@@ -182,8 +182,8 @@ test('runtime: composed context is in the system prompt, persisted, and context.
     assert.match(toolRows.find((r) => r.tool === 'find_symbol')!.summary, /find_symbol subtract: [1-9]/);
 
     const cps = engine.runtime.checkpoints(created.id);
-    assert.equal(cps.length, 2);
-    assert.deepEqual(cps.map((c) => c.files[0]), [{ path: 'src/calc.js', created: false }, { path: 'NOTES.md', created: true }]);
+    assert.equal(cps.length, toolRows.length, 'each tool call has a checkpoint, including read-only calls');
+    assert.deepEqual(cps.flatMap((c) => c.files), [{ path: 'src/calc.js', created: false }, { path: 'NOTES.md', created: true }]);
     const r = engine.runtime.restore(created.id);
     assert.deepEqual(r.restored, ['src/calc.js']);
     assert.deepEqual(r.deleted, ['NOTES.md']);
@@ -250,5 +250,10 @@ test('verify retry prompt carries structured diagnostics instead of the raw log'
 
 test('sandbox root is reported for diagnostics path relativization', () => {
   const dir = copy('js-calc');
-  assert.ok(new LocalSandbox('sbx_t', dir, { forceProcess: true }).root.length > 0);
+  const sbx = new LocalSandbox('sbx_t', dir);
+  try {
+    assert.ok(sbx.root.length > 0);
+  } finally {
+    sbx.destroy();
+  }
 });

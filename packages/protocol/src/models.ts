@@ -57,15 +57,43 @@ export interface ToolSpec {
   inputSchema: JsonSchema;
 }
 
+/** Structured output request (F-MDL-1): the final assistant text must be JSON valid against `schema`. */
+export interface ResponseFormat {
+  type: 'json_schema';
+  name: string;
+  schema: JsonSchema;
+  /** Ask the provider to enforce the schema at decode time when it can (OpenAI strict mode). */
+  strict?: boolean;
+}
+
 export interface ModelRequest {
   model: string;
   system?: string;
   messages: Message[];
   tools?: ToolSpec[];
   toolChoice?: 'auto' | 'none' | 'required';
+  /** `false` = at most one tool call per turn (set by capability planning when the model lacks parallel calls). */
+  parallelToolCalls?: boolean;
+  responseFormat?: ResponseFormat;
   maxOutputTokens?: number;
   temperature?: number;
   reasoningEffort?: 'low' | 'medium' | 'high';
+}
+
+/** Features an adapter may degrade instead of failing (F-MDL-1 AC3). */
+export type DegradableFeature = 'tools' | 'parallel_tool_calls' | 'structured_output' | 'strict_schema' | 'reasoning_effort' | 'temperature';
+
+export interface CapabilityDegradation {
+  feature: DegradableFeature;
+  /** What the adapter did instead, e.g. "serialized: 1 of 2 tool calls kept this turn". */
+  detail: string;
+}
+
+/** Parsed and schema-checked structured output, attached to `done` when the request had a `responseFormat`. */
+export interface StructuredResult {
+  value: unknown;
+  valid: boolean;
+  errors: string[];
 }
 
 /**
@@ -88,7 +116,8 @@ export type StreamEvent =
   | { type: 'text_delta'; text: string }
   | { type: 'reasoning_delta'; text: string }
   | { type: 'tool_call'; id: string; name: string; args: unknown }
-  | { type: 'done'; message: Message; usage: Usage; finishReason: FinishReason; responseId?: string };
+  | ({ type: 'notice'; code: 'capability.degraded' } & CapabilityDegradation)
+  | { type: 'done'; message: Message; usage: Usage; finishReason: FinishReason; responseId?: string; structured?: StructuredResult };
 
 export interface AuthContext {
   apiKey?: string;
@@ -106,6 +135,10 @@ export interface ModelManifest {
   modalities: { input: Array<'text' | 'image' | 'audio' | 'video' | 'pdf'>; output: Array<'text' | 'image' | 'audio'> };
   tools: { supported: boolean; parallel: boolean; strictSchema: boolean; dialect: 'openai' | 'gemini' | 'anthropic' | 'other' };
   reasoning?: { controls: Array<'effort' | 'budget_tokens' | 'level'>; returnsSummary: boolean; statefulItems: boolean };
+  /** Native JSON-schema output. Absent = assume supported, non-strict. */
+  structuredOutput?: { supported: boolean; strict: boolean };
+  /** Sampling temperature accepted. Absent = accepted. */
+  temperature?: boolean;
   caching: { kind: 'implicit' | 'explicit' | 'none'; minTokens?: number; discount?: number };
   /** USD per 1M tokens. `null` when Helix has no verified price for the model. */
   pricing: { inputPerM: number; cachedInputPerM?: number; outputPerM: number; asOf: string; note?: string } | null;
@@ -157,6 +190,8 @@ export interface ProviderAdapter {
   stream(req: ModelRequest, auth: AuthContext, signal: AbortSignal): AsyncIterable<StreamEvent>;
   countTokens(req: ModelRequest, auth?: AuthContext): Promise<TokenCount>;
   normalizeError(error: unknown): ProviderError;
+  /** Re-derive normalized usage from the raw provider usage metadata (`Usage.raw`), for ledger reconciliation (§29.6). */
+  normalizeUsage?(raw: unknown): Usage;
 }
 
 /** Deterministic estimator used when a provider has no exact counting API (~4 chars per token). */

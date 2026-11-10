@@ -52,13 +52,30 @@ test('shell commands cannot read host files outside the workspace (F-SBX-2, ISSU
 test('sandbox has no network egress when namespaces are available', { skip: !unshareAvailable() && 'unshare unavailable' }, async () => {
   const sbx = new LocalSandbox('sbx_t2', workspace());
   try {
-    assert.equal(sbx.provider, 'local-unshare');
+    assert.ok(sbx.provider === 'local-container' || sbx.provider === 'local-unshare', sbx.provider);
+    assert.equal(sbx.info().network, false);
     const r = await sbx.exec(`node -e "require('net').connect(53,'8.8.8.8').on('connect',()=>{console.log('CONNECTED');process.exit(0)}).on('error',e=>{console.log('ERR',e.code);process.exit(3)})"`, { timeoutMs: 10_000 });
     assert.ok(!r.stdout.includes('CONNECTED'));
     assert.equal(r.exitCode, 3);
   } finally {
     sbx.destroy();
   }
+});
+
+test('FR-14 sandbox output streams before command completion', async () => {
+  const sbx = new LocalSandbox('sbx_stream', workspace());
+  let completed = false;
+  const chunks: Array<{ stream: string; text: string }> = [];
+  try {
+    const result = await sbx.exec('echo first; sleep 0.05; echo second >&2', { onOutput: (stream, text) => {
+      assert.equal(completed, false);
+      chunks.push({ stream, text });
+    } });
+    completed = true;
+    assert.equal(result.exitCode, 0);
+    assert.ok(chunks.some((c) => c.stream === 'stdout' && c.text.includes('first')));
+    assert.ok(chunks.some((c) => c.stream === 'stderr' && c.text.includes('second')));
+  } finally { sbx.destroy(); }
 });
 
 test('sandbox timeout kills the whole process group and output is capped', async () => {

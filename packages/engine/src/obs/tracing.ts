@@ -23,6 +23,23 @@ export interface SpanRecord {
   events: Array<{ name: string; timeNs: string; attributes?: Record<string, AttrValue> }>;
 }
 
+export interface SpanContext { traceId: string; spanId: string }
+
+export interface StoredSpan {
+  spanId: string;
+  traceId: string;
+  parentSpanId?: string;
+  name: string;
+  durationMs: number;
+  statusCode: number;
+  statusMessage?: string;
+  attributes: Record<string, AttrValue>;
+  events: SpanRecord['events'];
+}
+
+/** Minimal span surface other modules need (sandbox, tools) without importing the tracer. */
+export type SpanRunner = <T>(name: string, attributes: Record<string, AttrValue>, fn: (span: { setAttributes(attrs: Record<string, AttrValue | undefined | null>): unknown }) => Promise<T>) => Promise<T>;
+
 export class Span {
   readonly record: SpanRecord;
   private readonly tracer: Tracer;
@@ -30,6 +47,9 @@ export class Span {
   constructor(tracer: Tracer, record: SpanRecord) {
     this.tracer = tracer;
     this.record = record;
+  }
+  context(): SpanContext {
+    return { traceId: this.record.traceId, spanId: this.record.spanId };
   }
   setAttribute(key: string, value: AttrValue | undefined | null): this {
     if (value !== undefined && value !== null) this.record.attributes[key] = value;
@@ -59,8 +79,11 @@ export class Span {
   }
 }
 
+/** Wall-clock origin fixed once, so span times are monotonic and sub-millisecond latencies are never negative. */
+const CLOCK_ORIGIN_NS = BigInt(Date.now()) * 1_000_000n - process.hrtime.bigint();
+
 function nowNs(): bigint {
-  return BigInt(Date.now()) * 1_000_000n + (process.hrtime.bigint() % 1_000_000n);
+  return CLOCK_ORIGIN_NS + process.hrtime.bigint();
 }
 
 /**
@@ -83,19 +106,25 @@ export class Tracer {
     this.logger = opts.logger;
   }
 
-  startSpan(name: string, attributes: Record<string, AttrValue> = {}, kind: number = SpanKind.INTERNAL): Span {
-    const parent = this.als.getStore();
+  /** `parent` overrides the active span, e.g. to hang a tool call under the agent step that requested it. */
+  startSpan(name: string, attributes: Record<string, AttrValue> = {}, kind: number = SpanKind.INTERNAL, parent?: SpanContext): Span {
+    const p: SpanContext | undefined = parent ?? this.activeContext();
     return new Span(this, {
-      traceId: parent?.record.traceId ?? hexId(16),
+      traceId: p?.traceId ?? hexId(16),
       spanId: hexId(8),
-      parentSpanId: parent?.record.spanId,
+      parentSpanId: p?.spanId,
       name, kind, startNs: nowNs(), endNs: 0n, statusCode: StatusCode.UNSET, attributes: { ...attributes }, events: [],
     });
   }
 
+  activeContext(): SpanContext | undefined {
+    const s = this.als.getStore();
+    return s ? s.context() : undefined;
+  }
+
   /** Runs fn inside a new active span; child spans started inside inherit the trace. */
-  async withSpan<T>(name: string, attributes: Record<string, AttrValue>, fn: (span: Span) => Promise<T>, kind: number = SpanKind.INTERNAL): Promise<T> {
-    const span = this.startSpan(name, attributes, kind);
+  async withSpan<T>(name: string, attributes: Record<string, AttrValue>, fn: (span: Span) => Promise<T>, kind: number = SpanKind.INTERNAL, parent?: SpanContext): Promise<T> {
+    const span = this.startSpan(name, attributes, kind, parent);
     try {
       const result = await this.als.run(span, () => fn(span));
       if (span.record.statusCode === StatusCode.UNSET) span.setStatus(StatusCode.OK);
@@ -122,6 +151,24 @@ export class Tracer {
       this.otlpQueue.push(record);
       if (!this.otlpTimer) this.otlpTimer = setTimeout(() => void this.flushOtlp(), 1000);
     }
+  }
+
+  /** Every stored span of a task's runs (a resumed task has one trace per run), oldest first; the local trace viewer's data (§26.1). */
+  spansForTask(taskId: string): StoredSpan[] {
+    const traces = this.db.all<{ trace_id: string }>(`SELECT DISTINCT trace_id FROM spans WHERE name = 'task' AND json_extract(attributes_json, '$."task.id"') = ?`, taskId).map((r) => r.trace_id);
+    const out: StoredSpan[] = [];
+    for (const t of traces) {
+      for (const r of this.db.all<{ span_id: string; trace_id: string; parent_span_id: string | null; name: string; start_ns: string; end_ns: string; status_code: number; status_message: string | null; attributes_json: string; events_json: string }>(
+        'SELECT span_id, trace_id, parent_span_id, name, start_ns, end_ns, status_code, status_message, attributes_json, events_json FROM spans WHERE trace_id = ? ORDER BY CAST(start_ns AS INTEGER), rowid', t)) {
+        out.push({
+          spanId: r.span_id, traceId: r.trace_id, parentSpanId: r.parent_span_id ?? undefined, name: r.name,
+          durationMs: Number((BigInt(r.end_ns) - BigInt(r.start_ns)) / 1000n) / 1000,
+          statusCode: r.status_code, statusMessage: r.status_message ?? undefined,
+          attributes: JSON.parse(r.attributes_json) as Record<string, AttrValue>, events: JSON.parse(r.events_json) as SpanRecord['events'],
+        });
+      }
+    }
+    return out;
   }
 
   toOtlpJson(records: SpanRecord[]): unknown {

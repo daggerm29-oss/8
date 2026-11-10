@@ -1,6 +1,10 @@
 import {
   ProviderError,
+  degradationEvents,
   estimateTokens,
+  parseRetryAfter,
+  parseStructured,
+  planCapabilities,
   emptyUsage,
   readSse,
   type AuthContext,
@@ -76,7 +80,11 @@ export function toOpenAIRequest(req: ModelRequest): Record<string, unknown> {
   if (req.tools?.length) {
     body.tools = req.tools.map((t) => ({ type: 'function', name: t.name, description: t.description, parameters: t.inputSchema, strict: false }));
     body.tool_choice = req.toolChoice ?? 'auto';
-    body.parallel_tool_calls = true;
+    body.parallel_tool_calls = req.parallelToolCalls ?? true;
+  }
+  if (req.responseFormat) {
+    const f = req.responseFormat;
+    body.text = { format: { type: 'json_schema', name: f.name, schema: f.schema, strict: f.strict ?? false } };
   }
   if (req.maxOutputTokens) body.max_output_tokens = req.maxOutputTokens;
   if (reasoning) {
@@ -111,7 +119,7 @@ export function openaiHttpError(status: number, bodyText: string, retryAfterHead
   } catch {
     // Non-JSON error body; keep the raw text.
   }
-  const retryAfterMs = retryAfterHeader && Number.isFinite(Number.parseFloat(retryAfterHeader)) ? Number.parseFloat(retryAfterHeader) * 1000 : undefined;
+  const retryAfterMs = parseRetryAfter(retryAfterHeader);
   const text = `openai ${status}${code ? ` ${code}` : ''}: ${message}`;
   if (code === 'insufficient_quota') return new ProviderError(PROVIDER, 'plan_limit', text, { status });
   if (status === 429) return new ProviderError(PROVIDER, 'rate_limit', text, { status, retryAfterMs });
@@ -157,13 +165,22 @@ export class OpenAIAdapter implements ProviderAdapter {
   readonly id = PROVIDER;
   readonly defaultModel = OPENAI_DEFAULT_MODEL;
   private readonly fetchImpl: typeof fetch;
+  private readonly models: ModelManifest[];
+  private readonly live = new Map<string, ModelManifest>();
 
-  constructor(opts: { fetch?: typeof fetch } = {}) {
+  /** `models` replaces the bundled overlay (used to describe deployments with narrower capabilities). */
+  constructor(opts: { fetch?: typeof fetch; models?: ModelManifest[] } = {}) {
     this.fetchImpl = opts.fetch ?? fetch;
+    this.models = opts.models ?? OPENAI_MODELS;
   }
 
   bundledModels(): ModelManifest[] {
-    return OPENAI_MODELS.map((m) => ({ ...m }));
+    return this.models.map((m) => ({ ...m }));
+  }
+
+  /** Capability manifest for a model: last live listing, else the bundled overlay. */
+  manifestFor(model: string): ModelManifest | undefined {
+    return this.live.get(model) ?? this.models.find((m) => m.id === model);
   }
 
   private base(auth: AuthContext): string {
@@ -181,14 +198,18 @@ export class OpenAIAdapter implements ProviderAdapter {
       const res = await this.fetchImpl(`${this.base(auth)}/models`, { headers: this.headers(auth) });
       if (!res.ok) throw openaiHttpError(res.status, await res.text());
       const body = (await res.json()) as { data?: Array<{ id: string }> };
-      const overlay = new Map(OPENAI_MODELS.map((m) => [m.id, m]));
+      const overlay = new Map(this.models.map((m) => [m.id, m]));
       const out: ModelManifest[] = [];
       for (const { id } of body.data ?? []) {
         if (!/^(gpt-|o\d)/.test(id) || /audio|realtime|transcribe|tts|image|search|embedding/.test(id)) continue;
         const known = overlay.get(id);
         if (known) out.push({ ...known, origin: 'live+bundled' });
-        else out.push({ ...OPENAI_MODELS[0], id, displayName: id, reasoning: isReasoningModelId(id) ? OPENAI_MODELS[0].reasoning : undefined, pricing: null, origin: 'live' });
+        else {
+          const reasoning = isReasoningModelId(id);
+          out.push({ ...this.models[0], id, displayName: id, reasoning: reasoning ? OPENAI_MODELS[0].reasoning : undefined, temperature: !reasoning, pricing: null, origin: 'live' });
+        }
       }
+      for (const m of out) this.live.set(m.id, m);
       return out.length ? out : this.bundledModels();
     } catch (error) {
       const e = this.normalizeError(error);
@@ -201,6 +222,10 @@ export class OpenAIAdapter implements ProviderAdapter {
     return { inputTokens: estimateTokens(req), exact: false };
   }
 
+  normalizeUsage(raw: unknown): Usage {
+    return normalizeOpenAIUsage(raw as OpenAIUsage);
+  }
+
   normalizeError(error: unknown): ProviderError {
     if (error instanceof ProviderError) return error;
     const e = error as { name?: string; message?: string; cause?: { code?: string } };
@@ -211,7 +236,12 @@ export class OpenAIAdapter implements ProviderAdapter {
     return new ProviderError(PROVIDER, 'fatal', e?.message ?? String(error));
   }
 
-  async *stream(req: ModelRequest, auth: AuthContext, signal: AbortSignal): AsyncGenerator<StreamEvent> {
+  async *stream(original: ModelRequest, auth: AuthContext, signal: AbortSignal): AsyncGenerator<StreamEvent> {
+    const plan = planCapabilities(original, this.manifestFor(original.model));
+    const req = plan.request;
+    yield* degradationEvents(plan.degradations);
+    const serial = req.parallelToolCalls === false;
+    let streamedCalls = 0;
     let res: Response;
     try {
       res = await this.fetchImpl(`${this.base(auth)}/responses`, { method: 'POST', headers: this.headers(auth), body: JSON.stringify(toOpenAIRequest(req)), signal });
@@ -238,6 +268,8 @@ export class OpenAIAdapter implements ProviderAdapter {
           yield { type: 'reasoning_delta', text: event.delta };
         } else if (type === 'response.output_item.done' && event.item?.type === 'function_call') {
           const fc = event.item as Extract<OutputItem, { type: 'function_call' }>;
+          if (serial && streamedCalls >= 1) continue;
+          streamedCalls++;
           yield { type: 'tool_call', id: fc.call_id, name: fc.name, args: parseArgs(fc.arguments) };
         } else if (type === 'response.completed') {
           final = event.response;
@@ -258,9 +290,19 @@ export class OpenAIAdapter implements ProviderAdapter {
       throw this.normalizeError(error);
     }
     if (!final) throw new ProviderError(PROVIDER, 'transient', 'stream ended without response.completed');
-    const { message, toolCalls } = outputToMessage(final.output ?? []);
+    let { message, toolCalls } = outputToMessage(final.output ?? []);
+    if (serial && toolCalls > 1) {
+      // parallel_tool_calls=false should prevent this; enforce it if the server ignores the flag.
+      let kept = 0;
+      message = { ...message, parts: message.parts.filter((p) => p.type !== 'tool_call' || kept++ === 0) };
+      yield* degradationEvents([{ feature: 'parallel_tool_calls', detail: `serialized: kept 1 of ${toolCalls} tool calls this turn` }]);
+      toolCalls = 1;
+    }
     if (toolCalls > 0 && finish === 'stop') finish = 'tool_calls';
+    const structured = plan.validateSchema && toolCalls === 0
+      ? parseStructured(message.parts.filter((p) => p.type === 'text').map((p) => (p as { text: string }).text).join(''), plan.validateSchema)
+      : undefined;
     const usage = final.usage ? normalizeOpenAIUsage(final.usage) : { ...emptyUsage('estimate'), inputTokens: estimateTokens(req) };
-    yield { type: 'done', message, usage, finishReason: finish, responseId: final.id };
+    yield { type: 'done', message, usage, finishReason: finish, responseId: final.id, structured };
   }
 }

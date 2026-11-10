@@ -77,7 +77,7 @@ function probe(url: string): Promise<boolean> {
 export class DevServers {
   private readonly running = new Map<string, Running>();
   private readonly starting = new Map<string, Promise<DevServerInfo>>();
-  private readonly o: { egress?: EgressProxy; forceProcess?: boolean; onReady?: (root: string, info: DevServerInfo) => void; onExit?: (root: string, info: DevServerInfo, code: number | null) => void };
+  private readonly o: { egress?: EgressProxy; createSandbox?: (root: string) => LocalSandbox; onReady?: (root: string, info: DevServerInfo) => void; onExit?: (root: string, info: DevServerInfo, code: number | null) => void };
 
   constructor(opts: DevServers['o'] = {}) {
     this.o = opts;
@@ -105,7 +105,7 @@ export class DevServers {
   private async launch(root: string, opts: { timeoutMs?: number; recipe?: DevRecipe }): Promise<DevServerInfo> {
     const recipe = opts.recipe ?? detectDevServer(root);
     if (!recipe) throw new Error('no dev server found: package.json needs a "dev" or "start" script');
-    const sandbox = new LocalSandbox(prefixedId('dev'), root, { forceProcess: this.o.forceProcess, egress: this.o.egress });
+    const sandbox = this.o.createSandbox ? this.o.createSandbox(root) : new LocalSandbox(prefixedId('dev'), root, { egress: this.o.egress });
     const server = createServer((client: Socket) => {
       const up = sandbox.connectPort(recipe.port);
       client.pipe(up);

@@ -89,6 +89,8 @@ test('EventBus: topic matching, monotonic seq, batching, replay, and audit hash 
   assert.ok(replayed.some((e) => e.id === e2.id));
   assert.ok(!replayed.some((e) => e.topic === 'agent.message.delta'));
   assert.equal(bus.verifyAuditChain(), null);
+  assert.throws(() => db.run("UPDATE audit_log SET data_json = '{\"allow\":true}' WHERE id = 2"), /append-only/, 'SEC-9: the database refuses edits');
+  db.raw.exec('DROP TRIGGER audit_log_no_update'); // an attacker with the SQLite file could do this; the hash chain must still catch the edit
   db.run("UPDATE audit_log SET data_json = '{\"allow\":true}' WHERE id = 2");
   assert.equal(bus.verifyAuditChain(), 2);
   // seq continues monotonically after a "restart"

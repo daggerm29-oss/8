@@ -1,6 +1,8 @@
 export * from './jsonrpc.ts';
 export * from './models.ts';
 export * from './sse.ts';
+export * from './capabilities.ts';
+export * from './retry.ts';
 
 export const PROTOCOL_VERSION = '0.1.0';
 
@@ -56,7 +58,8 @@ export interface InitializeResult {
   engineVersion: string;
   protocolVersion: string;
   engineId: string;
-  capabilities: { sandboxProviders: string[]; providers: string[]; topics: string[] };
+  /** `sandboxProviders`: usable backends (`local-os` only applies to trusted-repo opt-in). `defaultSandbox`: null = agent processes are refused (fail closed). */
+  capabilities: { sandboxProviders: string[]; defaultSandbox: string | null; providers: string[]; topics: string[] };
 }
 
 export interface TaskCreateParams {
@@ -103,9 +106,14 @@ export const Methods = {
   approvalRespond: 'agent.approve',
   ledgerQuery: 'ledger.query',
   budgetsSet: 'ledger.budgets.set',
+  /* R0.4 (FR-31): ledger vs provider-reported usage + attribution completeness */
+  ledgerReconcile: 'ledger.reconcile',
   modelsList: 'models.list',
   providersList: 'models.providers.list',
   sandboxCheck: 'sandbox.check',
+  /* SEC-1 trusted-repo light mode + permanent isolation indicator (R0.2) */
+  workspaceTrust: 'workspace.trust',
+  workbenchStatus: 'workbench.status',
   eventsReplay: 'events.replay',
   /* M1 */
   indexUpdate: 'index.update',
@@ -125,6 +133,14 @@ export const Methods = {
   taskSteps: 'task.steps',
   /* M1 — MCP (F-MCP-1) */
   mcpList: 'mcp.list',
+  /* R0.5 (§26.5): audited MCP server add, remove, and trust change */
+  mcpAdd: 'mcp.add',
+  mcpRemove: 'mcp.remove',
+  mcpTrust: 'mcp.trust',
+  /* R0.5 (F-OBS-3, SEC-9): audit chain verification and JSONL export */
+  auditVerify: 'audit.verify',
+  auditExport: 'audit.export',
+  traceGet: 'trace.get',
   /* M1 — role-based models (F-MDL-4) */
   modelsRoles: 'models.roles',
   modelsUsage: 'models.usage',

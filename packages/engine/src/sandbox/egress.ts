@@ -13,6 +13,8 @@ export interface SecretBinding {
   injectHosts: string[];
   sentinel: string;
   value: string;
+  /** How many times the proxy has swapped this secret into a request (credential use, §26.5). Never the value. */
+  uses: number;
 }
 
 /** Request bodies with these content types are scanned (and substituted); others pass unscanned. */
@@ -42,6 +44,8 @@ export interface EgressPolicy {
   onDenied(info: { host: string; port: number; method: string; reason: string }, ctx: EgressContext): void;
   /** A sentinel was sent somewhere its secret may not go; the request was blocked. */
   onExfil?(info: { secret: string; host: string; where: string }, ctx: EgressContext): void;
+  /** The proxy injected a bound secret into a request to `host` (by count, not value). */
+  onInject?(info: { secret: string; host: string; where: string; uses: number }, ctx: EgressContext): void;
 }
 
 /** RFC1918, loopback, link-local (incl. cloud metadata), CGNAT, ULA: always blocked (§16.5). */
@@ -107,7 +111,7 @@ export class EgressProxy {
     const hosts = [...new Set(b.injectHosts.map((h) => h.trim().toLowerCase()).filter(Boolean))];
     if (!hosts.length) throw new Error('injectHosts must name at least one host');
     const list = (this.bindings.get(root) ?? []).filter((x) => x.name !== b.name);
-    const binding: SecretBinding = { name: b.name, value: b.value, injectHosts: hosts, sentinel: `helix_sntl_${randomBytes(16).toString('hex')}` };
+    const binding: SecretBinding = { name: b.name, value: b.value, injectHosts: hosts, sentinel: `helix_sntl_${randomBytes(16).toString('hex')}`, uses: 0 };
     list.push(binding);
     this.bindings.set(root, list);
     return binding;
@@ -150,6 +154,8 @@ export class EgressProxy {
       if (!out.includes(b.sentinel)) continue;
       if (!b.injectHosts.includes(host)) { this.policy.onExfil?.({ secret: b.name, host, where }, ctx); return null; }
       out = out.split(b.sentinel).join(b.value);
+      b.uses += 1;
+      this.policy.onInject?.({ secret: b.name, host, where, uses: b.uses }, ctx);
     }
     return out;
   }
