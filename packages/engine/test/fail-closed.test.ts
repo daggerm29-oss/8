@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,7 +14,7 @@ import { startFakeProvider, type FakeScript, type FakeTurn } from '@helix/provid
 import { Engine, wsTransport } from '../src/engine.ts';
 import { LocalSandbox, SandboxUnavailableError, resolveBackend, sandboxStatus } from '../src/sandbox/sandbox.ts';
 import { localOsTool } from '../src/sandbox/localos.ts';
-import { containerRuntime, resetContainerProbe } from '../src/sandbox/container.ts';
+import { containerRuntime, describeContainerProbe, resetContainerProbe } from '../src/sandbox/container.ts';
 
 const SRC = fileURLToPath(new URL('../src/', import.meta.url));
 const UI = fileURLToPath(new URL('../ui/', import.meta.url));
@@ -193,6 +193,8 @@ for (const cleanupWorks of [true, false]) {
           originalRm(dir, { recursive: true, force: true });
           cleaned.add(dir);
         } else status = 1;
+      } else if (args[0] === 'run' && args[1] === '--help') {
+        return { pid: 1, output: [null, '      --no-hostname   Do not create /etc/hostname\n', ''], stdout: '      --no-hostname   Do not create /etc/hostname\n', stderr: '', status: 0, signal: null };
       } else if (args.includes('run')) {
         const ws = args[args.indexOf('-w') + 1];
         const dir = join(ws, '..');
@@ -221,6 +223,66 @@ for (const cleanupWorks of [true, false]) {
       resetContainerProbe();
       for (const dir of dirs) originalRm(dir, { recursive: true, force: true });
       originalRm(bin, { recursive: true, force: true });
+    }
+  });
+}
+
+// CI run 42818386074 (ubuntu-24.04, Podman 4.9.3): every candidate exited 125 with `unknown flag: --no-hostname`.
+for (const podman of [{ version: '4.9.3', noHostname: false }, { version: '5.6.1', noHostname: true }]) {
+  test(`rootless Podman ${podman.version} probe: --no-hostname only when supported; isolation flags kept; rejection reason reported`, () => {
+    const require = createRequire(import.meta.url);
+    const cp = require('node:child_process') as typeof import('node:child_process');
+    const originalSpawn = cp.spawnSync;
+    const bin = tmp('helix-probe-bin-');
+    writeFileSync(join(bin, 'podman'), '');
+    const runs: string[][] = [];
+    const help = `Options:\n      --no-hosts      Do not create /etc/hosts\n${podman.noHostname ? '      --no-hostname   Do not create /etc/hostname\n' : ''}      --read-only     Make containers root filesystem read-only\n`;
+    const reply = (status: number, stdout: string, stderr = '') => ({ pid: 1, output: [null, stdout, stderr], stdout, stderr, status, signal: null });
+    let helpText = help;
+    cp.spawnSync = ((cli: string, args: string[]) => {
+      assert.equal(cli, 'podman');
+      if (args[0] === 'run' && args[1] === '--help') return reply(0, helpText);
+      if (args[0] === 'info') return reply(0, 'true\n');
+      if (args[0] === 'unshare') return reply(0, '');
+      if (args.includes('run')) {
+        runs.push(args);
+        if (args.includes('--no-hostname') && !podman.noHostname) return reply(125, '', "Error: unknown flag: --no-hostname\nSee 'podman run --help'\n");
+        writeFileSync(join(args[args.indexOf('-w') + 1], 'probe'), 'ok');
+        return reply(0, '');
+      }
+      return reply(1, '');
+    }) as typeof cp.spawnSync;
+    syncBuiltinESMExports();
+    try {
+      withEnv({ PATH: bin, HELIX_CONTAINER_CLI: 'podman', HELIX_CONTAINER_RUNTIME: 'crun', HELIX_SANDBOX_IMAGE: undefined }, () => {
+        resetContainerProbe();
+        const runtime = containerRuntime();
+        assert.equal(runtime?.cli, 'podman', describeContainerProbe());
+        assert.equal(runtime?.noHostname, podman.noHostname);
+        const args = runs[0];
+        assert.equal(args.includes('--no-hostname'), podman.noHostname);
+        for (const flag of ['--read-only', '--no-hosts', '--init']) assert.ok(args.includes(flag), flag);
+        assert.equal(args[args.indexOf('--network') + 1], 'none');
+        assert.equal(args[args.indexOf('--cap-drop') + 1], 'ALL');
+        assert.equal(args[args.indexOf('--security-opt') + 1], 'no-new-privileges');
+        assert.equal(args[args.indexOf('--userns') + 1], 'keep-id');
+        assert.ok(args.filter((a) => a.startsWith('type=bind,') && !a.endsWith(',ro')).every((m) => /dst=\/tmp$|dst=.*\/ws$/.test(m)), 'only scratch and workspace are writable');
+      });
+      // Forcing the Podman-5-only flag on Podman 4 reproduces the CI failure: fail closed, with Podman's own error surfaced.
+      if (!podman.noHostname) {
+        withEnv({ PATH: bin, HELIX_CONTAINER_CLI: 'podman', HELIX_CONTAINER_RUNTIME: 'crun', HELIX_SANDBOX_IMAGE: undefined, HELIX_SANDBOX_PROVIDER: 'local-container' }, () => {
+          helpText = `${help}      --no-hostname   (mis-detected)\n`;
+          resetContainerProbe();
+          assert.equal(containerRuntime(), null);
+          assert.match(describeContainerProbe(), /rejected \(exit=125\)\n\s+Error: unknown flag: --no-hostname/);
+          assert.throws(() => resolveBackend(), (e: Error) => e instanceof SandboxUnavailableError && /unknown flag: --no-hostname/.test(e.message));
+        });
+      }
+    } finally {
+      cp.spawnSync = originalSpawn;
+      syncBuiltinESMExports();
+      resetContainerProbe();
+      rmSync(bin, { recursive: true, force: true });
     }
   });
 }

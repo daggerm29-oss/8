@@ -28,6 +28,12 @@ export interface ContainerRuntime {
   seccomp: boolean;
   /** Image (docker) or null when podman runs a host-toolchain rootfs directory. */
   image: string | null;
+  /**
+   * Podman >= 5 `--no-hostname` (skip the generated /etc/hostname bind). Podman 4.x (e.g. Ubuntu 24.04's 4.9.3)
+   * rejects the unknown flag with exit 125, so it is passed only when `podman run --help` lists it. Not an
+   * isolation control: without it Podman bind-mounts a file containing the container id.
+   */
+  noHostname?: boolean;
 }
 
 const ROOT_LINKS = ['/bin', '/sbin', '/lib', '/lib32', '/lib64', '/libx32'];
@@ -92,7 +98,7 @@ export function runArgs(s: RunSpec): string[] {
   // host path is still a read-only bind). See docs/decisions.md IMPL-ADR for R0.1.
   const overlayRoot = s.tty && rt.cli === 'podman' && !rt.image;
   a.push('run', '--rm', '--name', s.name, '--network', 'none', ...(overlayRoot ? [] : ['--read-only']), '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--init', '-w', s.cwd, '--env-file', s.envFile);
-  if (rt.cli === 'podman') a.push('--userns', 'keep-id', '--no-hosts', '--no-hostname', '--read-only-tmpfs=false', '--log-driver', 'none');
+  if (rt.cli === 'podman') a.push('--userns', 'keep-id', '--no-hosts', ...(rt.noHostname ? ['--no-hostname'] : []), '--read-only-tmpfs=false', '--log-driver', 'none');
   else a.push('--user', `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`, '--log-driver', 'none');
   for (const [k, v] of Object.entries(s.labels)) a.push('--label', `${k}=${v}`);
   if (rt.proc === 'masked') a.push('--mount', 'type=tmpfs,destination=/proc');
@@ -182,9 +188,11 @@ export function containerRuntime(): ContainerRuntime | null {
     }
     const seccomp = probeSeccomp(cli);
     const image = cli === 'docker' ? process.env.HELIX_SANDBOX_IMAGE || 'docker.io/library/debian:stable-slim' : process.env.HELIX_SANDBOX_IMAGE || null;
+    const noHostname = cli === 'podman' && podmanRunSupports('--no-hostname');
+    if (cli === 'podman' && !noHostname) skipped.push('podman: `run --help` does not list --no-hostname (Podman < 5); the flag is omitted');
     for (const runtime of runtimes) {
       for (const proc of ['proc', 'masked'] as const) {
-        const rt: ContainerRuntime = { cli, runtime, runtimeName: runtime ? runtime.split('/').pop()! : defaultRuntimeName(cli), gvisor: !!runtime && runtime.endsWith('runsc'), proc, seccomp, image };
+        const rt: ContainerRuntime = { cli, runtime, runtimeName: runtime ? runtime.split('/').pop()! : defaultRuntimeName(cli), gvisor: !!runtime && runtime.endsWith('runsc'), proc, seccomp, image, ...(cli === 'podman' ? { noHostname } : {}) };
         if (rt.gvisor && proc === 'masked') continue;
         if (tryRun(rt)) return (probed = rt);
       }
@@ -197,6 +205,13 @@ function defaultRuntimeName(cli: ContainerCli): string {
   const fmt = cli === 'podman' ? '{{.Host.OCIRuntime.Name}}' : '{{.DefaultRuntime}}';
   const r = spawnSync(cli, ['info', '--format', fmt], { encoding: 'utf8', env: clientEnv(), timeout: 15_000 });
   return r.status === 0 && r.stdout.trim() ? r.stdout.trim() : 'default';
+}
+
+/** Whether this podman's `run` accepts an optional flag (listed in `podman run --help`). */
+export function podmanRunSupports(flag: string): boolean {
+  const r = spawnSync('podman', ['run', '--help'], { encoding: 'utf8', env: clientEnv(), timeout: 15_000 });
+  if (r.status !== 0 || typeof r.stdout !== 'string') return false;
+  return new RegExp(`(^|[\\s,])${flag.replace(/[-]/g, '\\-')}(?![\\w-])`, 'm').test(r.stdout);
 }
 
 function probeSeccomp(cli: ContainerCli): boolean {
