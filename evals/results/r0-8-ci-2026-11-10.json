@@ -31,6 +31,12 @@
     "result": "HTTP 403: Resource not accessible by integration",
     "successfulDispatchWatchVerified": false
   },
+  "referenceRunnerInventory": {
+    "verifiedAt": "2026-11-10",
+    "command": "gh api repos/daggerm29-oss/8/actions/runners",
+    "total_count": 0,
+    "runners": []
+  },
   "fullR08Complete": false,
-  "remaining": ["Exact dispatch/watch acceptance is permission-blocked", "Nightly reference/full-HTS job provisioning is not certified; later harnesses remain absent"]
+  "remaining": ["Exact dispatch/watch acceptance is permission-blocked", "No self-hosted reference runner is registered; nightly full-evaluation harnesses/provisioning are not certified"]
 }

@@ -64,8 +64,8 @@
 
 ## Last session (overwrite each session, max 5 lines)
 
-- 2026-11-10 (PR #22, M0 only): R0.1/R0.2/R0.4/R0.5/R0.6/R0.7/R0.9 passed; R0.3/R0.8/G0.1/G0.2 remain open. Parked M3 PR #19 untouched.
-- Latest full engine rerun after CI cleanup: 138 passed / 8 failed / 0 skipped; all 8 failures require local-container, currently unavailable after workspace resume (Podman stale boot-ID runtime state; isolated XDG recovery did not repair it). Agent tests 7/7; injected restart assertion exits cleanly; tsc clean. Previous ff48f44 run was 147/147, not evidence for this resumed environment.
-- Live container fixtures + live-tool restart: 3/3, 16 provider calls, 0% token delta; unknown costs keep G0.1 failed. Default Gemini 3.8 had 503/headers timeout. JSON retained in evals/results/.
-- CI failure control: scratch run 42809113863 correctly failed its seeded assertion; main-branch workflow dispatch 404 and push run 42805156815 cancelled, so host CI is not certified green.
-- Safe to merge: no (open host/live/scope gates). Next: see Current task notes; no M1 work.
+- 2026-11-10 PR #22, M0 only: G0.1 and R0.10 complete; FR-1 → Done. R0.3, full R0.8 and G0.2 remain open. No M1, no merge, PR #19 untouched; original requirements/checker/milestone mapping unchanged.
+- Full engine suite run ONCE at session end: `HELIX_SANDBOX_BACKENDS=local-container,local-unshare,local-os node --disable-warning=ExperimentalWarning --test --test-concurrency=1 "test/**/*.test.ts"` → 166/166, 0 failed/skipped (157.8 s). TypeScript clean; CLI 11/11; provider A-local 23/23; scope mutations 11/11; primary trace/cancel 8/8; exit helper 3/3.
+- Exact live G0.1 passes: 3/3 actual CLI container fixtures, restart/no completed-call replay, 16 provider responses, 0% token/cost delta, $0.0156774 Standard reference valuation (not an invoice). JSON: evals/results/m0-exit-gemini-default-2026-11-10T14-06-10-730Z.json; final verification: evals/results/m0-session-verification-2026-11-10.json.
+- Host CI 42822113350 green; fresh current-workflow negative 42828757024 fails its intentional assertion. Dispatch denied HTTP 403; registered reference runners = 0. New code-checkpoint CI 42831708686/42831695530 was still running when checked; not claimed green.
+- Safe to merge: no. Strict M0 scope still rejects only F-MDL-1/F-AGT-1 (saved g0-2-scope-2026-11-10.json). Approval options: docs/r0-3-auth-decision.md; resume only after explicit auth/acceptance and original M0/M1 mapping decisions.
