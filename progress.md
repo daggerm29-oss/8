@@ -28,8 +28,8 @@
 
 ## Current task notes (overwrite when the task changes)
 
-- Next: M0 R0.3 Provider conformance completion. Accept: `cd packages/providers/conformance && node --test` (see `docs/roadmap.md`).
-- R0.2 done: no unisolated fallback (`resolveBackend` throws `SandboxUnavailableError` → RPC `sandbox_unavailable`); `local-os` only via `workspace.trust` lightMode; top-bar indicator from `workbench.status`.
+- R0.3 Blocked only on `OPENAI_API_KEY` (OpenAI live listing); all A-local cases + Gemini live pass (commit 663805d). Live checks: `HELIX_LIVE=1` (+ `HELIX_LIVE_GEMINI_MODEL=gemini-3.5-flash-lite`).
+- Working on R0.4 Ledger attribution and reconciliation: `packages/engine/test/ledger-reconcile.test.ts`.
 - Sandbox tests need `sudo dnf install -y podman crun bubblewrap` after a VM reset; conformance: `HELIX_SANDBOX_BACKENDS=local-container,local-unshare,local-os`.
 - Parked: draft PR #19 (M3) is untouched; do not continue it until M3 is the current milestone (AGENTS.md §3). Then first fix its shared-mode write-lease bypass and worktree lease leak.
 

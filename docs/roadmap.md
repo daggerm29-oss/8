@@ -53,6 +53,7 @@
   - Accept [A-local]: `node --test test/fail-closed.test.ts` → with no isolating backend (PATH without unshare/podman/docker) `task.create` returns `sandbox_unavailable` and no child process is spawned; trusted-repo `local-os` opt-in runs, emits `sandbox.light_mode` audit event, and `workbench.status` reports `isolation: "light"`; `local-process` provider no longer exists (`grep -r local-process src` → 0 hits)
 - [ ] **R0.3 Provider conformance completion** (F-MDL-1, FR-5, FR-1) [§7.1, §7.2] — structured output (response schema) in the IR and both adapters; rate-limit retry case; explicit degradation of unsupported features; live model listing exercised. Done when: the conformance suite covers streaming, tool round-trip, structured output, cancellation, and rate-limit retry for Gemini and OpenAI.
   - Accept [A-local]: `cd packages/providers/conformance && node --test` → new cases pass for both adapters against recorded fixtures: structured output returns schema-valid JSON, 429 with Retry-After is retried then succeeds, unsupported parallel tool calls degrade to serial with a `capability.degraded` note; live listing smoke (`HELIX_LIVE=1`) lists ≥ 1 model per provider
+  - Blocked: needs `OPENAI_API_KEY` for the OpenAI half of the live listing smoke; A-local parts pass (`cd packages/providers/conformance && node --test` → 23/23 pass, 6 live skipped: structured output schema-valid + invalid reported, strict/unsupported degradation, 429 Retry-After 1 s retried then succeeds, maxRetries + no auth retry, parallel→serial with `capability.degraded`, for gemini and openai); Gemini live (`HELIX_LIVE=1`) → listing 28 live chat models, structured output on `gemini-3.5-flash-lite` schema-valid (after one real 503 retried by `streamWithRetry`); `node --test test/models.test.ts` → 9/9 (gateway logs degradation + `capability.degraded` span event); `npx tsc -p tsconfig.helix.json` → 0 errors; commit 663805d
 - [ ] **R0.4 Ledger attribution and reconciliation** (FR-31, F-TOK-1) [§29.6] — every call attributed to agent, task, tool, provider, model, role; provider-reported usage wins; reconciliation report. Done when: ledger totals match recorded provider usage within ±1%.
   - Accept [A-local]: `node --test test/ledger-reconcile.test.ts` → over 50 recorded provider responses, every ledger row has agent, task, tool, provider, model, role; summed tokens and cost differ from provider-reported totals by ≤ 1%
 - [ ] **R0.5 Trace and audit completeness** (NFR-10, F-OBS-1, F-OBS-3, SEC-9) [§26.1, §26.5] — one span per agent step and tool call with tokens, latency, tool I/O refs; audit chain covers every §26.5 event category. Done when: a scripted run produces the full span tree and one audit event per category, and the chain verifies.
@@ -539,7 +540,7 @@ External exit gates (plan §12 M4; not build tasks, never simulated):
 
 | ID | Milestone | Status | Audit | Tasks | Remaining gap vs original AC |
 |---|---|---|---|---|---|
-| FR-1 | M0 | Partial (audit FV, residual gap) | FV | M0 Gemini adapter; R0.3 | Live listing only partially exercised (fake server in tests) |
+| FR-1 | M0 | Partial (audit FV, residual gap) | FV | M0 Gemini adapter; R0.3 | M0 part: Evidence: `HELIX_LIVE=1 node --test` (conformance) → Gemini live listing 28 chat models (non-chat tts/image/music filtered), live structured call schema-valid; commit 663805d. Remaining: per-request config not re-verified live for thinking level |
 | FR-2 | M2 | Partial | RED | R2.16 (enabling = external gate X-M2.1) | SIWC/OIDC+PKCE not implemented |
 | FR-3 | M1 | Done | FV | M1 Role-based models | — |
 | FR-4 | M2 | Partial | RED | M2 Model router v1; R2.10 | No capability, context-size, cost, or latency features in routing |
@@ -577,7 +578,7 @@ External exit gates (plan §12 M4; not build tasks, never simulated):
 | FR-36 | M2 (local), M4 (PR bot) | Not started | MISS | R2.12; M4 PR review bot | Local review agent (M2 scope) not scheduled |
 | FR-37 | M4 | Not started | DEF(M4) | M4 Deploy adapters | All |
 | FR-38 | M4 | Not started | DEF(M4) | M4 control plane; M4 Shared memory and skills | All team features |
-| F-MDL-1 | M0 | Partial | RED | R0.3 | Structured output (no API, no conformance case); rate-limit *retry* is in the gateway, not in the conformance suite |
+| F-MDL-1 | M0 | Partial | RED | R0.3 | Conformance (streaming, tool round-trip, structured output, cancellation, rate-limit retry) passes for both adapters on fakes and Gemini live; explicit logged degradation done (commit 663805d). Missing: OpenAI live run (no key); AC1 "new provider ≤ 1 package" not re-proven; embeddings (R1.13), caching hints (R1.35) |
 | F-MDL-2 | M1 | Partial | RED | R1.35 | Multimodal input (IR has text parts only, `protocol/src/models.ts:29`); explicit context caching (`cachedContents`); key validation on entry; deprecated-model hiding |
 | F-MDL-3 | M2 (SIWC flagged) | Partial | RED | R2.16 | SIWC |
 | F-MDL-4 | M1 | Done | FV | M1 Role-based models | — |
