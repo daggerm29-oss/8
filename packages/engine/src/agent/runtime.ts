@@ -289,7 +289,7 @@ export class TaskRuntime {
       const l = s.ledger_entry ? ledger.get(s.ledger_entry) : undefined;
       return {
         id: s.id, index: s.idx, kind: s.kind, status: s.status, startedAt: s.started_at, endedAt: s.ended_at,
-        model: l ? { role: l.role, ref: `${l.provider}/${l.model}`, inputTokens: l.input_tokens, outputTokens: l.output_tokens, costUsd: l.cost_usd ?? 0 } : null,
+        model: l ? { role: l.role, ref: `${l.provider}/${l.model}`, inputTokens: l.input_tokens, outputTokens: l.output_tokens, costUsd: l.cost_usd } : null,
         text: parts.filter((p) => p.type === 'text').map((p) => (p as { text: string }).text).join(''),
         toolCalls: parts.filter((p): p is Extract<Part, { type: 'tool_call' }> => p.type === 'tool_call').map((p) => {
           const c = calls.get(p.id);
@@ -913,6 +913,9 @@ export class TaskRuntime {
 
   private async runTools(t: TaskRow, calls: Array<Extract<Part, { type: 'tool_call' }>>, sandbox: LocalSandbox, signal: AbortSignal, index?: WorkspaceIndex): Promise<void> {
     const preapprove = parseJson<string[]>(t.preapprove_json, []);
+    const origin = this.o.db.get<{ step_id: string; ledger_entry: string; cost_usd: number | null }>(
+      `SELECT s.id AS step_id, s.ledger_entry, l.cost_usd FROM messages m JOIN steps s ON s.id = m.step LEFT JOIN ledger_entries l ON l.id = s.ledger_entry WHERE m.task = ? AND m.role = 'assistant' ORDER BY m.id DESC LIMIT 1`, t.id,
+    );
     let tainted = this.transcript(t.id).some((m) => m.parts.some((p) => p.type === 'tool_result' && p.provenance?.taint));
     for (const call of calls) {
       if (signal.aborted) return;
@@ -920,8 +923,8 @@ export class TaskRuntime {
       const toolId = existing?.id ?? prefixedId('tc');
       const checkpointId = existing?.checkpoint ?? prefixedId('ckpt');
       if (!existing) this.o.db.transaction(() => {
-        this.o.db.run('INSERT INTO checkpoints (id, task, step, files_json, at) VALUES (?, ?, ?, ?, ?)', checkpointId, t.id, null, '[]', new Date().toISOString());
-        this.o.db.run('INSERT INTO tool_calls (id, task, step, call_id, tool, args_json, status, checkpoint, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', toolId, t.id, 'tools', call.id, call.name, json(call.args), 'running', checkpointId, new Date().toISOString());
+        this.o.db.run('INSERT INTO checkpoints (id, task, step, files_json, at) VALUES (?, ?, ?, ?, ?)', checkpointId, t.id, origin?.step_id ?? null, '[]', new Date().toISOString());
+        this.o.db.run('INSERT INTO tool_calls (id, task, step, call_id, tool, args_json, status, checkpoint, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', toolId, t.id, origin?.step_id ?? 'tools', call.id, call.name, json(call.args), 'running', checkpointId, new Date().toISOString());
       });
       const decision = evaluate({ tool: call.name, args: call.args, profile: t.policy_profile, preapprove, sandboxHasNetwork: sandbox.info().network, tainted });
       let allowed = decision.verdict === 'allow';
@@ -949,7 +952,10 @@ export class TaskRuntime {
       // One `tool.call` span per call, denied ones included (§26.1), under the agent step that requested it.
       const out: ToolOutput = await this.o.tracer.withSpan('tool.call', {
         tool: call.name, 'task.id': t.id, call_id: call.id, 'checkpoint.id': checkpointId, action_class: decision.actionClass, 'policy.decision': allowed ? 'allow' : 'deny', 'policy.reason': decision.reason.slice(0, 200), replayed: Boolean(replayed),
+        'model.cost_known': origin?.cost_usd !== null && origin?.cost_usd !== undefined,
+        'model.cost_basis': 'shared originating model response; non-additive attribution, not an additional tool execution charge',
       }, async (span) => {
+        span.setAttributes({ 'model.step_id': origin?.step_id, 'model.ledger.entry': origin?.ledger_entry, 'model.cost_usd': origin?.cost_usd ?? undefined });
         const hooks = replayed || !allowed ? [] : this.hooksFor(sandbox.root);
         const pre = await runHooks(sandbox, hooks, 'pre_tool', { tool: call.name, args: call.args }, signal);
         const blocked = pre.find((r) => r.exitCode !== 0);

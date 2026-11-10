@@ -26,6 +26,29 @@ const REAL_SECRET = 'real-secret-audit-5d1c';
 const tmp = (p: string) => mkdtempSync(join(tmpdir(), p));
 const scripted = (turns: FakeTurn[]): FakeScript => ({ index }) => turns[Math.min(index, turns.length - 1)];
 
+test('R0.10: unknown primary model costs stay unknown in tool spans and step records', async () => {
+  const dir = tmp('helix-unpriced-tool-');
+  cpSync(FIXTURE, dir, { recursive: true });
+  const fake = await startFakeProvider('gemini', scripted([
+    { toolCalls: [{ name: 'read_file', args: { path: 'src/calc.js' } }], usage: { input: 100, output: 10 } },
+    { text: 'Read only.', usage: { input: 150, output: 5 } },
+  ]));
+  const engine = new Engine({ home: tmp('helix-unpriced-home-'), env: { GEMINI_API_KEY: fake.apiKey, HELIX_GEMINI_BASE_URL: fake.url }, mcp: false });
+  try {
+    const task = engine.runtime.create({ workspacePath: dir, goal: 'Read the source.', provider: 'gemini', model: 'gemini-3.6-flash', verifyCommand: 'node -e 0' });
+    const result = await engine.runtime.wait(task.id, 30_000);
+    assert.equal(result.status, 'done');
+    const spans = engine.tracer.spansForTask(task.id).filter((span) => span.name === 'tool.call');
+    assert.equal(spans.length, 1);
+    assert.equal(spans[0].attributes['model.cost_known'], false);
+    assert.equal(spans[0].attributes['model.cost_usd'], undefined);
+    assert.equal(typeof spans[0].attributes['model.ledger.entry'], 'string');
+    const steps = engine.runtime.steps(task.id).filter((step) => step.kind === 'model');
+    assert.ok(steps.length > 0 && steps.every((step) => step.model?.costUsd === null));
+    assert.equal(engine.gateway.reconcile({ task: task.id }).totals.ledger.costUsd, null);
+  } finally { await engine.close(); await fake.close(); }
+});
+
 const GEMINI_TURNS: FakeTurn[] = [
   { toolCalls: [{ name: 'read_file', args: { path: 'src/calc.js' } }], usage: { input: 900, output: 30 } },
   { toolCalls: [{ name: 'code_search', args: { query: 'subtract' } }], usage: { input: 1200, cached: 700, output: 25 } },
@@ -163,6 +186,17 @@ test('R0.5: scripted run produces the full span tree and one audit event per §2
       const span = toolSpansInOrder[i];
       assert.ok(span, `span for ${row.tool}`);
       assert.equal(span.attributes.tool, row.tool);
+      const owner = engine.db.get<{ step_id: string; ledger_entry: string; cost_usd: number | null; checkpoint: string; checkpoint_step: string }>(
+        `SELECT tc.step AS step_id, s.ledger_entry, l.cost_usd, tc.checkpoint, c.step AS checkpoint_step FROM tool_calls tc JOIN steps s ON s.id = tc.step JOIN ledger_entries l ON l.id = s.ledger_entry JOIN checkpoints c ON c.id = tc.checkpoint WHERE tc.task = ? ORDER BY tc.at, tc.rowid LIMIT 1 OFFSET ?`, task1, i,
+      );
+      assert.ok(owner, 'primary tool row links durably to the generating step, ledger and checkpoint');
+      assert.equal(span.attributes['model.step_id'], owner.step_id);
+      assert.equal(span.attributes['model.ledger.entry'], owner.ledger_entry);
+      assert.equal(span.attributes['model.cost_usd'], owner.cost_usd ?? undefined);
+      assert.equal(span.attributes['model.cost_known'], owner.cost_usd !== null);
+      assert.match(String(span.attributes['model.cost_basis']), /non-additive/);
+      assert.equal(span.attributes['checkpoint.id'], owner.checkpoint);
+      assert.equal(owner.checkpoint_step, owner.step_id);
       assert.equal(typeof span.attributes.latency_ms, 'number');
       assert.equal(span.attributes['policy.decision'], row.status === 'denied' ? 'deny' : 'allow');
       assert.equal(span.attributes.outcome, row.status === 'denied' ? 'denied' : row.status);
