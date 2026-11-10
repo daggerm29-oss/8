@@ -14,7 +14,7 @@ import {
 import type { Vault } from '../vault/vault.ts';
 import type { Tracer } from '../obs/tracing.ts';
 import type { Logger } from '../util/log.ts';
-import { costOf, type Ledger, type ModelRole } from './ledger.ts';
+import { attributeRequest, costOf, type Ledger, type ModelRole, type ReconcileReport } from './ledger.ts';
 
 export class BudgetExceededError extends Error {
   readonly reason: string;
@@ -108,6 +108,15 @@ export class ModelGateway {
     this.breakerErrorRate = opts.breaker?.errorRate ?? 0.5;
   }
 
+  /** Ledger vs provider-reported usage (re-derived from raw usage metadata by each adapter) and attribution check. */
+  reconcile(filter: { task?: string; ws?: string; since?: string; tolerancePct?: number } = {}): ReconcileReport {
+    return this.ledger.reconcile({
+      ...filter,
+      normalizeUsage: (provider, raw) => this.adapters.get(provider)?.normalizeUsage?.(raw),
+      pricing: (provider, model) => this.manifest(provider, model)?.pricing,
+    });
+  }
+
   /** True while the breaker for this (provider, model) is open and still cooling down. */
   isOpen(provider: string, model: string): boolean {
     const b = this.breakers.get(`${provider}:${model}`);
@@ -174,6 +183,10 @@ export class ModelGateway {
     const auth = this.vault.providerAuth(c.provider);
     const req: ModelRequest = { ...c.request, model: c.model };
     const manifest = this.manifest(c.provider, c.model);
+    // FR-31: every call is attributed (tool result tokens + context split), whether or not the caller supplied it.
+    const attribution = attributeRequest(req);
+    const toolTokens = c.toolTokens ?? attribution.toolTokens;
+    const contextBreakdown = c.contextBreakdown ?? attribution.contextBreakdown;
     const estInput = estimateTokens(req);
     const estOutput = Math.min(req.maxOutputTokens ?? 4096, 4096);
     const decision = this.ledger.check({ task: c.task, ws: c.ws, estimateUsd: costOf(manifest?.pricing, { inputTokens: estInput, cachedInputTokens: 0, outputTokens: estOutput }), estimateTokens: estInput + estOutput });
@@ -211,14 +224,14 @@ export class ModelGateway {
         const latencyMs = performance.now() - started;
         const entry = this.ledger.record({
           ws: c.ws, task: c.task, agent: c.agent, step: c.step, role: c.role, provider: c.provider, model: c.model, usage: result.usage, latencyMs,
-          status: 'ok', providerResponseId: result.responseId, contextBreakdown: c.contextBreakdown, toolTokens: c.toolTokens, routerReason: c.routerReason,
+          status: 'ok', providerResponseId: result.responseId, contextBreakdown, toolTokens, routerReason: c.routerReason,
         }, manifest?.pricing);
         this.recordOutcome(breaker, true);
         return { message: result.message, usage: result.usage, finishReason: result.finishReason, responseId: result.responseId, ledgerEntryId: entry.id, costUsd: entry.costUsd, attempts: attempt + 1, latencyMs };
       } catch (error) {
         const e = adapter.normalizeError(error);
         const latencyMs = performance.now() - started;
-        this.ledger.record({ ws: c.ws, task: c.task, agent: c.agent, step: c.step, role: c.role, provider: c.provider, model: c.model, usage: emptyUsage('estimate'), latencyMs, status: e.kind === 'cancelled' ? 'cancelled' : 'error', error: `${e.kind}: ${e.message}`, routerReason: c.routerReason }, manifest?.pricing);
+        this.ledger.record({ ws: c.ws, task: c.task, agent: c.agent, step: c.step, role: c.role, provider: c.provider, model: c.model, usage: emptyUsage('estimate'), latencyMs, status: e.kind === 'cancelled' ? 'cancelled' : 'error', error: `${e.kind}: ${e.message}`, routerReason: c.routerReason, contextBreakdown, toolTokens }, manifest?.pricing);
         if (e.kind === 'cancelled') throw e;
         this.recordOutcome(breaker, false);
         if (breaker.openedAt !== null || !e.retryable || attempt >= this.maxRetries) throw e;

@@ -1,4 +1,4 @@
-import type { LedgerTotals, ModelManifest, Usage } from '@helix/protocol';
+import type { LedgerTotals, ModelManifest, ModelRequest, Usage } from '@helix/protocol';
 import type { Db } from '../storage/db.ts';
 import type { EventBus } from '../events/bus.ts';
 import { prefixedId } from '../util/ids.ts';
@@ -51,6 +51,71 @@ export function costOf(pricing: ModelManifest['pricing'] | undefined, usage: Pic
 }
 
 const today = () => new Date().toISOString().slice(0, 10);
+const tok = (chars: number) => Math.ceil(chars / 4);
+
+/**
+ * Attribution of one request (§29.6): tokens each tool's results contribute to this prompt (`toolTokens`,
+ * by tool name) and the prompt split by kind (`contextBreakdown`). Estimated (~4 chars/token); the row's
+ * provider-reported totals stay authoritative.
+ */
+export function attributeRequest(req: Pick<ModelRequest, 'system' | 'messages' | 'tools'>): { toolTokens: Record<string, number>; contextBreakdown: Record<string, number> } {
+  const toolTokens: Record<string, number> = {};
+  const breakdown: Record<string, number> = { system: tok((req.system ?? '').length), tool_specs: 0, user: 0, assistant: 0, tool_calls: 0, tool_results: 0, reasoning: 0 };
+  for (const t of req.tools ?? []) breakdown.tool_specs += tok(t.name.length + t.description.length + JSON.stringify(t.inputSchema).length);
+  for (const m of req.messages) {
+    for (const p of m.parts) {
+      if (p.type === 'text') {
+        if (m.role === 'system') breakdown.system += tok(p.text.length);
+        else breakdown[m.role === 'assistant' ? 'assistant' : 'user'] += tok(p.text.length);
+      } else if (p.type === 'tool_call') breakdown.tool_calls += tok(p.name.length + JSON.stringify(p.args ?? null).length);
+      else if (p.type === 'tool_result') {
+        const n = tok(p.content.length + p.name.length);
+        breakdown.tool_results += n;
+        toolTokens[p.name] = (toolTokens[p.name] ?? 0) + n;
+      } else if (p.type === 'reasoning') breakdown.reasoning += tok((p.summary ?? '').length);
+    }
+  }
+  return { toolTokens, contextBreakdown: breakdown };
+}
+
+/** Fields every ledger row must carry (FR-31). `tool` = the `tool_tokens_json` attribution (may be `{}`). */
+export const ATTRIBUTION_FIELDS = ['agent', 'task', 'tool', 'provider', 'model', 'role'] as const;
+
+type TokenTotals = { inputTokens: number; cachedInputTokens: number; outputTokens: number; reasoningTokens: number };
+
+export interface ReconcileGroup {
+  provider: string;
+  model: string;
+  calls: number;
+  ledger: TokenTotals & { costUsd: number | null };
+  providerReported: TokenTotals & { costUsd: number | null };
+  /** Largest relative difference across token kinds and cost, in percent. */
+  maxDeltaPct: number;
+}
+
+export interface ReconcileReport {
+  rows: number;
+  providerReportedRows: number;
+  /** Rows with no provider usage metadata (estimate only): cannot be reconciled. */
+  estimatedRows: string[];
+  /** Rows lacking one of ATTRIBUTION_FIELDS. */
+  missingAttribution: Array<{ id: string; missing: string[] }>;
+  groups: ReconcileGroup[];
+  totals: { ledger: TokenTotals & { costUsd: number }; providerReported: TokenTotals & { costUsd: number }; maxDeltaPct: number };
+  tolerancePct: number;
+  ok: boolean;
+}
+
+const pct = (a: number, b: number) => (a === b ? 0 : Math.abs(a - b) / Math.max(Math.abs(b), 1e-12) * 100);
+const zero = (): TokenTotals => ({ inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0 });
+const add = (t: TokenTotals, u: TokenTotals) => {
+  t.inputTokens += u.inputTokens;
+  t.cachedInputTokens += u.cachedInputTokens;
+  t.outputTokens += u.outputTokens;
+  t.reasoningTokens += u.reasoningTokens;
+};
+const maxDelta = (a: TokenTotals & { costUsd: number | null }, b: TokenTotals & { costUsd: number | null }) =>
+  Math.max(pct(a.inputTokens, b.inputTokens), pct(a.cachedInputTokens, b.cachedInputTokens), pct(a.outputTokens, b.outputTokens), pct(a.reasoningTokens, b.reasoningTokens), a.costUsd !== null && b.costUsd !== null ? pct(a.costUsd, b.costUsd) : 0);
 
 /** Token ledger v0 + budgets (F-TOK-1, F-TOK-2). One row per model call attempt. */
 export class Ledger {
@@ -116,6 +181,71 @@ export class Ledger {
   entries(filter: { task?: string; limit?: number } = {}): Array<Record<string, unknown>> {
     if (filter.task) return this.db.all('SELECT * FROM ledger_entries WHERE task = ? ORDER BY at, id LIMIT ?', filter.task, filter.limit ?? 1000);
     return this.db.all('SELECT * FROM ledger_entries ORDER BY at DESC, id DESC LIMIT ?', filter.limit ?? 100);
+  }
+
+  /**
+   * Reconciliation report (§29.6, FR-31): for every successful call, compares the ledger columns and
+   * cost with usage re-derived from the stored raw provider metadata (provider-reported usage wins) and
+   * checks attribution. `ok` = no attribution gaps, no estimate-only rows, every group within tolerance.
+   */
+  reconcile(opts: {
+    task?: string; ws?: string; since?: string; tolerancePct?: number;
+    normalizeUsage: (provider: string, raw: unknown) => Usage | undefined;
+    pricing: (provider: string, model: string) => ModelManifest['pricing'] | undefined;
+  }): ReconcileReport {
+    const where = ["status = 'ok'"];
+    const params: string[] = [];
+    if (opts.task) (where.push('task = ?'), params.push(opts.task));
+    if (opts.ws) (where.push('ws = ?'), params.push(opts.ws));
+    if (opts.since) (where.push('at >= ?'), params.push(opts.since));
+    const rows = this.db.all<{
+      id: string; ws: string | null; task: string | null; agent: string | null; role: string | null; provider: string | null; model: string | null; tool_tokens_json: string | null;
+      input_tokens: number; cached_input_tokens: number; output_tokens: number; reasoning_tokens: number; cost_usd: number | null; usage_source: string; provider_usage_json: string | null;
+    }>(`SELECT * FROM ledger_entries WHERE ${where.join(' AND ')} ORDER BY at, id`, ...params);
+    const tolerancePct = opts.tolerancePct ?? 1;
+    const estimatedRows: string[] = [];
+    const missingAttribution: ReconcileReport['missingAttribution'] = [];
+    const groups = new Map<string, ReconcileGroup>();
+    const totals = { ledger: { ...zero(), costUsd: 0 }, providerReported: { ...zero(), costUsd: 0 }, maxDeltaPct: 0 };
+    let providerReportedRows = 0;
+    for (const r of rows) {
+      const missing: string[] = [];
+      for (const f of ATTRIBUTION_FIELDS) {
+        const v = f === 'tool' ? r.tool_tokens_json : r[f];
+        if (v === null || v === undefined || v === '') missing.push(f);
+      }
+      if (missing.length) missingAttribution.push({ id: r.id, missing });
+      const raw = r.provider_usage_json ? JSON.parse(r.provider_usage_json) : undefined;
+      const reported = r.usage_source === 'provider' && raw !== undefined ? opts.normalizeUsage(r.provider ?? '', raw) : undefined;
+      if (!reported) {
+        estimatedRows.push(r.id);
+        continue;
+      }
+      providerReportedRows++;
+      const key = `${r.provider}:${r.model}`;
+      let g = groups.get(key);
+      if (!g) {
+        g = { provider: r.provider ?? '', model: r.model ?? '', calls: 0, ledger: { ...zero(), costUsd: 0 }, providerReported: { ...zero(), costUsd: 0 }, maxDeltaPct: 0 };
+        groups.set(key, g);
+      }
+      const pricing = opts.pricing(g.provider, g.model);
+      const ledgerTokens = { inputTokens: r.input_tokens, cachedInputTokens: r.cached_input_tokens, outputTokens: r.output_tokens, reasoningTokens: r.reasoning_tokens };
+      const reportedCost = costOf(pricing, reported);
+      g.calls++;
+      add(g.ledger, ledgerTokens);
+      add(g.providerReported, reported);
+      g.ledger.costUsd = r.cost_usd === null || g.ledger.costUsd === null ? null : g.ledger.costUsd + r.cost_usd;
+      g.providerReported.costUsd = reportedCost === null || g.providerReported.costUsd === null ? null : g.providerReported.costUsd + reportedCost;
+      add(totals.ledger, ledgerTokens);
+      add(totals.providerReported, reported);
+      totals.ledger.costUsd += r.cost_usd ?? 0;
+      totals.providerReported.costUsd += reportedCost ?? 0;
+    }
+    for (const g of groups.values()) g.maxDeltaPct = maxDelta(g.ledger, g.providerReported);
+    totals.maxDeltaPct = maxDelta(totals.ledger, totals.providerReported);
+    const list = [...groups.values()];
+    const ok = missingAttribution.length === 0 && estimatedRows.length === 0 && totals.maxDeltaPct <= tolerancePct && list.every((g) => g.maxDeltaPct <= tolerancePct);
+    return { rows: rows.length, providerReportedRows, estimatedRows, missingAttribution, groups: list, totals, tolerancePct, ok };
   }
 
   setBudget(spec: BudgetSpec): string {

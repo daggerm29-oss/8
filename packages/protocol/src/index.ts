@@ -106,6 +106,8 @@ export const Methods = {
   approvalRespond: 'agent.approve',
   ledgerQuery: 'ledger.query',
   budgetsSet: 'ledger.budgets.set',
+  /* R0.4 (FR-31): ledger vs provider-reported usage + attribution completeness */
+  ledgerReconcile: 'ledger.reconcile',
   modelsList: 'models.list',
   providersList: 'models.providers.list',
   sandboxCheck: 'sandbox.check',

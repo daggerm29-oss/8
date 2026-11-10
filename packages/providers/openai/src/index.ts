@@ -222,6 +222,10 @@ export class OpenAIAdapter implements ProviderAdapter {
     return { inputTokens: estimateTokens(req), exact: false };
   }
 
+  normalizeUsage(raw: unknown): Usage {
+    return normalizeOpenAIUsage(raw as OpenAIUsage);
+  }
+
   normalizeError(error: unknown): ProviderError {
     if (error instanceof ProviderError) return error;
     const e = error as { name?: string; message?: string; cause?: { code?: string } };

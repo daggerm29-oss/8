@@ -224,6 +224,7 @@ export class Engine {
       this.runtime.approve(p.approvalId, p.approved);
       return { ok: true, alwaysAllowed };
     }));
+    peer.handle(Methods.ledgerReconcile, guard<{ task?: string; ws?: string; since?: string; tolerancePct?: number }>((p) => this.gateway.reconcile(p)));
     peer.handle(Methods.ledgerQuery, guard<{ task?: string; ws?: string; entries?: boolean }>((p) => ({ totals: this.ledger.totals(p), entries: p.entries ? this.ledger.entries({ task: p.task }) : undefined })));
     peer.handle(Methods.budgetsSet, guard<Parameters<Ledger['setBudget']>[0]>((p) => ({ id: this.ledger.setBudget(p) })));
     peer.handle(Methods.providersList, guard(() => this.gateway.providers()));

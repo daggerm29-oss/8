@@ -190,6 +190,8 @@ export interface ProviderAdapter {
   stream(req: ModelRequest, auth: AuthContext, signal: AbortSignal): AsyncIterable<StreamEvent>;
   countTokens(req: ModelRequest, auth?: AuthContext): Promise<TokenCount>;
   normalizeError(error: unknown): ProviderError;
+  /** Re-derive normalized usage from the raw provider usage metadata (`Usage.raw`), for ledger reconciliation (§29.6). */
+  normalizeUsage?(raw: unknown): Usage;
 }
 
 /** Deterministic estimator used when a provider has no exact counting API (~4 chars per token). */

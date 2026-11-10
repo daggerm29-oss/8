@@ -278,6 +278,10 @@ export class GeminiAdapter implements ProviderAdapter {
     return { inputTokens: estimateTokens(req), exact: false };
   }
 
+  normalizeUsage(raw: unknown): Usage {
+    return normalizeGeminiUsage(raw as GeminiUsage);
+  }
+
   normalizeError(error: unknown): ProviderError {
     if (error instanceof ProviderError) return error;
     const e = error as { name?: string; message?: string; cause?: { code?: string } };
