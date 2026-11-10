@@ -12,7 +12,7 @@ const base = {
 
 /**
  * Bundled overlay (§7.3). Model IDs from ai.google.dev/gemini-api/docs/models (2026-10-28).
- * Prices are the published per-1M-token rates as of 2026-11-06; `null` means no verified price.
+ * Prices carry their own verification date and source notes; `null` means no verified price.
  */
 export const GEMINI_MODELS: ModelManifest[] = [
   {

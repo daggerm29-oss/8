@@ -11,13 +11,13 @@
 
 > These are **checklist completion** numbers (ticked items with recorded evidence ÷ all items). They are not a measure of product quality or release readiness; human launch gates in `docs/roadmap.md` are not counted.
 
-**Overall checklist completion: 34%** (66/194 roadmap items)  
+**Overall checklist completion: 35%** (68/195 roadmap items)  
 **Current milestone:** M0 Foundations  
 **Next task:** R0.3 Provider conformance completion (F-MDL-1, FR-5, FR-1) [§7.1, §7.2]
 
 | Milestone | Progress | Items | Status |
 | --- | --- | --- | --- |
-| M0 Foundations | ████████░░ 82% | 18/22 | In progress |
+| M0 Foundations | █████████░ 87% | 20/23 | In progress |
 | M1 MVP, grounded single agent | ███░░░░░░░ 33% | 26/78 | Partly built early |
 | M2 Precision and efficiency | █████░░░░░ 45% | 22/49 | Partly built early |
 | M3 Parallel and background | ░░░░░░░░░░ 0% | 0/20 | Not started |
@@ -28,11 +28,11 @@
 
 ## Current task notes (overwrite when the task changes)
 
-- R0.3 stays Blocked: the OpenAI API-key live check is intentionally not applicable (user will not use an OpenAI Platform key; ChatGPT OAuth via Codex app-server is NOT implemented or verified). All A-local cases + Gemini live pass (commit 663805d). Do not ask for `OPENAI_API_KEY`.
-- R0.8: verified green PR run 42822113350 at b6260eb (engine 160/160, all three backends, PTY, Electron, red-team, scope). Current identical-workflow negative control 42828757024 fails its seeded assertion at efaf396. Exact dispatch now denied HTTP 403; full R0.8 remains open rather than weakening its Accept line. Evidence: evals/results/r0-8-ci-2026-11-10.json.
-- G0.1: 3/3 real Gemini 3.5 Flash Lite fixtures + live-tool restart pass, but unpriced costs cannot satisfy reconciliation (reviewed failed JSON in evals/results/). Default 3.8 Flash had 503/timeout. G0.2 still rejects FR-1, F-MDL-1, F-AGT-1; resume their original acceptance gaps, not M1.
-- Sandbox tests need `sudo dnf install -y podman crun bubblewrap` after a VM reset; conformance: `HELIX_SANDBOX_BACKENDS=local-container,local-unshare,local-os`.
-- Parked: draft PR #19 (M3) is untouched; do not continue it until M3 is the current milestone (AGENTS.md §3). Then first fix its shared-mode write-lease bypass and worktree lease leak.
+- R0.3 remains open: no OpenAI Platform key, no OAuth claim. Both adapters 23/23 A-local; Gemini live preserved; FR-1 live low/high thinking + temperature/max-output checks pass, now Done (ad1386e). One-package adapter proof passes. Decision comparison: docs/r0-3-auth-decision.md; approval required before changing acceptance.
+- R0.8: green PR CI 42822113350 at b6260eb (engine 160/160, all three backends, PTY, Electron, red-team, scope); identical-current-workflow negative 42828757024 fails its exact assertion. Dispatch HTTP 403 and uncertified nightly provisioning keep full written R0.8 open. Evidence: evals/results/r0-8-ci-2026-11-10.json.
+- G0.1 PASSED: actual CLI fixes 3/3 real local-container fixtures; restart after live tool preserves completed IDs; 16 provider responses, 0% token/cost delta, $0.0156774 published Standard reference valuation, not an invoice; evals/results/m0-exit-gemini-default-2026-11-10T14-06-10-730Z.json (e13fe20). Prior unpriced failed artifact retained unchanged.
+- R0.10 passed: primary tool/step/checkpoint/span/ledger cost attribution, unknown cost not zero; focused trace/cancel 8/8, p95 container 135 ms / unshare 7 ms (4167ca9). G0.2 still rejects F-MDL-1 and F-AGT-1; original §12 assigns editable Plan Mode/Explore to M1, but no row remapping or deferral has been made pending approval.
+- PR #19 untouched; no M1 work. After VM reset install podman/crun/bubblewrap before containment checks; no unisolated fallback.
 
 ## Ideas parking lot (one line each, max 15 — do not implement)
 
