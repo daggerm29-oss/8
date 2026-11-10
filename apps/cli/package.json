@@ -12,7 +12,8 @@
   },
   "dependencies": {
     "@helix/engine": "workspace:*",
-    "@helix/protocol": "workspace:*"
+    "@helix/protocol": "workspace:*",
+    "yaml": "^2.9.1"
   },
   "devDependencies": {
     "@helix/provider-conformance": "workspace:*"

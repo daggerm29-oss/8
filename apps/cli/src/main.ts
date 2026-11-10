@@ -2,12 +2,15 @@ import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
+import { loadTaskFile } from './task-file.ts';
 import { Methods, Notifications, PROTOCOL_VERSION, RpcPeer, streamTransport, type HelixEvent, type TaskSummary } from '@helix/protocol';
 
 const USAGE = `helix — Helix coding agent CLI (M1)
 
 Usage:
   helix -p "<goal>" [options]     run a task headlessly and exit when it finishes
+  helix run <task.yaml> [options] run a YAML task headlessly (CLI flags override file values)
+                                 exit: 0 success, 1 engine error, 2 gate failure/usage, 3 budget stop
   helix tasks                     list recent tasks
   helix resume <task-id>          resume an interrupted task and wait for it
   helix ledger <task-id>          show token/cost ledger totals for a task
@@ -128,7 +131,10 @@ async function runAndWait(peer: RpcPeer, summary: TaskSummary, opts: { quiet: bo
     process.stdout.write(`${final.status === 'done' ? final.result : `Task ${final.status}: ${final.error ?? ''}`}\n`);
     if (!opts.quiet) process.stderr.write(`— ${final.status} · ${final.stepCount} steps · ${final.ledger.calls} model calls · ${final.ledger.inputTokens} in / ${final.ledger.outputTokens} out tokens · $${final.ledger.costUsd.toFixed(4)}\n`);
   }
-  return final.status === 'done' ? 0 : 1;
+  if (final.status === 'done') return 0;
+  if (/BudgetExceededError:/.test(final.error ?? '')) return 3;
+  if (/^verification failed \d+ times:/.test(final.error ?? '')) return 2;
+  return 1;
 }
 
 async function printPlan(peer: RpcPeer, task: string): Promise<boolean> {
@@ -163,15 +169,22 @@ export async function main(argv: string[]): Promise<number> {
     return values.help ? 0 : 2;
   }
   if (cmd === 'mcp' && (arg === 'add' || arg === 'remove' || arg === 'trust')) return mcpEdit(arg, positionals.slice(2), values);
+  if (cmd === 'run' && (!arg || positionals.length !== 2 || values.prompt)) throw new Error('usage: helix run <task.yaml> [options]');
+  const fileTask = cmd === 'run' ? loadTaskFile(arg) : undefined;
+  for (const key of ['max-steps', 'budget'] as const) {
+    if (values[key] !== undefined && (!Number.isFinite(Number(values[key])) || Number(values[key]) < 0 || (key === 'max-steps' && (!Number.isSafeInteger(Number(values[key])) || Number(values[key]) === 0)))) throw new Error(`invalid --${key}`);
+  }
   const opts = { quiet: Boolean(values.quiet), json: Boolean(values.json) };
   const { peer, stop } = await connect(opts.quiet ? [] : ['task.*', 'agent.*', 'tool.*', 'verify.*', 'approval.*', 'context.*', 'artifact.*', 'model.fallback']);
   const follower = opts.quiet ? undefined : eventFollower(peer);
   try {
-    if (values.prompt) {
+    if (values.prompt || fileTask) {
       const summary = await peer.request<TaskSummary>(Methods.taskCreate, {
-        workspacePath: resolve(values.cwd ?? process.cwd()), goal: values.prompt, verifyCommand: values.verify, provider: values.provider, model: values.model,
-        maxSteps: values['max-steps'] ? Number(values['max-steps']) : undefined, budgetUsd: values.budget ? Number(values.budget) : undefined,
-        policyProfile: values.plan ? 'plan' : 'headless', preapprove: values.allow ?? [], roles: roleFlags(values.role ?? []),
+        ...fileTask,
+        workspacePath: values.cwd ? resolve(values.cwd) : fileTask?.workspacePath ?? process.cwd(), goal: values.prompt ?? fileTask!.goal,
+        verifyCommand: values.verify ?? fileTask?.verifyCommand, provider: values.provider ?? fileTask?.provider, model: values.model ?? fileTask?.model,
+        maxSteps: values['max-steps'] !== undefined ? Number(values['max-steps']) : fileTask?.maxSteps, budgetUsd: values.budget !== undefined ? Number(values.budget) : fileTask?.budgetUsd,
+        policyProfile: values.plan ? 'plan' : fileTask?.policyProfile ?? 'headless', preapprove: values.allow ?? fileTask?.preapprove ?? [], roles: roleFlags(values.role ?? []) ?? fileTask?.roles,
       });
       const code = await runAndWait(peer, summary, opts, follower);
       if (values.plan && !opts.json) await printPlan(peer, summary.id);
