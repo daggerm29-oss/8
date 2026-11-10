@@ -33,6 +33,7 @@ Do not read `plan.md` or `architecture.md` in full. Do not read `docs/history/`.
 - You may split a big task into indented sub-bullets (not counted). You may not reword a top-level item so it asks for less.
 - **Adding tasks:** if you find an original requirement (or part of one) that no roadmap task covers, add a top-level task for it in the milestone plan §12 assigns, cite the IDs, and say so in the PR. Adding coverage is not a scope change; removing it is.
 - **One PR never spans two milestones.** When the current milestone reaches 100% of its tasks, stop building on this branch and end the session (section 5) so the user can review and merge. The next session starts the next milestone on a fresh branch from `main`.
+- **Verification classes** (architecture §35.1): run A-local Accept commands yourself. A-host, A-ref, and A-live commands need a CI runner, reference hardware, or provider keys. If they are unavailable, build the task and its harness, run every A-local part, leave the box unticked, write `  - Blocked: needs <runner/keys>; A-local parts pass (<command> → <result>)` under it, and continue with the next task. Never substitute a fake provider, synthetic fixture, or smaller run for the stated command.
 - **Exit gates:** a milestone is complete only when its tasks are done **and** its exit gates pass. Automated gates (evals, benchmarks, red-team, PERF) are build work: run them and record evidence. External gates (real user studies, design partners, independent pen tests, audits) cannot be done by a session. Leave them open and list them in the session summary. Never report a mocked, simulated, or self-run result as passing an external gate.
 
 ## 3. Session branch and PR (one session = one batch = one PR)
@@ -52,7 +53,7 @@ Do not read `plan.md` or `architecture.md` in full. Do not read `docs/history/`.
 
 1. Actually run the task's Accept command. Tick the item (`- [ ]` → `- [x]`) only if the result matches the expected result. Never tick based on implementation alone.
 2. Directly under the ticked item add: `  - Evidence: <command you ran> → <actual result>; commit <sha>; artifact <path, if any>`. The script does not count ticks without it.
-3. Update the task's requirement IDs in the requirement status table in `docs/roadmap.md`: set **Done** only if the full original acceptance criterion in `plan.md` now passes with evidence; otherwise **Partial** with a short note of what is still missing.
+3. Update the task's requirement IDs in the requirement status table in `docs/roadmap.md`: set **Done** only if the full original acceptance criterion in `plan.md` now passes with evidence, and replace its gap cell with `Evidence: <command> → <result>; commit <sha>`; otherwise keep **Partial** and shorten the gap to what is still missing.
 4. Run `node scripts/progress.mjs` (rewrites the dashboard in `progress.md`). Never type percentages by hand.
 5. Commit and push. Update the PR description's task list.
 6. Post a short update: `Done: <task> — Evidence: <command> → <result> — Checklist: Overall x% | M0 x% | … | M6 x% — Requirements Done: <n>/154`. Then continue with the next task.

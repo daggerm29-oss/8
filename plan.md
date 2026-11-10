@@ -769,6 +769,8 @@ graph TD
 
 ## 15. Testing and quality assurance strategy
 
+> Executable form: architecture §35 defines the harnesses, fixtures, CI jobs, and verification classes; every task in `docs/roadmap.md` carries an acceptance command. Results from fakes or simulations never satisfy an objective (§1.3) or an exit criterion (§12) (§0.3 rule 4).
+
 ### 15.1 Test pyramid (software)
 - **Unit tests:** core packages ≥ 80% line coverage. Property-based tests for the diff/patch engine, lease manager, and context packer.
 - **Integration tests:** engine + sandbox backends (conformance suite per backend); provider adapters against recorded fixtures (VCR-style), plus live smoke tests nightly; MCP against reference servers.

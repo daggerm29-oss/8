@@ -8,6 +8,7 @@
 > Items may be added to cover original requirements. Items, gates, and requirement rows are never removed, narrowed, or moved to a later milestone without a plan §0.3 change-log entry. Tick an item only when its Accept command produces the expected result.
 > Every ticked item needs an indented evidence line directly under it, or the script does not count it:
 > `  - Evidence: <test/eval command> → <actual result, e.g. "12/12 pass">; commit <sha>; artifact <path, if any>`
+> **Accept lines:** every open task has `Accept [class]: <command> → <expected result>`. Classes (architecture §35.1): **A-local** (any Linux box or the v0 workspace, no external services), **A-host** (real macOS/Windows CI runner), **A-ref** (reference-hardware runner), **A-live** (live provider APIs). Commands run from `packages/engine/` unless they start with `cd`, `node evals/`, `node bench/`, `node scripts/`, `pnpm`, or `gh`. Fakes and synthetic fixtures prove mechanics only; they never satisfy an A-live/A-ref criterion, an objective, or an exit gate. External gates (class E) are listed in tables per milestone and are never build tasks.
 > Items marked "(deferred from M1)" were moved out of the original M1 spec without a change-log entry. They remain M1 scope: the M1 exit gate is not met until they pass.
 
 ## M0 — Foundations
@@ -43,13 +44,25 @@
 ### M0 scope restoration (plan §12 M0)
 
 - [ ] **R0.1 `local-container` sandbox backend** (F-SBX-1, SEC-2) [§16.1, §16.2] — Podman/Docker backend with gVisor (`runsc`) when available, as the default local backend; same `SandboxProvider` contract and policy as `local-unshare`; backend conformance suite run against every backend. Done when: the conformance suite passes on `local-container` and `local-unshare`, and the host home is unreadable from inside both.
+  - Accept [A-local]: `node --test test/sandbox-conformance.test.ts` with `HELIX_SANDBOX_BACKENDS=local-container,local-unshare` → every conformance case passes on both backends (exec, PTY, timeouts, env scrub, mounts, egress via proxy); `cat ~/.ssh/id_*` and `ls $HOME` from inside fail on both; runsc used when present (reported in output)
 - [ ] **R0.2 Fail closed; explicit `local-os` light mode** (SEC-1, SEC-2, FR-19, F-SBX-1) [§16.2, §25.5] — remove the silent `local-process` fallback; when no isolating backend is available the Engine refuses to run agent processes. `local-os` light mode (bubblewrap on Linux, Seatbelt on macOS) only for a repo the user marks trusted, with a permanent workbench indicator and an audit event. Done when: no agent process ever starts unisolated without an explicit trusted-repo opt-in.
+  - Accept [A-local]: `node --test test/fail-closed.test.ts` → with no isolating backend (PATH without unshare/podman/docker) `task.create` returns `sandbox_unavailable` and no child process is spawned; trusted-repo `local-os` opt-in runs, emits `sandbox.light_mode` audit event, and `workbench.status` reports `isolation: "light"`; `local-process` provider no longer exists (`grep -r local-process src` → 0 hits)
 - [ ] **R0.3 Provider conformance completion** (F-MDL-1, FR-5, FR-1) [§7.1, §7.2] — structured output (response schema) in the IR and both adapters; rate-limit retry case; explicit degradation of unsupported features; live model listing exercised. Done when: the conformance suite covers streaming, tool round-trip, structured output, cancellation, and rate-limit retry for Gemini and OpenAI.
+  - Accept [A-local]: `cd packages/providers/conformance && node --test` → new cases pass for both adapters against recorded fixtures: structured output returns schema-valid JSON, 429 with Retry-After is retried then succeeds, unsupported parallel tool calls degrade to serial with a `capability.degraded` note; live listing smoke (`HELIX_LIVE=1`) lists ≥ 1 model per provider
 - [ ] **R0.4 Ledger attribution and reconciliation** (FR-31, F-TOK-1) [§29.6] — every call attributed to agent, task, tool, provider, model, role; provider-reported usage wins; reconciliation report. Done when: ledger totals match recorded provider usage within ±1%.
+  - Accept [A-local]: `node --test test/ledger-reconcile.test.ts` → over 50 recorded provider responses, every ledger row has agent, task, tool, provider, model, role; summed tokens and cost differ from provider-reported totals by ≤ 1%
 - [ ] **R0.5 Trace and audit completeness** (NFR-10, F-OBS-1, F-OBS-3, SEC-9) [§26.1, §26.5] — one span per agent step and tool call with tokens, latency, tool I/O refs; audit chain covers every §26.5 event category. Done when: a scripted run produces the full span tree and one audit event per category, and the chain verifies.
+  - Accept [A-local]: `node --test test/trace-audit.test.ts` → a scripted fake-model task yields one span per step and per tool call with token, latency, and tool-I/O-ref attributes; the audit log has ≥ 1 event for each §26.5 category; `audit.verify` → ok; editing one row → verify fails at that row
 - [ ] **R0.6 Agent loop guarantees** (F-AGT-1) [§9.2] — checkpoint ID on every tool call; cancel stops the loop and its sandbox processes within 1 s. Done when: cancel latency p95 ≤ 1 s over repeated runs.
+  - Accept [A-local]: `node --test test/cancel.test.ts` → every tool_call row has a checkpoint id; 20 cancels during a running `sleep 30` shell call: p95 time to `task.cancelled` and no live sandbox process ≤ 1000 ms
 - [ ] **R0.7 `helix run` headless/CI command** (FR-34) [§5.7] — non-interactive run with exit codes and machine-readable output, beside `helix -p`. Done when: CLI golden-output tests cover `helix run` and `helix -p`.
+  - Accept [A-local]: `cd apps/cli && node --test test/cli.test.ts` → golden-output tests pass for `helix run --json` (exit 0 on success, 2 on gate failure, 3 on budget stop) and `helix -p`
+- [ ] **R0.8 CI pipeline** (plan §15.1, §15.7) [§35.6] — `ci-linux` job on every push and PR (tsc, all A-local suites, conformance, desktop E2E headless, red-team, scope check); `ci-macos`/`ci-windows` jobs added by R1.37/R2.15; nightly `bench-ref` and `evals-live` jobs with secrets.
+  - Accept [A-host]: `gh workflow run ci.yml --ref <branch> && gh run watch --exit-status` → `ci-linux` green on the branch; a seeded failing test on a scratch branch turns it red
+- [ ] **R0.9 Scope check script** (plan §0.3) [§35.6] — `scripts/check-scope.mjs` enforces the document rules of §35.6.
+  - Accept [A-local]: `node scripts/check-scope.mjs` → prints "154/154 IDs, 0 undefined task refs, 0 ticks without evidence, 0 removed items" and exits 0; exits 1 on a scratch copy with one requirement row deleted, one task removed, or one Evidence line removed
 - [ ] **G0.1 M0 exit gate (plan §12 M0)** — the CLI agent fixes a seeded failing test in 3 fixture repos **inside a container** (`local-container`), ledger totals reconcile with provider usage, and an Engine restart resumes a task.
+  - Accept [A-live]: `HELIX_SANDBOX_PROVIDER=local-container node evals/m0-exit.ts` → 3/3 fixtures fixed inside the container backend, ledger vs provider usage within ±1%, restart-resume check passes; result JSON in `evals/results/`
 
 ## M1 — MVP, grounded single agent
 
@@ -127,73 +140,125 @@
 
 Desktop and UI
 - [ ] **R1.1 Electron workbench with Monaco** (FR-33, F-UI-1, PERF-1, PERF-2) [§4.1, §5.1–5.3] — explorer, Monaco editor, agent panel, terminal, preview, Problems, task monitor, SCM, settings in the Electron app, driven by Playwright for Electron. Done when: every FR-33 panel opens and works in the packaged app.
+  - Accept [A-local]: `cd packages/desktop && npx playwright test e2e/workbench.spec.ts` → packaged Electron app: explorer, Monaco editor (open, edit, save round-trip), agent panel, terminal, preview, Problems, task monitor, SCM, settings each open and pass their smoke step
 - [ ] **R1.2 Dockable layout and command palette** (F-UI-1) [§5.2] — dockable panels, saved layouts, fuzzy command palette.
+  - Accept [A-local]: `cd packages/desktop && npx playwright test e2e/layout.spec.ts` → panels dock/undock/move; a saved layout restores after relaunch; palette fuzzy-matches "opn fil" → "Open File" and runs it
 - [ ] **R1.3 Agent Activity Monitor** (F-UI-2, PERF-13) [§5.4] — live tree of agents, subagents, tools, budgets, leases, checkpoints; pause, resume, cancel, rollback.
+  - Accept [A-local]: `cd packages/desktop && npx playwright test e2e/monitor.spec.ts` → a fake-model run with one subagent shows agent → subagent → tool nodes with budget, lease, checkpoint; pause stops new tool calls, resume continues, rollback restores the checkpoint; engine→panel event latency p95 ≤ 50 ms
 - [ ] **R1.4 Electron hardening and crash isolation** (SEC-13, NFR-4, PERF-1) [§5.1] — strict CSP (no `frame-ancestors *`, no `unsafe-inline` scripts), validated IPC allowlist with real channels, sandboxed renderer; engine survives a UI crash; packaged app launched in CI.
+  - Accept [A-local]: `cd packages/desktop && node --test test/hardening.test.mjs && npx playwright test e2e/crash.spec.ts` → CSP has no `frame-ancestors *` and no `unsafe-inline` in script-src; renderer `sandbox: true`, `nodeIntegration: false`; IPC call on an unlisted channel is rejected; killing the renderer leaves the Engine and a running task alive and the reopened window reattaches
 - [ ] **R1.5 Accessibility and i18n** (NFR-9, NFR-12) [§5] — WCAG 2.2 AA: keyboard operation, screen-reader labels, high-contrast theme; all UI strings externalized.
+  - Accept [A-local]: `cd packages/desktop && npx playwright test e2e/a11y.spec.ts && node scripts/check-i18n.mjs` → axe-core reports 0 WCAG 2.2 AA violations on every panel; every panel is reachable and operable by keyboard; high-contrast theme passes contrast checks; 0 hard-coded UI strings outside the message catalog
 - [ ] **R1.6 Ledger dashboard, export, trace viewer** (F-TOK-1, F-OBS-1, FR-33) [§29.6, §26.1] — cost dashboard by agent/task/tool/provider/model, CSV/JSON export, local trace viewer.
+  - Accept [A-local]: `node --test test/ledger-dashboard.test.ts && cd packages/desktop && npx playwright test e2e/ledger.spec.ts` → dashboard totals by agent/task/tool/provider/model equal `ledger.query`; CSV and JSON export round-trip; trace viewer renders the span tree of the R0.5 run
 
 Sandbox
 - [ ] **R1.7 Whole-toolchain containment completion** (F-SBX-2, FR-19, FR-27, F-MCP-1, SEC-1) [§16.3] — MCP stdio servers and headless Chrome run inside sandboxes; nothing agent-initiated runs on the host. Done when: the red-team check "read host home" fails from shell, files, LSPs, dev servers, tests, MCP stdio, hooks, and browser.
+  - Accept [A-local]: `node --test test/redteam-containment.test.ts` → for each of shell, file tools, LSP, dev server, test runner, MCP stdio server, hook, browser: an attempt to read a host-home canary file fails and the canary is absent from all outputs; `ps` on the host shows no MCP server or Chrome outside a sandbox
 - [ ] **R1.8 Sandbox lifecycle and resources** (F-SBX-5, SEC-12, PERF-9) [§16.4] — cgroup CPU/memory/PID/disk limits (ISSUE-005), hydrate/snapshot/suspend/resume, reaper for orphaned sandboxes on Engine start and on a timer; no secrets in snapshots.
+  - Accept [A-local]: `node --test test/sandbox-lifecycle.test.ts` → memory hog killed at its cgroup limit, fork bomb stopped by PID limit, disk filler stopped by quota; snapshot → suspend → resume restores files and processes; orphaned sandboxes from a killed Engine are reaped on next start; no sentinel secret value appears in snapshot bytes
 - [ ] **R1.9 Per-tool egress and network approvals** (F-SBX-3, FR-18) [§16.5, §10.5] — allowlists per workspace and per tool; per-domain network approval class with one-click allow.
+  - Accept [A-local]: `node --test test/egress.test.ts test/net-approval.test.ts` → a host allowed for tool A is denied for tool B; an unknown domain raises a `network` approval; approve-once allows that call only; approve-always persists per workspace
 
 Codebase intelligence
 - [ ] **R1.10 Indexer completion** (F-IDX-1, FR-8, FR-11, PERF-6, PERF-7) [§11.1–11.3, §12.1, §12.4] — file watcher, `.helixignore`, BLAKE3 content hashes and Merkle tree, docs indexing, tree-sitter for the top 20 languages of §12.4.
+  - Accept [A-local]: `node --test test/indexer.test.ts test/treesitter.test.ts` → saving a file re-indexes it through the watcher without a manual call; `.helixignore` paths are absent; content hash is BLAKE3 and the Merkle root changes only along the edited path; Markdown docs indexed; tree-sitter parses one snippet in each of the 20 §12.4 languages with correct symbol ranges
 - [ ] **R1.11 Structural and graph queries** (FR-9) [§12.2, §11.5] — AST-pattern search tool and a general `graph.query`.
+  - Accept [A-local]: `node --test test/structural-search.test.ts test/graph-query.test.ts` → AST pattern `call(fetch, _)` returns exactly the fixture call sites; `graph.query` answers "callers of X", "tests covering F", "files importing M" with expected sets
 - [ ] **R1.12 Retrieval completion** (F-IDX-4, FR-9, PERF-5) [§11.6] — reranker, graph-neighborhood retriever, dependency expansion, packing; retrieval eval harness (Recall@k, MRR, tokens per recall point) from plan §15.3.
+  - Accept [A-local]: `node evals/retrieval-eval.ts --suite fixtures/retrieval/smoke` → harness reports Recall@10, MRR, tokens per recall point; rerank, graph-neighborhood retriever and dependency expansion appear in `why`; smoke suite Recall@10 not lower than without them
 - [ ] **R1.13 Semantic embeddings** (F-IDX-6, FR-9) [§12.3] — a real semantic embedding model (bundled local model, or provider embeddings such as `gemini-embedding-2`) on AST-aligned chunks, lazy prioritization, embedding cost in the ledger. `helix-local-hash-v1` stays only as an offline fallback and is labeled lexical.
+  - Accept [A-local]: `node --test test/semantic-embed.test.ts` → with the semantic model, paraphrase queries with no shared identifier words ("make a string lowercase" → `toLower`) rank the target in top 3 for ≥ 8/10 fixture pairs where `helix-local-hash-v1` scores ≤ 3/10; embedding cost appears in the ledger; vectors computed lazily (open files first)
 
 Context and agent
 - [ ] **R1.14 Instruction import** (F-CTX-3, FR-30) [§13.5] — import `CLAUDE.md` and `.cursor/rules` beside AGENTS.md/HELIX.md, with the documented precedence order.
+  - Accept [A-local]: `node --test test/instructions.test.ts` → `CLAUDE.md` and `.cursor/rules/*.mdc` are imported; precedence global → root → nested holds; conflicting rules resolve in the documented order shown in `context.explain`
 - [ ] **R1.15 Context metrics** (F-CTX-1, F-CTX-2) [§13.2, §13.4] — measure stable-prefix ratio (≥ 90%) and long-horizon success with compaction (≤ 2 pp drop).
+  - Accept [A-live]: `node evals/context-metrics.ts` → stable-prefix ratio ≥ 90% across turns of HTS-lite; long-horizon subset success with compaction within 2 pp of without
 - [ ] **R1.16 Plan review** (FR-12, F-AGT-2) [§9.4] — user can edit and approve the plan (RPC + UI) before any write tool runs.
+  - Accept [A-local]: `node --test test/plan-review.test.ts` → in Plan Mode, `plan.update` edits steps and `plan.approve` is required before any write tool is callable; a write before approval is denied by policy
 - [ ] **R1.17 Gates: confirmation, waivers, minimal retries** (F-AGT-4, F-AGT-3) [§9.5, §9.6] — user confirms inferred gates; "done" needs green gates or a logged waiver; each retry is a minimal diff.
+  - Accept [A-local]: `node --test test/gates.test.ts test/waiver.test.ts` → inferred gates need `gates.confirm`; a task with a red gate ends `done` only with a `gate.waived` audit event carrying reason and user; each retry diff touches only lines related to the reported diagnostic (fixture check)
 - [ ] **R1.18 Hooks completion** (F-AGT-5) [§9.7] — `pre_commit` and `session_start` events; declared hook permissions enforced.
+  - Accept [A-local]: `node --test test/skills.test.ts test/hooks-lifecycle.test.ts` → `pre_commit` hook blocks a commit on non-zero exit; `session_start` runs once per session; a hook writing outside its declared permissions is denied
 - [ ] **R1.19 Atomic changesets** (FR-13) [§9.3, §31.2] — create/edit/rename/delete tools grouped into one changeset with per-hunk accept/reject.
+  - Accept [A-local]: `node --test test/changeset.test.ts` → create + edit + rename + delete form one changeset; rejecting one hunk leaves the others applied; rejecting the changeset restores all four files byte-for-byte
 - [ ] **R1.20 Approval queue completion** (F-ORC-4, FR-18) [§10.5, §25.4] — batch approve/deny; approvable classes for network domain, MCP tool, git push, deploy.
+  - Accept [A-local]: `node --test test/approvals.test.ts` → batch approve of 5 pending requests applies to those 5 only; `git_push` and `deploy` classes are approvable (production deploy stays ask, see R1.46); prompt text cannot change any decision
 
 Preview and browser
 - [ ] **R1.21 Dev-server detection** (F-PRV-1, FR-20) [§17.2, §17.5] — framework and package-manager detection, TCP health, persisted recipe, HMR passthrough; fixture set of 25 frameworks.
+  - Accept [A-local]: `node --test test/devserver-frameworks.test.ts` → on 25 framework fixtures (Next, Vite, Remix, Astro, SvelteKit, Nuxt, Angular, CRA, Gatsby, Express, Fastify, Django, Flask, FastAPI, Rails, Laravel, Spring Boot, Phoenix, Go net/http, Hugo, Jekyll, Eleventy, Storybook, Expo web, Deno Fresh): ≥ 23/25 detected and healthy over TCP; recipe persisted and reused; an edit triggers HMR without a full reload where the framework supports it
 - [ ] **R1.22 Multi-tab preview** (F-PRV-2, FR-21) [§17.1, §17.3, §17.4] — multiple tabs and browser sessions, viewport presets, device and media emulation, route-suggesting URL bar.
+  - Accept [A-local]: `cd packages/desktop && npx playwright test e2e/preview-tabs.spec.ts` → two tabs on two routes with separate sessions (cookies differ); viewport presets and device/media emulation change `window.innerWidth` and `prefers-color-scheme`; URL bar suggests routes from the domain index
 - [ ] **R1.23 Browser automation tools** (F-PRV-5, FR-23) [§18.5] — navigate, click, fill, select, press, scroll, hover, wait_for, assert, screenshot(region), eval, record/replay, addressed by snapshot refs; stale refs return an error.
+  - Accept [A-local]: `node --test test/browser-automation.test.ts` → on a fixture app every tool (navigate, click, fill, select, press, scroll, hover, wait_for, assert, screenshot region, eval, record, replay) succeeds by ref; a ref from an old snapshot returns `stale_ref`; a recorded flow replays to the same final state
 - [ ] **R1.24 Telemetry completion** (F-PRV-3, FR-22) [§18.2, §18.3] — source-mapped stacks, perf marks, Web Vitals, dev-overlay and build-error detection, Problems panel updated within 500 ms.
+  - Accept [A-local]: `node --test test/telemetry.test.ts` → uncaught error stack maps to original `src/` file:line via source maps; Web Vitals and perf marks recorded; Vite and Next dev-overlay build errors detected as structured events; Problems panel shows a new error ≤ 500 ms after it occurs
 - [ ] **R1.25 Snapshot completion** (F-PRV-4, PERF-10) [§18.4, §29.3] — build status, pHash screenshot, token caps (≤ 1,500 full / ≤ 400 diff), ≥ 50% token cut vs screenshot observation.
+  - Accept [A-local]: `node --test test/snapshot.test.ts test/snapshot-budget.test.ts` → snapshot includes build status and pHash; full snapshot ≤ 1,500 tokens and diff ≤ 400 on fixtures; tokens ≥ 50% lower than screenshot observation on the browser eval suite; generation p95 ≤ 400 ms
 
 Terminal and Git
 - [ ] **R1.26 Diagnostic parser coverage** (F-TRM-2) [§19.4] — jest/vitest, cargo, mypy, webpack/vite/next, docker; accuracy corpus ≥ 95%.
+  - Accept [A-local]: `node --test test/parsers-corpus.test.ts` → corpus of real outputs for tsc, eslint, pytest, jest, vitest, go, cargo, mypy, webpack, vite, next, docker: ≥ 95% of diagnostics parsed with correct file, line, severity, message
 - [ ] **R1.27 Terminal history** (F-TRM-1) [§19.2, §19.3] — separate agent and user terminals; command history and exit codes indexed.
+  - Accept [A-local]: `node --test test/terminal-history.test.ts` → agent and user terminals are separate PTYs; every command is stored with exit code and searchable through the index
 - [ ] **R1.28 Source control completion** (F-GIT-1, FR-28) [§20.1, §20.2] — hunk staging, AI commit message, branches, stash, rebase-assist, PR creation from the workbench and CLI using the user's git credentials.
+  - Accept [A-local]: `node --test test/git.test.ts test/scm.test.ts` → stage one hunk of two; AI commit message generated from the staged diff (fake model); create/switch branch; stash and pop; rebase-assist resolves a fixture conflict; `git.createPr` against a local fake GitHub API creates a PR with title and body
 - [ ] **R1.29 Shadow git checkpoints** (F-GIT-2, FR-17, PERF-11) [§20.3] — shadow git object store per step; create ≤ 200 ms, restore ≤ 1 s for 1k files.
+  - Accept [A-local]: `node --test test/shadow-git.test.ts` → each step writes a commit to a shadow git object store outside the user repo; on 1k files create p95 ≤ 200 ms and restore p95 ≤ 1 s; user repo history untouched
 - [ ] **R1.30 Git safeguards completion** (F-GIT-5, SEC-7, FR-29) [§20.6] — history-rewrite, protected-branch, large-deletion, `reset --hard`, and remote-branch-deletion guards; secret scan before commit and push; same rules for agents and CLI.
+  - Accept [A-local]: `node --test test/git-safeguards.test.ts` → force-push, push to protected branch, `reset --hard`, remote branch delete, history rewrite, and deleting > 50 files each need approval for agents and CLI; a staged fake AWS key blocks commit and push with the finding
 
 MCP, tokens, models
 - [ ] **R1.31 MCP spec alignment** (FR-25, F-MCP-1) [§14.1–14.3] — 2026-07-28 revision, extension negotiation (Tasks, Skills over MCP, MCP Apps), user/workspace/org scopes, health checks, backoff, idle shutdown, conformance against reference servers.
+  - Accept [A-local]: `node --test test/mcp-conformance.test.ts` → client negotiates protocol `2026-07-28`; Tasks, Skills over MCP, MCP Apps extensions negotiated when offered and absent otherwise; user/workspace/org scope merge order correct; crashed server restarted with backoff; idle server shut down; reference-server conformance suite passes
 - [ ] **R1.32 MCP trust tiers, per-server sandbox, pinning** (F-MCP-3, SEC-5, FR-27) [§14.6, §25] — verified / org-approved / user-added / untrusted tiers with network and credential scope; each server in its own sandbox and credential scope; version + hash pinning.
+  - Accept [A-local]: `node --test test/mcp-trust.test.ts` → each of 4 tiers gets its network and credential scope; every stdio server runs in its own sandbox with only its bound credentials; a server whose binary hash differs from the pin is refused
 - [ ] **R1.33 Session and org budgets** (FR-32, F-TOK-2) [§29.6] — soft and hard budgets per task, session, day, org; pause and ask.
+  - Accept [A-local]: `node --test test/budgets.test.ts` → soft limit warns and hard limit pauses for each of task, session, day, org; org budget from org policy cannot be raised by a user
 - [ ] **R1.34 Deterministic-first catalog** (F-TOK-3) [§29.2] — catalog of deterministic tools and a check that fails when an LLM call replaces a catalogued deterministic operation.
+  - Accept [A-local]: `node --test test/deterministic-first.test.ts` → catalog lists each deterministic operation; a fixture agent run that asks the model for a catalogued operation (e.g. "find references") is flagged by the check
 - [ ] **R1.35 Gemini completion** (F-MDL-2, F-TOK-4) [§7.1, §7.3] — image parts in the IR (screenshots as images), key validation on entry, deprecated-model hiding, explicit context caching with cache hits in the ledger.
+  - Accept [A-local]: `cd packages/providers/gemini && node --test` → image parts serialize to Gemini inline data; invalid key rejected at `vault.setKey`; deprecated models hidden from `models.list`; `cachedContents` created for a stable prefix and cached tokens recorded in the ledger
 - [ ] **R1.36 Dependency gate v0 coverage** (SEC-8, F-REV-3) [§16.7] — every install path (agent shell, hooks, dev-server start, MCP) goes through the gate; install scripts run sandboxed without secrets.
+  - Accept [A-local]: `node --test test/depgate.test.ts test/depgate-paths.test.ts` → a vulnerable install from a hook, the dev-server start command, and an MCP server is gated like agent `run_shell`; `postinstall` runs in a sandbox whose env has no sentinels or secrets
 
 Platform, quality, security
 - [ ] **R1.37 macOS host support** (NFR-6, FR-6, F-AUTH-1) [§16.2, §8.1] — macOS arm64/x64 run of sandbox (Seatbelt light mode, container backend) and Keychain on a real macOS CI runner.
+  - Accept [A-host]: CI job `macos-latest`: `cd packages/engine && node --test test/sandbox.test.ts test/keychain-macos.test.ts` → passes on macOS arm64 and x64 runners with real Keychain (`security`) and Seatbelt light mode
 - [ ] **R1.38 Performance harness** (NFR-1, PERF-1…13) [§28.5] — 1M LOC fixture generator and benchmarks for every PERF budget on reference hardware, in CI with a ±10% regression gate (plan §15.7).
+  - Accept [A-ref]: `node bench/run.mjs --all --hardware reference` → emits p95 for PERF-1…13 on the generated 1M LOC fixture; CI fails when any metric regresses > 10% vs the stored baseline; report in `bench/results/`
 - [ ] **R1.39 Helix Task Suite (HTS)** (O1, O2, O3) [§30.1] — ≥ 300 tasks across 30 real OSS repos (TS, Python, Go, Rust, Java) with hidden acceptance tests and browser assertions; HTS-lite (30 tasks) for per-PR runs (plan §15.2).
+  - Accept [A-local]: `node evals/hts/validate.mjs` → ≥ 300 tasks across ≥ 30 OSS repos (TS, Python, Go, Rust, Java) each with hidden acceptance tests that fail before and pass on the reference solution; UI tasks have browser assertions; HTS-lite subset of 30 defined
 - [ ] **R1.40 Red-team and fuzzing suite** (O4, SEC-6, F-AUTH-1) [§25, §16] — sandbox escape, credential exfiltration, prompt injection via repo files, pages, MCP; RPC and patch-applier fuzzing; fuzzed secret scanner; dependency-confusion and typosquat cases (plan §15.5).
+  - Accept [A-local]: `node --test test/redteam/*.test.ts && node fuzz/run.mjs --time 600` → all escape (mount tricks, /proc, symlink race, Docker socket, 169.254.169.254, DNS exfil), exfiltration (env dump, proxy bypass) and injection cases are blocked; fuzzers find 0 crashes in RPC and patch applier; secret scanner fuzz recall ≥ 99% on generated secrets; typosquat and dependency-confusion cases denied
 - [ ] **R1.41 Browser and observation eval** (O2) [§18] — fixture apps with injected bugs (layout overflow, failed fetch, console error, a11y violation); detection rate, tokens per detection, false positives (plan §15.4).
+  - Accept [A-live]: `node evals/browser-eval.ts` → fixture apps with injected bugs: detection rate, tokens per detection, false positives reported; result JSON in `evals/results/`
 - [ ] **R1.42 Module boundaries and coverage** (NFR-11) [§31.1] — lint rules enforcing §31.1 dependency rules; ≥ 80% line coverage gate in core packages.
+  - Accept [A-local]: `pnpm lint:boundaries && pnpm test:coverage` → boundary lint fails on a seeded forbidden import and passes on main; core packages ≥ 80% line coverage
 - [ ] **R1.43 Supply chain** (SEC-14) [§25.7] — pinned dependencies, SBOM, signed releases, reproducible engine build.
+  - Accept [A-local]: `node scripts/release-check.mjs` → all dependencies pinned in the lockfile; CycloneDX SBOM generated; two clean engine builds are byte-identical; release artifact signature verifies
 - [ ] **R1.44 Provider data handling** (SEC-11, NFR-7) [§8, §25.9] — per-provider data-handling display, zero-retention selection where offered, org restriction of providers.
+  - Accept [A-local]: `node --test test/provider-data.test.ts` → settings show data-handling text per provider; zero-retention flag sent where supported; org policy denying a provider removes it from routing and role settings
 - [ ] **R1.45 Contract tests** (plan §15.1) [§22.1, §22.3] — JSON-RPC schemas as generated types with backward-compatibility checks.
+  - Accept [A-local]: `node --test test/rpc-contract.test.ts` → generated JSON-RPC types match the schema; removing a field from a v1 method fails the compatibility check
 - [ ] **R1.46 Rejected-item enforcement tests** (X19–X21) [§31.5] — tests that production deploy cannot be set to `allow` at any policy level, that indexing makes no LLM calls, and that screenshots are not taken every step.
+  - Accept [A-local]: `node --test test/rejected-items.test.ts` → production `deploy` stays `ask` under every policy level incl. org; indexing a fixture repo makes 0 model calls; a 20-step UI task captures screenshots only on pHash change or visual mode
 
 Automated exit gates (plan §12 M1, §19 MVP success criteria)
 - [ ] **G1.1 O1 ≥ 55%** — HTS pass rate with all verification gates green, live models.
+  - Accept [A-live]: `node evals/hts/run.mjs --suite full --models live` → success with all gates green ≥ 55%; result JSON with per-task outcome, tokens, cost
 - [ ] **G1.2 O2 ≥ 90%** — share of HTS UI tasks where the agent ran a browser verification loop before claiming done.
+  - Accept [A-live]: `node evals/hts/run.mjs --suite ui --models live --metric browser-verify` → ≥ 90% of UI tasks ran a browser verification loop before `done`
 - [ ] **G1.3 O4 = 0 High** — zero sandbox-escape or credential-exfiltration findings at severity ≥ High in the release red-team suite (R1.40).
+  - Accept [A-local]: `node --test test/redteam/*.test.ts --reporter=json > evals/results/redteam.json` → 0 findings with severity ≥ High
 - [ ] **G1.4 PERF budgets met** — all PERF-1…13 p95 budgets on reference hardware (R1.38).
+  - Accept [A-ref]: `node bench/run.mjs --all --hardware reference --enforce-budgets` → every PERF-1…13 p95 within its plan §17 budget
 - [ ] **G1.5 Ledger reconciliation ±1%** — on a live HTS-lite run.
+  - Accept [A-live]: `node evals/hts/run.mjs --suite lite --models live --reconcile` → ledger totals within ±1% of provider-reported usage
 - [ ] **G1.6 M1 scope complete** — every ID whose milestone is M1 in the requirement status table is Done.
+  - Accept [A-local]: `node scripts/check-scope.mjs --milestone M1` → every requirement row with milestone M1 has status Done with evidence
 
 External exit gates (plan §12 M1, §15.6; not build tasks, never simulated):
 
@@ -278,34 +343,61 @@ External exit gates (plan §12 M1, §15.6; not build tasks, never simulated):
 ### M2 scope restoration (plan §12 M2)
 
 - [ ] **R2.1 SCIP and language servers** (F-IDX-2) [§11.4] — SCIP ingestion; pyright, gopls, rust-analyzer, jdtls in sandboxes beside the TS language service; confidence per edge. Done when: reference precision ≥ 0.95 on TS, Python, Go, Rust benchmark fixtures.
+  - Accept [A-local]: `node --test test/precise-multilang.test.ts && node evals/precision-eval.ts` → SCIP index ingested; pyright, gopls, rust-analyzer, jdtls run in sandboxes; every edge has a confidence; reference precision ≥ 0.95 on TS, Python, Go, Rust benchmark fixtures
 - [ ] **R2.2 Full code graph** (F-IDX-3, F-TST-1, FR-10, PERF-8) [§11.5] — all §11.5 node and edge types, `graph.query`, coverage-derived test mapping; Impact Report ≤ 500 ms on 1M LOC.
+  - Accept [A-ref]: `node --test test/graph-full.test.ts && node bench/run.mjs --only PERF-8` → all §11.5 node and edge types present on the fixture; coverage-derived test map lists the test that executes a changed symbol; Impact Report p95 ≤ 500 ms on 1M LOC
 - [ ] **R2.3 Domain extractors completion** (F-IDX-5) [§11.7] — docs, git history (blame, co-change), Django, Rails, Spring, ActiveRecord.
+  - Accept [A-local]: `node --test test/domain.test.ts test/domain-more.test.ts` → Django, Rails, Spring routes and ActiveRecord models extracted; docs headings indexed; blame owner and co-change pairs available
 - [ ] **R2.4 Intelligence Explorer** (F-UI-3, FR-33) [§5.5] — dependency, call, and architecture graphs; API/route and DB views.
+  - Accept [A-local]: `cd packages/desktop && npx playwright test e2e/explorer.spec.ts` → dependency, call, architecture graphs and route/DB views render for the fixture and link to source
 - [ ] **R2.5 Element→source via compiler plugins** (F-VIS-1, FR-24) [§18.6] — Babel/SWC/Vite/esbuild plugins inject `data-helix-loc`; React fiber `_debugSource` and owner stack; source maps; real React, Vue, Svelte fixture apps.
+  - Accept [A-local]: `node evals/e2s-eval.ts --suite real` → compiler plugins and React owner stacks in place; on real React, Vue, Svelte fixture apps (no pre-existing `data-helix-loc`) element→source file:line correct ≥ 95%
 - [ ] **R2.6 Select-and-instruct completion** (F-VIS-2) [§18.6] — region select; automatic verification snapshot after the edit.
+  - Accept [A-local]: `node --test test/select-instruct.test.ts` → region select produces a card for every element in the region; after the edit, a verification snapshot is attached to the task
 - [ ] **R2.7 Tool search index and success guard** (F-MCP-2, FR-26) [§14.4] — BM25 + embedding index over tool metadata; success-rate drop ≤ 2 pp vs all tools loaded.
+  - Accept [A-live]: `node evals/tool-search-eval.ts --tools 200` → tool-definition tokens ≤ 3k/turn and task success within 2 pp of all-tools-loaded
 - [ ] **R2.8 MCP result projection and cache keys** (F-MCP-4) [§15.4] — JSONPath projection on stored results; cache keyed by server version + resource version + TTL.
+  - Accept [A-local]: `node --test test/mcp-results.test.ts` → JSONPath projection returns only the requested fields; a server version bump or resource version change invalidates the cache; TTL expiry refetches
 - [ ] **R2.9 Credential masking completion** (F-SBX-4, SEC-4) [§16.6, §8.3, §30.5] — MCP path covered; bindings persisted in the keychain; env/cat/memory-dump inside the sandbox reveal only sentinels.
+  - Accept [A-local]: `node --test test/masking.test.ts test/masking-mcp.test.ts` → an MCP server receives only sentinels; bindings survive Engine restart via keychain; `env`, `cat /proc/self/environ`, and a memory dump in the sandbox contain only sentinels
 - [ ] **R2.10 Router v1 completion** (F-MDL-5, FR-4) [§7.6, §29.5] — features: capability needs, context size, file count, recent failures, budget, latency. Done when: ≥ 30% cost cut with ≤ 3 pp success drop on HTS (live).
+  - Accept [A-live]: `node evals/router-eval.ts` → routing uses capability, context size, file count, failures, budget, latency (shown in `router_reason`); cost ≥ 30% lower than always-flagship with success drop ≤ 3 pp on HTS-lite
 - [ ] **R2.11 Prompt-cache optimizer** (F-TOK-4) [§29.4] — stable prefix plus provider explicit caching; cache-hit ratio ≥ 60% on HTS.
+  - Accept [A-live]: `node evals/cache-eval.ts` → provider cache-hit ratio ≥ 60% of input tokens on HTS-lite
 - [ ] **R2.12 Local review agent** (F-REV-1, FR-36) [§10.2] — reviewer subagent with Impact Report, evidence, checklists; line-anchored comments in the workbench.
+  - Accept [A-local]: `node --test test/review-agent.test.ts` → reviewer subagent on a seeded diff returns line-anchored comments that cite the Impact Report and evidence, and flags the seeded bug
 - [ ] **R2.13 Security analysis** (F-REV-2) [§25.10] — Semgrep-compatible SAST, secret scan, IaC checks on agent changes; zero LLM tokens when there are no findings; baseline labeling; blocking severities.
+  - Accept [A-local]: `node --test test/sast.test.ts` → seeded SQL injection, hard-coded secret, open S3 bucket found; a clean diff costs 0 model tokens; baseline findings labeled pre-existing; blocking severity stops `done`
 - [ ] **R2.14 Dependency risk gate completion** (F-REV-3, SEC-8) [§16.7] — license, typosquat, install-script, package-age, lockfile and transitive checks; allow/ask/deny.
+  - Accept [A-local]: `node --test test/depgate-full.test.ts` → GPL in a permissive-only project → ask; `reqeusts` typosquat → deny; package < 72 h old → ask; install script → sandboxed and reported; vulnerable transitive dep from the lockfile → deny
 - [ ] **R2.15 Windows verification and WSL isolation** (NFR-6, FR-6, F-AUTH-1, SEC-2) [§16.2] — run on a real Windows 11 CI runner; egress proxy and filesystem isolation inside WSL2.
+  - Accept [A-host]: CI job `windows-latest`: `cd packages/engine && node --test test/windows.test.ts test/wsl-isolation.test.ts` → passes on a real Windows 11 runner with WSL2; inside WSL the sandbox cannot read the Windows user profile and egress goes through the proxy
 - [ ] **R2.16 Sign in with ChatGPT behind a flag** (FR-2, F-MDL-3) [§7.4, §8.2] — OIDC + PKCE loopback flow, code-complete, flag off by default.
+  - Accept [A-local]: `node --test test/siwc.test.ts` → against a local fake OIDC server: PKCE loopback flow completes, tokens stored in keychain, refresh rotates; flag off by default hides the option
 - [ ] **R2.17 Artifacts v2 completion** (F-UI-4) [§5.6] — walkthroughs, recordings, review results as linkable artifacts.
+  - Accept [A-local]: `node --test test/artifacts-v2.test.ts` → walkthrough, recording, review-result artifacts created and linkable by id from tasks and PR bodies
 - [ ] **R2.18 Coverage-driven test generation** (F-TST-2) [§9.6] — target selection from uncovered changed symbols, not only agent choice.
+  - Accept [A-local]: `node --test test/testgen-coverage.test.ts` → given a changed file with one uncovered function, testgen targets that function without being told
 - [ ] **R2.19 Naive baseline harness** (O3) [§29.1] — a naive harness (no retrieval, no tool search, no snapshot, no cache) run on the same HTS tasks for O3 comparison.
+  - Accept [A-local]: `node evals/hts/run.mjs --suite lite --harness naive --dry-run` → naive harness runs with retrieval, tool search, snapshot, and caching disabled, verified by its config dump
 - [ ] **R2.20 Plugin interfaces** (NFR-8) [§31.3] — stable plugin interfaces for sandbox backends, deploy adapters, language indexers, tools (providers exist).
+  - Accept [A-local]: `node --test test/plugins.test.ts` → a sample plugin of each kind (sandbox backend, deploy adapter, language indexer, tool) loads through the public interface with no core change
 - [ ] **R2.21 Platform overhead measurement** (NFR-13) [§28.5] — non-LLM compute cost measured against median LLM spend; budget < 20%.
+  - Accept [A-live]: `node evals/overhead-eval.ts` → non-LLM compute cost / median LLM spend on HTS-lite reported; < 20%
 - [ ] **R2.22 Large-repo scale** (NFR-2) [§28.1] — sharded index and lazy vectors; 5M LOC / 200k files on a 16 GB machine with graceful degradation.
+  - Accept [A-ref]: `node bench/run.mjs --scale 5M` → a generated 5M LOC / 200k-file repo indexes on a 16 GB machine without OOM; shards and lazy vectors active; queries degrade gracefully (reported latencies)
 
 Automated exit gates (plan §12 M2)
 - [ ] **G2.1 O3 ≥ −40%** — median tokens per successful HTS task vs the naive baseline (R2.19), live models.
+  - Accept [A-live]: `node evals/hts/run.mjs --suite full --compare naive` → median tokens per successful task ≥ 40% lower than the naive harness
 - [ ] **G2.2 O5 ≥ 0.70** — Recall@10 of edited files on held-out real PRs, retrieval only (R1.12 harness).
+  - Accept [A-local]: `node evals/retrieval-eval.ts --suite heldout-prs` → Recall@10 ≥ 0.70 on held-out real PRs
 - [ ] **G2.3 Element→source ≥ 95%** — on real React, Vue, Svelte fixture apps (R2.5), not synthetic attribute pages.
+  - Accept [A-local]: `node evals/e2s-eval.ts --suite real` → ≥ 95% on real React, Vue, Svelte fixtures
 - [ ] **G2.4 MCP ≤ 3k tool tokens per turn at 200 tools** — with success drop ≤ 2 pp (R2.7).
+  - Accept [A-live]: `node evals/tool-search-eval.ts --tools 200` → ≤ 3k tool tokens/turn and success drop ≤ 2 pp
 - [ ] **G2.5 M2 scope complete** — every ID whose milestone is M2 in the requirement status table is Done.
+  - Accept [A-local]: `node scripts/check-scope.mjs --milestone M2` → every requirement row with milestone M2 has status Done with evidence
 
 External exit gates (plan §12 M2; not build tasks, never simulated):
 
@@ -316,54 +408,90 @@ External exit gates (plan §12 M2; not build tasks, never simulated):
 ## M3 — Parallel and background
 
 - [ ] General subagents + task DAG scheduler (F-ORC-2) [§10.3]
+  - Accept [A-local]: `node --test test/dag.test.ts` → DAG with write-sets schedules deterministically (same order on 10 runs); a failed node blocks only its dependents; general subagents run with isolated context
 - [ ] Write leases + worktrees + merge agent (F-ORC-3) [§10.4]
+  - Accept [A-local]: `node --test test/lease.test.ts test/merge.test.ts` → parallel agents get per-file leases and worktrees; 3-way merge + reviewer merges a fixture conflict; 0 lost writes across 50 randomized runs
 - [ ] Cloud sandbox provider (+ self-hosted Firecracker option) [§16]
+  - Accept [A-local]: `node --test test/sandbox-conformance.test.ts` with `HELIX_SANDBOX_BACKENDS=cloud-fake,firecracker` → the same conformance suite as R0.1 passes on the cloud provider (against its test endpoint) and on a self-hosted Firecracker microVM
 - [ ] Local and cloud background workers, durable across restarts (F-ORC-5) [§10.6]
+  - Accept [A-local]: `node --test test/workers.test.ts` → a run started in the background survives Engine and worker restarts and finishes; cloud worker uses the same Engine binary
 - [ ] Schedules and triggers [§10.6]
+  - Accept [A-local]: `node --test test/schedules.test.ts` → cron, git-push and webhook triggers each start exactly one run; missed cron ticks during downtime run once after restart
 - [ ] Visual regression [§19]
+  - Accept [A-local]: `node evals/visual-regression.ts` → pHash + SSIM + DOM diff baselines; seeded visual changes detected; false-positive rate ≤ 5% on unchanged fixtures
 - [ ] Bug auto-repro [§19]
+  - Accept [A-local]: `node --test test/repro.test.ts` → from a fixture issue text and stack trace, a failing test is written that fails before the fix and passes after
 - [ ] E2E tests from recordings [§19]
+  - Accept [A-local]: `node --test test/e2e-from-recording.test.ts` → a recorded browser flow becomes a Playwright test that passes on the fixture and fails when the seeded behavior is broken
 - [ ] Fix-history / typed project memory (F-CTX-4) [§13.6]
+  - Accept [A-local]: `node --test test/memory.test.ts` → facts, conventions, decisions, fixes, preferences, pitfalls stored with provenance; a memory citing a changed file is marked stale; user review required before use
 - [ ] Architecture diagrams
+  - Accept [A-local]: `node --test test/arch-diagrams.test.ts` → Mermaid diagram generated from the code graph matches the fixture module structure and updates after a module is added
 - [ ] Inline completion v1
+  - Accept [A-ref]: `cd packages/desktop && npx playwright test e2e/completion.spec.ts` → ghost-text completion appears in Monaco; p95 latency reported; accepting inserts the text; keystroke latency stays ≤ 16 ms
 - [ ] M3 eval: 300-file migration with zero lost writes; visual regression false positives ≤ 5%
+  - Accept [A-live]: `node evals/m3-eval.ts` → 300-file migration completes with 0 lost writes; visual regression false positives ≤ 5%; background durability per G3.1
 
 ### M3 scope restoration (plan §12 M3)
 
 > Draft PR #19 (M3 DAG + leases) is parked. It is stacked on an earlier session and has two known defects. Sessions do not continue it until M0–M2 are complete; then R3.3 reuses its work on a fresh branch.
 
 - [ ] **R3.1 Named subagent types** (F-ORC-1) [§10.2] — browser-verify, test-runner, reviewer, researcher, each with restricted tools and a 1.5k-token return budget.
+  - Accept [A-local]: `node --test test/subagent-types.test.ts` → each of browser-verify, test-runner, reviewer, researcher is offered only its tool set and its summary to the parent is ≤ 1,500 tokens
 - [ ] **R3.2 Local concurrency** (NFR-3) [§28.2] — ≥ 8 concurrent local agents per workspace without lost writes or starvation.
+  - Accept [A-local]: `node --test test/concurrency.test.ts` → 8 fake-model agents editing disjoint files in one workspace finish with all writes present and no deadlock
 - [ ] **R3.3 PR #19 defects** (F-ORC-3, FR-16) [§10.4] — fix the shared-mode lease bypass and the worktree lease leak before the leases item can be ticked.
+  - Accept [A-local]: `node --test test/lease.test.ts` → shared-mode write without a lease is denied; worktree removed and lease released when its agent ends or fails
 - [ ] **R3.4 UI consistency analysis** (F-VIS-4) [§18.7] — design tokens vs theme; off-token values flagged.
+  - Accept [A-local]: `node --test test/ui-consistency.test.ts` → off-token color, spacing and font values in a fixture app are flagged with file:line; on-token values are not
 - [ ] **R3.5 Worker durability harness** (F-ORC-5) [§10.6, §27.2] — kill and restart workers mid-run; runs resume idempotently.
+  - Accept [A-local]: `node --test test/worker-durability.test.ts` → killing the worker at 5 random points of a 10-step run: run resumes, every step runs exactly once (idempotency keys)
 - [ ] **R3.6 Local↔cloud handoff** (F-TEAM-3) [§28.4] — move a session between local and cloud via git + session bundle.
+  - Accept [A-local]: `node --test test/handoff.test.ts` → local session exported as git branch + bundle and resumed by a second Engine instance with identical transcript and checkpoints
 
 Automated exit gates (plan §12 M3)
 - [ ] **G3.1 Durable background runs** — background runs survive worker restarts with no lost or duplicated steps (R3.5).
+  - Accept [A-local]: `node evals/m3-durability.ts` → 100 background runs with random worker kills: 0 lost and 0 duplicated steps
 - [ ] **G3.2 M3 scope complete** — every ID whose milestone is M3 in the requirement status table is Done.
+  - Accept [A-local]: `node scripts/check-scope.mjs --milestone M3` → every requirement row with milestone M3 has status Done with evidence
 
 ## M4 — Team and ecosystem
 
 - [ ] Helix Cloud control plane: orgs, RBAC, policies, audit export
+  - Accept [A-local]: `node --test test/control-plane.test.ts` → orgs, RBAC roles, policies enforced on API calls; audit export is hash-chain verifiable
 - [ ] SSO + SCIM (F-AUTH-3) [§8.5]
+  - Accept [A-local]: `node --test test/sso-scim.test.ts` → OIDC and SAML login against local IdP emulators; SCIM create/deactivate user reflected within 60 s
 - [ ] OAuth broker (F-AUTH-2) [§8.2]
+  - Accept [A-local]: `node --test test/oauth-broker.test.ts` → RFC 8252 loopback + PKCE against a fake authorization server; refresh rotation; revocation removes tokens; no foreign credential store is read
 - [ ] PR review bot: GitHub App, then GitLab
+  - Accept [A-local]: `node --test test/review-bot.test.ts` → GitHub App (then GitLab) posts line-anchored review comments on a fake PR with Impact Report
 - [ ] Deploy adapters
+  - Accept [A-local]: `node --test test/deploy.test.ts` → Vercel, Cloudflare, Fly, OCI adapters against fakes: pre-deploy gates run, approval required, rollback restores the previous version, production stays ask
 - [ ] Shared memory and skills
+  - Accept [A-local]: `node --test test/shared-memory.test.ts` → team memory and skills are versioned and require review before they apply to other members
 - [ ] Auto ADRs
+  - Accept [A-local]: `node --test test/auto-adr.test.ts` → a task that changes a module boundary produces a draft ADR artifact citing the diff
 - [ ] App scaffolding templates + integration wizards
+  - Accept [A-local]: `node --test test/scaffold.test.ts` → each template scaffolds, installs through the dependency gate, and passes its own gates
 - [ ] Learned routing priors (opt-in data)
+  - Accept [A-live]: `node evals/router-eval.ts --learned` → with consented outcome data the learned prior beats the rule table on cost at equal success on HTS-lite
 
 ### M4 scope restoration (plan §12 M4)
 
 - [ ] **R4.1 PR integration** (F-GIT-4) [§20.5] — GitHub App PR creation with summary, Impact Report, and evidence.
+  - Accept [A-local]: `node --test test/github-app.test.ts` → against a fake GitHub API: App creates a PR whose body has the summary, Impact Report and evidence artifact links
 - [ ] **R4.2 Issue triggers** (F-ORC-5) [§10.6, §22.5] — background agents started from issues and webhooks.
+  - Accept [A-local]: `node --test test/issue-triggers.test.ts` → a labeled issue webhook starts a background task once (duplicate delivery ignored)
 - [ ] **R4.3 Org policies and team cloud workspaces** (F-TEAM-1, F-TEAM-3) [§25.8, §6.3] — MCP allowlists, sandbox, budget, residency policies; team cloud workspaces.
+  - Accept [A-local]: `node --test test/org-policy.test.ts` → org MCP allowlist, sandbox backend, budget and residency policies override user and workspace settings; team cloud workspace created from policy
 - [ ] **R4.4 KMS vault** (FR-6, F-AUTH-1, SEC-4) [§8.1, §21.4] — KMS-backed credential vault for cloud.
+  - Accept [A-local]: `node --test test/kms-vault.test.ts` → against a local KMS emulator: secrets envelope-encrypted, never in plaintext at rest, decrypted only by the proxy
 - [ ] **R4.5 Cloud session scale** (NFR-3) [§28.3] — ≥ 1,000 concurrent cloud sessions per region (load test).
+  - Accept [A-ref]: `node bench/cloud-load.mjs --sessions 1000` → 1,000 concurrent sessions in one region with p95 control-plane latency within SLO and 0 failed sessions
 - [ ] **R4.6 Control-plane availability** (NFR-5) [§28.3, §27] — 99.9% monthly SLO with monitoring; sandbox auto-restore from snapshot.
+  - Accept [A-local]: `node --test test/control-plane-slo.test.ts` → SLO monitors and alerts configured; killing a sandbox host restores sessions from snapshot
 - [ ] **G4.1 M4 scope complete** — every ID whose milestone is M4 in the requirement status table is Done.
+  - Accept [A-local]: `node scripts/check-scope.mjs --milestone M4` → every requirement row with milestone M4 has status Done with evidence
 
 External exit gates (plan §12 M4; not build tasks, never simulated):
 
@@ -376,17 +504,26 @@ External exit gates (plan §12 M4; not build tasks, never simulated):
 ## M5 — Platform
 
 - [ ] Agents-as-code SDK on the Helix Engine
+  - Accept [A-local]: `node --test test/sdk.test.ts` → an agent defined in code runs on the Engine with policy and ledger applied
 - [ ] Execution-flow visualization
+  - Accept [A-local]: `cd packages/desktop && npx playwright test e2e/flow-viz.spec.ts` → a traced run renders as a flow graph linked to source
 - [ ] Specialist small models: rerank, routing, diagnostics extraction
+  - Accept [A-live]: `node evals/small-models.ts` → each specialist model beats its generic baseline on its offline eval (plan §15.2–15.3)
 - [ ] Mobile remote control
+  - Accept [A-local]: `npx playwright test e2e/mobile-remote.spec.ts --project=mobile` → a paired phone sees task status and can approve or cancel
 - [ ] Curated marketplace for skills and MCP bundles
+  - Accept [A-local]: `node --test test/marketplace.test.ts` → a listed skill/MCP bundle installs with pinned hash and trust tier; an unsigned bundle is refused
 
 ## M6 — Collaboration
 
 - [ ] Multiplayer sessions (CRDT)
+  - Accept [A-local]: `node --test test/crdt.test.ts` → two users co-edit while an agent writes under leases; converged documents identical
 - [ ] Voice input
+  - Accept [A-local]: `node --test test/voice.test.ts` → recorded audio fixture transcribed to an agent instruction
 - [ ] Enterprise data-residency regions
+  - Accept [A-local]: `node --test test/residency.test.ts` → org pinned to a region: data and sandboxes created only there
 - [ ] On-prem control plane
+  - Accept [A-local]: `node --test test/onprem.test.ts` → control plane installs from the on-prem bundle and passes the control-plane suite offline
 
 ## Requirement status (all 154 original IDs)
 
