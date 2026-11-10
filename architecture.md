@@ -4,6 +4,16 @@
 > **Status:** authoritative blueprint for implementation. Last research refresh: 2026-11-06.
 > **Evidence tags** follow `plan.md` §0.1: [D] documented, [S] search-indexed, [K] prior knowledge, [A] our design or assumption.
 > **Notation:** interfaces are written as TypeScript-style type signatures to make module contracts precise. They are design contracts, not implementation code.
+> **Authority:** `plan.md` defines WHAT to build and wins any conflict (plan §0.3). This document defines HOW the **complete** system works. It describes the required target, not an optional "end state". `docs/roadmap.md` may reach that target in increments, but it may not replace a design here with a simpler one. See §0.
+
+---
+
+## 0. Use of this document by build tasks
+
+- **Required design.** Each section describes the design Helix must reach in the milestone that plan §12 assigns. A simpler implementation (for example a heuristic instead of a language server, a hash embedder instead of a semantic model, or a host process instead of a sandboxed one) is allowed only as a **declared increment**: the roadmap task names it, the requirement stays **Partial**, and a later roadmap task completes the design in the same or the assigned milestone.
+- **Deviations are recorded.** If an implementation must differ from a design here for good reason, record an `IMPL-ADR` in `docs/decisions.md` that names the section, the difference, and the roadmap task that closes the gap. An `IMPL-ADR` cannot remove a requirement; only plan §0.3 change control can.
+- **Verification is part of the design.** A component is not complete until the checks in its section and in plan §15 (testing and quality assurance) pass. Checks prove only what they assert. A test of a reduced behavior does not verify the full requirement.
+- **Rejected items stay rejected.** §31.5 lists the controls that enforce X19–X21. No task may weaken them.
 
 ---
 

@@ -3,7 +3,7 @@
 > **Working codename:** Helix (placeholder — rename freely).
 > **Document type:** Product requirements, competitive research, and execution plan.
 > **Companion document:** [`architecture.md`](./architecture.md) — the technical blueprint. Every feature here has an `Arch §` reference to the section that implements it.
-> **Build sessions:** this is the long-term vision, not the task list. The checklist in [`docs/roadmap.md`](./docs/roadmap.md) overrides §11, §12 and §19 for what to build; progress percentages are in [`progress.md`](./progress.md).
+> **Authority:** this document is the authoritative product specification (WHAT Helix must do). No other file overrides it. [`docs/roadmap.md`](./docs/roadmap.md) only splits this scope into tasks, and [`AGENTS.md`](./AGENTS.md) only says how build sessions run those tasks. See §0.3.
 > **Research date:** November 6, 2026. All competitor facts reflect public documentation retrieved on that date and will drift; re-verify before relying on them.
 
 ---
@@ -28,6 +28,31 @@ The brief asks to separate verified facts from assumptions. Every competitor cla
 - `F-<AREA>-<n>`: feature (spec in §8). Areas: `MDL` models, `AUTH`, `IDX` indexing, `CTX` context/memory, `AGT` agent, `ORC` orchestration, `SBX` sandbox, `PRV` preview/browser, `TRM` terminal, `GIT`, `MCP`, `TOK` token efficiency, `VIS` visual debugging, `TST` testing, `REV` review/security, `UI`, `OBS` observability, `DEP` deploy, `TEAM`.
 - `FR-<n>`: functional requirement. `NFR-<n>`: non-functional requirement. `SEC-<n>`: security requirement. `PERF-<n>`: performance budget.
 - `M0…M6`: milestones (§12). Complexity uses T-shirt sizes (S/M/L/XL). The roadmap deliberately gives no calendar estimates.
+
+### 0.3 Document authority and change control
+
+Four documents govern the build. Each has one job, and the order below is the order of precedence when they disagree.
+
+| # | Document | Defines | May it change scope? |
+|---|---|---|---|
+| 1 | `plan.md` (this file) | **WHAT** to build: objectives (§1.3), requirements (§6, §7, §16, §17), feature specs and acceptance criteria (§8), build/defer/reject verdicts (§5), milestone scope and exit criteria (§12), MVP (§19), QA strategy (§15). | Only through the change-control rule below. |
+| 2 | `architecture.md` | **HOW** the complete system works: components, interfaces, data flows, and the test architecture that verifies them. | No. It implements this plan. A conflict with this plan is a defect in `architecture.md`. |
+| 3 | `docs/roadmap.md` | **HOW** the scope is divided into small tasks, in which milestone, and how each task is accepted. | No. Every task traces to requirement IDs here. A task may deliver part of a requirement, but it cannot narrow, drop, or redefine it. |
+| 4 | `AGENTS.md` | **HOW** AI build sessions execute roadmap tasks (reading order, branches, PRs, evidence, reporting). | No. |
+
+Rules that follow from this order:
+
+1. **The specification is the baseline.** The authoritative text of this plan and `architecture.md` is the version at commit `f4742348efe912d2188dbc28a260aca32d391577`, plus changes recorded in the change log below. `SCOPE_TRACEABILITY.md` audits the code against that baseline.
+2. **A checked task is not a finished requirement.** A requirement (any `FR-`, `F-`, `NFR-`, `SEC-`, `PERF-` ID) is **Done** only when its full acceptance criterion in this document passes with recorded, repeatable evidence. Tasks that deliver part of a requirement leave it **Partial**.
+3. **Build, defer, and reject verdicts are fixed.** §5 (X1–X24), §11 (MoSCoW), §12 (milestone scope), and §19 (MVP) say when each item ships. Moving an item to a later milestone, dropping an item, or reversing a rejection (X19–X21) is a scope change.
+4. **Milestone exit criteria are gates.** A milestone is complete only when all its tasks are done **and** every exit criterion in §12 has passed. Exit criteria that need people outside the build (user studies, design partners, external pen tests, audits) stay open until real evidence exists. Simulated, mocked, or self-run substitutes never satisfy them.
+5. **Change control.** Scope changes only by an explicit user decision. Record it in the change log below (date, IDs, old → new, reason, who approved) in the same PR that changes the roadmap. Build sessions may propose a change but never make one.
+
+**Scope change log**
+
+| Date | IDs | Change | Reason | Approved by |
+|---|---|---|---|---|
+| — | — | None. The roadmap note that claimed to override §11, §12, and §19 was removed on 2026-11-10; it was never an approved scope change. | Restoring baseline authority | User (scope-restoration task) |
 
 ---
 

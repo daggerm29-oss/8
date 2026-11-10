@@ -1,12 +1,14 @@
-# Helix — Roadmap checklist (single source of truth for progress)
+# Helix — Roadmap (work breakdown of the original scope)
 
-> Percentages in `progress.md` are computed from this file by `node scripts/progress.mjs`. Never type percentages by hand.
-> Only **top-level** checkboxes (`- [ ]` at the start of a line) are counted. Indented sub-bullets are for splitting work and are not counted.
-> Do not add, remove, or reword top-level items unless the user asks. Tick an item only when its Accept line passes.
+> **Authority:** this file divides the scope of `plan.md` into small tasks. It does not define or override scope (plan §0.3). Scope source: `plan.md` §5, §6–§8, §12, §15–§17, §19 at baseline `f474234`, plus the plan §0.3 change log. Architecture refs are in brackets.
+> **Tasks are not requirements.** A ticked task proves only its Accept line. A requirement is Done only when its full original acceptance criterion passes; until then it is Partial, even if every task citing it is ticked. Requirement status is tracked separately from task ticks.
+> **Milestone exit gates** reinstate plan §12 exit criteria. A milestone is complete only when its tasks are ticked and its gates pass. External gates (people outside the build) pass only with real evidence; simulated or mocked results never count.
+> Percentages in `progress.md` are computed from this file by `node scripts/progress.mjs` and measure **task checklist completion only**. Never type percentages by hand.
+> Only **top-level** checkboxes (`- [ ]` at the start of a line) are counted. Indented sub-bullets split work and are not counted.
+> Items may be added to cover original requirements. Items, gates, and requirement rows are never removed, narrowed, or moved to a later milestone without a plan §0.3 change-log entry. Tick an item only when its Accept command produces the expected result.
 > Every ticked item needs an indented evidence line directly under it, or the script does not count it:
 > `  - Evidence: <test/eval command> → <actual result, e.g. "12/12 pass">; commit <sha>; artifact <path, if any>`
-> Items marked "(deferred from M1)" were cut from the original M1 spec to ship the MVP sooner; they are still required scope.
-> Scope source: `plan.md` §12. Architecture refs are in brackets.
+> Items marked "(deferred from M1)" were moved out of the original M1 spec without a change-log entry. They remain M1 scope: the M1 exit gate is not met until they pass.
 
 ## M0 — Foundations
 
@@ -88,7 +90,7 @@
 - [x] **T7 M1 demo eval** — `fixtures/m1/web-hello` + `evals/m1-demo.ts`: open workspace, ask "change the page heading to Hello Helix", agent installs deps via proxy, starts dev server, edits, screenshot confirms, gates pass, commit from Git panel. Accept: passes once live with Gemini; result in `evals/results/`.
   - Evidence: `node evals/m1-demo.ts` (live gemini-3.5-flash-lite) → M1 DEMO: PASS, 7/7 checks (npm install via egress proxy, start_dev_server, edit_file src/page.js, preview_screenshot text "Hello Helix", `npm test` gate passed attempt 1, git.stageAll+git.commit RPC → `6adc651 Change heading to Hello Helix`), 7 model calls, 9 s; first attempt failed screenshot check (fixture dev script had no reload) → fixed to `node --watch`; commit 92e787a; artifact evals/results/m1-demo-gemini-2026-11-08T13-54-03-813Z.json, evals/results/m1-demo-2026-11-08T13-54-03-813Z.png
 
-Launch gates (human, not counted): O1/O2 benchmarks, 10-user usability study, original M1 exit criteria from plan.md §12 (benchmark targets, eval suite).
+Exit gates (required for M1 completion; plan §12 M1): O1 ≥ 55%, O2 ≥ 90%, O4 = 0 High findings, PERF budgets on reference hardware, 10-user usability study (≥ 7 complete W1 unaided). Status: open.
 
 ## M2 — Precision and efficiency
 
@@ -154,7 +156,7 @@ Launch gates (human, not counted): O1/O2 benchmarks, 10-user usability study, or
   - Evidence: `node evals/m2-eval.ts` → M2 EVAL: PASS 5/5 (200 MCP tools registered; MCP tool-definition tokens/turn max 240 vs 28,541 baseline; cost $0.016513 vs $0.078244 = 21.1% of baseline, input tokens 21,217 vs 103,726 — saving is from tool search, both runs' 60k forecast results were already capped at ~15.2k chars by the registry's 16k limit, cache hit 1 in M2; element→source 24/24 = 100% (12 attribute conf 1, 6 ancestor conf 0.9, 6 text conf 0.5)); tsc 0 errors; commit 22666f1; artifact evals/results/m2-eval-2026-11-08T17-40-42-432Z.json
   - Offline `evals/m2-eval.ts` (fake Gemini provider reporting input tokens = full request size/4, so the ledger prices runs with the real `gemini-3.8-flash` manifest; no live calls). (1) MCP: a stdio fake server with 200 tools (`evals/fixtures/many-tools-mcp.mjs`); per model turn, MCP tool-definition tokens = declarations of `mcp__*`/`tool_search`/`mcp_read_result` in the request body. (2) Cost: the same scripted MCP task (find + call a forecast tool returning ~60k chars, call it again, answer) with M2 defaults vs a baseline engine (tool search off, cache off, no result truncation); ledger USD compared. (3) Element→source: generated fixture page with 24 targets (12 attributed elements, 6 unattributed children of attributed elements, 6 unattributed text-only elements); click each center through `preview.locate`; correct = right file (and line for attribute hits). Accept: `node evals/m2-eval.ts` → max MCP tool-definition tokens/turn ≤ 3000 with 200 tools; M2 task cost ≤ 50% of baseline; element→source correct ≥ 95%; result JSON in `evals/results/`.
 
-Launch gates (human, not counted): Sign in with ChatGPT (needs OpenAI approval), O3/O5 benchmarks.
+Exit gates (required for M2 completion; plan §12 M2): O3 ≥ −40% cost vs baseline, O5 ≥ 0.70, element→source ≥ 95% on fixtures, MCP tool tokens ≤ 3k/turn at 200 tools. Sign in with ChatGPT stays code-complete behind a flag (plan §19); enabling it needs OpenAI approval (external). Status: open.
 
 ## M3 — Parallel and background
 
@@ -183,7 +185,7 @@ Launch gates (human, not counted): Sign in with ChatGPT (needs OpenAI approval),
 - [ ] App scaffolding templates + integration wizards
 - [ ] Learned routing priors (opt-in data)
 
-Launch gates (human, not counted): 3 design-partner pilots, SOC 2 Type I readiness, external pen test.
+Exit gates (required for M4 completion; plan §12 M4, external): pilot with 3 design-partner orgs, SOC 2 Type I readiness, policy enforcement verified by external pen test. Status: open.
 
 ## M5 — Platform
 
