@@ -64,7 +64,8 @@
 - [x] **R0.6 Agent loop guarantees** (F-AGT-1) [§9.2] — checkpoint ID on every tool call; cancel stops the loop and its sandbox processes within 1 s. Done when: cancel latency p95 ≤ 1 s over repeated runs.
   - Evidence: `node --test test/cancel.test.ts` → 4/4 pass; 20 cancels per backend during running `sleep 30` (including setsid descendants), local-container p95 131 ms (max 153), local-unshare p95 5 ms (max 5), task.cancelled emitted and no live sandbox processes; read/write/invalid/denied/cancelled calls carry persisted checkpoint IDs; pre-aborted exec never spawns; `node --test test/agent.test.ts test/trace-audit.test.ts` → 10/10; `npx tsc -p tsconfig.helix.json` → 0 errors; commit cfda275
   - Accept [A-local]: `node --test test/cancel.test.ts` → every tool_call row has a checkpoint id; 20 cancels during a running `sleep 30` shell call: p95 time to `task.cancelled` and no live sandbox process ≤ 1000 ms
-- [ ] **R0.7 `helix run` headless/CI command** (FR-34) [§5.7] — non-interactive run with exit codes and machine-readable output, beside `helix -p`. Done when: CLI golden-output tests cover `helix run` and `helix -p`.
+- [x] **R0.7 `helix run` headless/CI command** (FR-34) [§5.7] — non-interactive run with exit codes and machine-readable output, beside `helix -p`. Done when: CLI golden-output tests cover `helix run` and `helix -p`.
+  - Evidence: `cd apps/cli && node --test test/cli.test.ts` → 11/11 pass, six JSON goldens (run/-p × success/gate/budget), text golden, strict YAML validation, existing fixture/audit/trace tests; `npx tsc -p tsconfig.helix.json` → 0 errors; commit 29b8ce6
   - Accept [A-local]: `cd apps/cli && node --test test/cli.test.ts` → golden-output tests pass for `helix run --json` (exit 0 on success, 2 on gate failure, 3 on budget stop) and `helix -p`
 - [ ] **R0.8 CI pipeline** (plan §15.1, §15.7) [§35.6] — `ci-linux` job on every push and PR (tsc, all A-local suites, conformance, desktop E2E headless, red-team, scope check); `ci-macos`/`ci-windows` jobs added by R1.37/R2.15; nightly `bench-ref` and `evals-live` jobs with secrets.
   - Accept [A-host]: `gh workflow run ci.yml --ref <branch> && gh run watch --exit-status` → `ci-linux` green on the branch; a seeded failing test on a scratch branch turns it red
@@ -577,7 +578,7 @@ External exit gates (plan §12 M4; not build tasks, never simulated):
 | FR-31 | M0 | Done | FV | R0.4 | Evidence: `node --test test/ledger-reconcile.test.ts` → 60/60 rows attributed (agent, task, tool, provider, model, role), tokens + cost within 0.0000% of provider-reported; commit 4d47b3f |
 | FR-32 | M1 | Partial | RED | R1.33 | Session and org scopes |
 | FR-33 | M1 (all panels except code-intelligence explorer; plan §12 M1), M2 (code-intelligence explorer, F-UI-3) | Partial | RED | R1.1; R1.2; R1.3; R1.6; R2.4 | M1: Monaco editor, Problems, MCP manager, docking, palette; M2: Intelligence Explorer |
-| FR-34 | M0 | Partial | RED | R0.7; G0.1 | `helix run` subcommand not found |
+| FR-34 | M0 | Done | FV | R0.7; G0.1 | Evidence: `cd apps/cli && node --test test/cli.test.ts` → 11/11 pass; YAML run and -p share Engine RPC, JSON/text output, exit 0/2/3; commit 29b8ce6 |
 | FR-35 | M2 (gen), M3 (E2E) | Not started | DEF(M3) | M2 Test generation; M3 E2E from recordings | E2E from recordings |
 | FR-36 | M2 (local), M4 (PR bot) | Not started | MISS | R2.12; M4 PR review bot | Local review agent (M2 scope) not scheduled |
 | FR-37 | M4 | Not started | DEF(M4) | M4 Deploy adapters | All |
