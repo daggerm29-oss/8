@@ -168,7 +168,9 @@
 ### M1 scope restoration (plan §12 M1, §19 MVP)
 
 Desktop and UI
-- [ ] **R1.1 Electron workbench with Monaco** (FR-33, F-UI-1, PERF-1, PERF-2) [§4.1, §5.1–5.3] — explorer, Monaco editor, agent panel, terminal, preview, Problems, task monitor, SCM, settings in the Electron app, driven by Playwright for Electron. Done when: every FR-33 panel opens and works in the packaged app.
+- [x] **R1.1 Electron workbench with Monaco** (FR-33, F-UI-1, PERF-1, PERF-2) [§4.1, §5.1–5.3] — explorer, Monaco editor, agent panel, terminal, preview, Problems, task monitor, SCM, settings in the Electron app, driven by Playwright for Electron. Done when: every FR-33 panel opens and works in the packaged app.
+  - Evidence: `cd packages/desktop && npx playwright test e2e/workbench.spec.ts` → 1/1 passed (26.4 s overall, 4.0 s smoke), exit 0; actual electron-builder Linux directory package (`app.isPackaged === true`) and bundled Node/Engine, Xvfb/offscreen rendering, real Monaco keyboard edit/save/disk-byte/reopen round-trip, container terminal command and PTY, parsed Problems source navigation, real sandbox HTTP preview iframe, git staging checked on disk, Settings/MCP and actual Engine task/monitor. Agent-response text uses the existing deterministic HTTP conformance provider; this proves UI plumbing, not live model quality. `npx tsc -p tsconfig.helix.json` and `pnpm --filter @helix/desktop typecheck` → 0 errors; focused desktop Engine regressions 5/5 (including actual relocated-Node container forwarding), existing Electron supervision smoke 1/1; commit 7a31567; artifact `evals/results/r1-1-packaged-workbench-2026-11-10.json` (raw Playwright report with embedded packaged screenshot). No PERF-reference, other-M1-task or milestone-exit claim.
+  - Session-end regression evidence: `cd packages/engine && HELIX_SANDBOX_BACKENDS=local-container,local-unshare,local-os node --disable-warning=ExperimentalWarning --test --test-concurrency=1 "test/**/*.test.ts"` → 171/171, 0 failed, 0 skipped, exit 0 (137477.54 ms), once at session end; commit 7a31567; artifact `evals/results/m1-workbench-session-verification-2026-11-10.json` (observed runtime receipt/summary; full raw log retained as workspace task :41). Scope guard → 154/154 IDs, zero removed items/undefined refs/ticks without evidence; requirements Done unchanged at 12/154.
   - Accept [A-local]: `cd packages/desktop && npx playwright test e2e/workbench.spec.ts` → packaged Electron app: explorer, Monaco editor (open, edit, save round-trip), agent panel, terminal, preview, Problems, task monitor, SCM, settings each open and pass their smoke step
 - [ ] **R1.2 Dockable layout and command palette** (F-UI-1) [§5.2] — dockable panels, saved layouts, fuzzy command palette.
   - Accept [A-local]: `cd packages/desktop && npx playwright test e2e/layout.spec.ts` → panels dock/undock/move; a saved layout restores after relaunch; palette fuzzy-matches "opn fil" → "Open File" and runs it
@@ -598,7 +600,7 @@ External exit gates (plan §12 M4; not build tasks, never simulated):
 | FR-30 | M1 (instructions), M3 (memory) | Not started | DEF(M3) | R1.14; M3 typed memory | Typed memory (M3); `CLAUDE.md` / `.cursor/rules` import **not implemented** and not scheduled (only AGENTS.md/HELIX.md loaded) |
 | FR-31 | M0 | Done | FV | R0.4 | Evidence: `node --test test/ledger-reconcile.test.ts` → 60/60 rows attributed (agent, task, tool, provider, model, role), tokens + cost within 0.0000% of provider-reported; commit 4d47b3f |
 | FR-32 | M1 | Partial | RED | R1.33 | Session and org scopes |
-| FR-33 | M1 (all panels except code-intelligence explorer; plan §12 M1), M2 (code-intelligence explorer, F-UI-3) | Partial | RED | R1.1; R1.2; R1.3; R1.6; R2.4 | M1: Monaco editor, Problems, MCP manager, docking, palette; M2: Intelligence Explorer |
+| FR-33 | M1 (all panels except code-intelligence explorer; plan §12 M1), M2 (code-intelligence explorer, F-UI-3) | Partial | RED | R1.1; R1.2; R1.3; R1.6; R2.4 | R1.1 increment: packaged panel smoke and Monaco disk round-trip pass (7a31567, evals/results/r1-1-packaged-workbench-2026-11-10.json). M1 gaps: docking/palette, full activity tree, ledger/trace viewer; M2: Intelligence Explorer |
 | FR-34 | M0 | Done | FV | R0.7; G0.1 | Evidence: `cd apps/cli && node --test test/cli.test.ts` → 11/11 pass; YAML run and -p share Engine RPC, JSON/text output, exit 0/2/3; commit 29b8ce6 |
 | FR-35 | M2 (gen), M3 (E2E) | Not started | DEF(M3) | M2 Test generation; M3 E2E from recordings | E2E from recordings |
 | FR-36 | M2 (local), M4 (PR bot) | Not started | MISS | R2.12; M4 PR review bot | Local review agent (M2 scope) not scheduled |
@@ -669,7 +671,7 @@ External exit gates (plan §12 M4; not build tasks, never simulated):
 | F-REV-1 | M2 (local), M4 (bot) | Not started | MISS | R2.12; M4 PR review bot | Local review agent |
 | F-REV-2 | M2 | Not started | MISS | R2.13 | All |
 | F-REV-3 | M1 (OSV v0), M2 (full) | Partial | RED | R1.36; R2.14 | License, typosquat, install-script, age checks; installs outside agent `run_shell` |
-| F-UI-1 | M1 | Partial | RED | R1.1; R1.2 | Docking, layouts, palette (unscheduled) |
+| F-UI-1 | M1 | Partial | RED | R1.1; R1.2 | R1.1 packaged React/Monaco workbench passes (7a31567); R1.2 still requires docking/undocking/moving, saved layouts restored after relaunch and fuzzy executable command palette |
 | F-UI-2 | M1 | Partial | RED | R1.3 | Tree view, leases, pause/resume (pause in parking lot) |
 | F-UI-3 | M2 | Not started | MISS | R2.4 | All |
 | F-UI-4 | M1 (v1), M2 (v2) | Partial | RED | R2.17 | Walkthroughs, recordings, review results |
@@ -707,8 +709,8 @@ External exit gates (plan §12 M4; not build tasks, never simulated):
 | SEC-12 | M1 | Not started | NI | R1.8 | Reaper |
 | SEC-13 | M1 | Partial | RED | R1.4 | CSP is not strict (`frame-ancestors *`, `style-src 'unsafe-inline'`); no IPC channels exist, so there is no allowlist to validate; smoke test does not launch Electron in CI |
 | SEC-14 | M1 | Not started | MISS | R1.43 | Signing, SBOM, reproducibility |
-| PERF-1 | M1 | Not started | NI | R1.1; R1.4; R1.38; G1.4 | No benchmark; blocker: No real Electron run in CI |
-| PERF-2 | M1 | Not started | NI | R1.1; R1.38; G1.4 | No benchmark; blocker: No editor (Monaco missing) |
+| PERF-1 | M1 | Partial | RED | R1.1; R1.4; R1.38; G1.4 | Real packaged Electron launch verified locally (7a31567), not startup performance evidence; CI/crash hardening and reference-hardware cold-start p95 benchmark remain R1.4/R1.38/G1.4 |
+| PERF-2 | M1 | Partial | RED | R1.1; R1.38; G1.4 | Real Monaco open/edit/save round-trip verified (7a31567), not latency evidence; reference-hardware editor p95 benchmark remains R1.38/G1.4 |
 | PERF-3 | M1 | Not started | NI | R1.38; G1.4 | No benchmark; blocker: No harness |
 | PERF-4 | M1 | Not started | NI | R1.38; G1.4 | No benchmark; blocker: No 1M LOC fixture |
 | PERF-5 | M1 | Not started | NI | R1.12; R1.38; G1.4 | No benchmark; blocker: Brute-force cosine; no fixture |
@@ -721,5 +723,5 @@ External exit gates (plan §12 M4; not build tasks, never simulated):
 | PERF-12 | M1 | Not started | NI | R1.38; G1.4 | No benchmark; blocker: No fixture |
 | PERF-13 | M1 | Not started | NI | R1.3; R1.38; G1.4 | No benchmark; blocker: No harness |
 
-Totals: **154 IDs**: Done 12, Partial 86, Not started 56. The rejected items X19–X21 are not numbered requirements; task R1.46 keeps their enforcement tested.
+Totals: **154 IDs**: Done 12, Partial 88, Not started 54. The rejected items X19–X21 are not numbered requirements; task R1.46 keeps their enforcement tested.
 

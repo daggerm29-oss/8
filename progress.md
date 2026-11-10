@@ -15,16 +15,16 @@
 
 > These are **checklist completion** numbers (ticked items with recorded evidence ÷ all items). They are not a measure of product quality or release readiness; human launch gates in `docs/roadmap.md` are not counted.
 
-**Overall checklist completion: 36%** (70/196 roadmap items)  
+**Overall checklist completion: 36%** (71/196 roadmap items)  
 **Current milestone:** M1 MVP, grounded single agent  
-**Next task:** R1.1 Electron workbench with Monaco (FR-33, F-UI-1, PERF-1, PERF-2) [§4.1, §5.1–5.3]
+**Next task:** R1.2 Dockable layout and command palette (F-UI-1) [§5.2]
 
 **Execution-order exception:** user-authorized M1 work; M0 remains unfinished (R0.8 CI pipeline (plan §15.1, §15.7) [§35.6]). No acceptance criterion or gate is waived.
 
 | Milestone | Progress | Items | Status |
 | --- | --- | --- | --- |
 | M0 Foundations | ██████████ 96% | 22/23 | Unfinished (execution postponed) |
-| M1 MVP, grounded single agent | ███░░░░░░░ 33% | 26/79 | In progress |
+| M1 MVP, grounded single agent | ███░░░░░░░ 34% | 27/79 | In progress |
 | M2 Precision and efficiency | █████░░░░░ 45% | 22/49 | Partly built early |
 | M3 Parallel and background | ░░░░░░░░░░ 0% | 0/20 | Not started |
 | M4 Team and ecosystem | ░░░░░░░░░░ 0% | 0/16 | Not started |
@@ -34,11 +34,11 @@
 
 ## Current task notes (overwrite when the task changes)
 
-- PR #22 merged at ad9dff8061cd1ceae796cbd7c34c06df22843e3b (latest main verified). M1 branch: helix/session-2026-11-10-m1-workbench. PR #19 remains untouched.
-- R1.1 in progress: packages/desktop/renderer contains React/Monaco/xterm panels backed by existing authenticated Engine RPCs; build.mjs/package.mjs include renderer, Engine, Node and parser assets in the real Electron directory package.
-- Resume packages/desktop/e2e/workbench.spec.ts: run the exact acceptance command; investigate actual failures, never count a source-shell or browser-only test as packaged acceptance. R1.1 stays unticked until all smoke steps pass.
-- Focused desktop Engine services 3/3 pass; Engine tsc passes. Desktop compiler and packaged Electron verification are in progress; full engine suite must run once at session end. No PERF-reference or M1 exit-gate claim.
-- R0.8 remains postponed/open with unchanged acceptance, M0 unfinished. The explicit user-authorized roadmap execution marker selects M1 without changing checklist arithmetic; existing 26 completed M1 items and their evidence remain intact.
+- PR #22 merged at ad9dff8061cd1ceae796cbd7c34c06df22843e3b (starting main verified). Continue the existing M1 branch helix/session-2026-11-10-m1-workbench and PR #23: https://github.com/daggerm29-oss/8/pull/23. PR #19 remains untouched.
+- R1.1 COMPLETE: real packaged Linux Electron acceptance 1/1, eight smoke steps, exit 0; Monaco disk round-trip, actual container terminal/PTY/HTTP preview, SCM staging, Problems, Settings/MCP, task/monitor. Raw report: evals/results/r1-1-packaged-workbench-2026-11-10.json, implementation 7a31567.
+- Next R1.2: inspect architecture §5.2 and F-UI-1 before editing packages/desktop/renderer/main.tsx/state.ts; add genuine dock/undock/move, persisted saved layouts restored after app relaunch, and executable fuzzy palette; acceptance e2e/layout.spec.ts is not yet implemented. Do not skip to R1.3.
+- Engine and desktop TypeScript checks pass; focused desktop Engine regressions 5/5 (real relocated Node container forwarding), desktop supervision smoke 1/1, progress regressions 3/3. No PERF-reference, live model quality or M1 exit-gate claim.
+- R0.8 remains postponed/open with acceptance unchanged, M0 unfinished. Original 26 completed M1 items retain their evidence; remaining M1 tasks and G1.1–G1.6/external gates are still required, no M2+ work.
 
 ## Ideas parking lot (one line each, max 15 — do not implement)
 
@@ -59,7 +59,7 @@
 - Focused test: `cd packages/engine && node --disable-warning=ExperimentalWarning --test --test-concurrency=1 test/<file>.test.ts`
 - Full engine suite (once per session, right before SESSION SUMMARY; ~5–8 min, timeout ≥ 600 s): same command with `"test/**/*.test.ts"` (`pnpm test` can hang in the v0 VM)
 - CLI tests: `pnpm --filter @helix/cli test`
-- Workbench (service `helix-workbench`, port 4100): `bash -lc "set -a; . ./.env.development.local; set +a; exec node --disable-warning=ExperimentalWarning packages/engine/src/main.ts --ws 4100 --ui --host 0.0.0.0 --allow-host '*' --no-auth"`
+- Workbench: `pnpm --filter @helix/desktop build`, then service `helix-workbench`, port 4100: `node --env-file-if-exists=.env.development.local --disable-warning=ExperimentalWarning packages/engine/src/main.ts --ws 4100 --ui --desktop-ui packages/desktop/dist/renderer --host 0.0.0.0 --allow-host '*' --no-auth` (development preview only; packaged Electron uses per-launch authentication).
 - Desktop: `pnpm --filter @helix/desktop setup` (fetch Electron), test `cd packages/desktop && node --test test/desktop.test.mjs`
 - Live model: env `GEMINI_API`, model `gemini-3.5-flash-lite` (free tier ~20 req/day per model)
 
@@ -71,8 +71,8 @@
 
 ## Last session (overwrite each session, max 5 lines)
 
-- 2026-11-10 R0.8/container follow-up on PR #22 (no code change): VM-reset container runtime restored (podman 5.6.1 + crun 1.26 + bwrap 0.12.0, fresh storage, nothing deleted). Probe exit 0; focused conformance 51/51, 0 skipped, all three backends; tsc exit 0 after `pnpm install --frozen-lockfile`.
-- Full engine suite ONCE: `HELIX_SANDBOX_BACKENDS=local-container,local-unshare,local-os node --disable-warning=ExperimentalWarning --test --test-concurrency=1 "test/**/*.test.ts"` → 166/166, 0 failed, 0 skipped (133206 ms), exit 0. Earlier 157/165 failure artifact is retained unchanged.
-- CI at current commit 2b55cfe is green: push 42840845440 and PR 42840864785, ci-linux with every step passing.
-- R0.8 dispatch 403 diagnosed: the v0 GitHub App token lacks `actions=write`. Nightly runs are blocked by no workflows on `main`, 0 `helix-reference` runners and an unverified GEMINI_API Actions secret. Owner action needed; nothing waived.
-- Safe to merge: no while R0.8 is open. M0 is otherwise evidenced; next task R0.8 (owner authorization), not M1.
+- 2026-11-10 M1 PR #23: R1.1 complete, real packaged Electron acceptance 1/1 with eight panel smoke steps (26.4 s), Engine/desktop tsc exit 0, focused Engine 5/5, Electron supervision 1/1, progress/scope regressions 17/17. Implementation 7a31567; evidence evals/results/r1-1-packaged-workbench-2026-11-10.json.
+- Full engine suite ONCE at session end: `HELIX_SANDBOX_BACKENDS=local-container,local-unshare,local-os node --disable-warning=ExperimentalWarning --test --test-concurrency=1 "test/**/*.test.ts"` → 171/171, 0 failed, 0 skipped (137477.54 ms), exit 0; observed receipt/summary evals/results/m1-workbench-session-verification-2026-11-10.json (full raw output: workspace task :41). All three sandbox backends exercised; historical evidence unchanged.
+- Browser verified actual bundled renderer/Monaco and Settings at localhost:4100, 1216×587, root redirects to /desktop/index.html, no page errors; this is not substituted for packaged acceptance. CI/PERF reference hardware and G1.1–G1.6/external gates are not claimed.
+- Generated checklist: M1 27/79 complete, 52 remaining; requirements Done stays 12/154. R1.2 is next on the same M1 PR; no later milestone work. FR-33/F-UI-1/PERF-1/PERF-2 stay Partial until their original remaining acceptance passes.
+- Safe to merge: yes for the tested R1.1 increment, not M1 completion. R0.8 remains explicitly postponed and M0 unfinished under the user-authorized work order; all original requirements/exit gates remain open where unevidenced.
