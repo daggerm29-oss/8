@@ -81,9 +81,9 @@ export async function preciseReferences(root: string, targets: PreciseTarget[], 
   const pkgDir = dirname(dirname(ts));
   const sandbox = new LocalSandbox(prefixedId('sbx'), root, { lightMode: opts.lightMode, roPaths: pkgDir.startsWith(root + '/') ? [] : [pkgDir] });
   try {
-    const r = await sandbox.exec('node -e "eval(process.env.HELIX_PRECISE_SCRIPT)"', {
+    const r = await sandbox.exec('node -e "eval(Buffer.from(process.env.HELIX_PRECISE_SCRIPT, \'base64\').toString(\'utf8\'))"', {
       timeoutMs: opts.timeoutMs ?? 60_000, maxOutputBytes: 4 * 1024 * 1024,
-      env: { HELIX_PRECISE_SCRIPT: SCRIPT, HELIX_PRECISE_ARGS: JSON.stringify({ ts, targets }) },
+      env: { HELIX_PRECISE_SCRIPT: Buffer.from(SCRIPT).toString('base64'), HELIX_PRECISE_ARGS: JSON.stringify({ ts, targets }) },
     });
     if (r.exitCode !== 0 || r.truncated) return null;
     return JSON.parse(r.stdout) as Array<PreciseRef[] | null>;

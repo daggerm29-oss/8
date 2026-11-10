@@ -45,7 +45,11 @@ for (const [name, mutate] of [
 }
 
 test('R0.9 missing split-row M0 evidence fails the milestone gate', () => {
-  const result = checkScope({ ...base, roadmap: roadmap.replace('M0 part: Evidence:', 'M0 part: unverified:'), milestone: 'M0' });
+  const valid = checkScope({ ...base, milestone: 'M0' });
+  assert.ok(!valid.errors.some((e) => e.includes('F-SBX-1')));
+  const mutated = roadmap.replace(/\| F-SBX-1 \|[^\n]*/, (row) => row.replace('M0 part: Evidence:', 'M0 part: unverified:'));
+  assert.notEqual(mutated, roadmap);
+  const result = checkScope({ ...base, roadmap: mutated, milestone: 'M0' });
   assert.ok(result.errors.some((e) => e.includes('missing M0 part: Evidence:')));
 });
 

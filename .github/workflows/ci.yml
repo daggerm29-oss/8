@@ -36,16 +36,17 @@ jobs:
       - name: TypeScript
         run: npx tsc -p tsconfig.helix.json
       - name: Protocol A-local suites
-        run: pnpm --filter @helix/protocol test
+        run: node --test packages/engine/test/core.test.ts
       - name: Provider conformance (no live credentials)
         run: pnpm --filter @helix/provider-conformance test
       - name: Engine A-local suites and all backend conformance
+        timeout-minutes: 12
         working-directory: packages/engine
         run: node --disable-warning=ExperimentalWarning --test --test-concurrency=1 "test/**/*.test.ts"
       - name: CLI A-local suites
         run: pnpm --filter @helix/cli test
       - name: Install Electron binary
-        run: pnpm --filter @helix/desktop setup
+        run: pnpm --filter @helix/desktop run setup
       - name: Desktop E2E headless (binary required, no skipped pass)
         run: |
           node -e "const fs=require('fs');const e=require('./packages/desktop/node_modules/electron');if(!fs.existsSync(e))process.exit(1)"

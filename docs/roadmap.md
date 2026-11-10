@@ -68,12 +68,16 @@
   - Evidence: `cd apps/cli && node --test test/cli.test.ts` → 11/11 pass, six JSON goldens (run/-p × success/gate/budget), text golden, strict YAML validation, existing fixture/audit/trace tests; `npx tsc -p tsconfig.helix.json` → 0 errors; commit 29b8ce6
   - Accept [A-local]: `cd apps/cli && node --test test/cli.test.ts` → golden-output tests pass for `helix run --json` (exit 0 on success, 2 on gate failure, 3 on budget stop) and `helix -p`
 - [ ] **R0.8 CI pipeline** (plan §15.1, §15.7) [§35.6] — `ci-linux` job on every push and PR (tsc, all A-local suites, conformance, desktop E2E headless, red-team, scope check); `ci-macos`/`ci-windows` jobs added by R1.37/R2.15; nightly `bench-ref` and `evals-live` jobs with secrets.
+  - Blocked: exact `gh workflow run ci.yml --ref helix/session-2026-11-10-local-container` → HTTP 404 (new workflow not on default branch yet); push-triggered run 42805156815 cancelled at the job deadline after failing two agent tests and hanging; no green host run claimed. Seeded assertion on isolated scratch branch `helix/ci-negative-2026-11-10`, commit a463623: https://github.com/daggerm29-oss/8/actions/runs/42809113863 → expected failure, 8 passed / 1 intentional assertion failed in the explicitly executed protocol core suite (no PR; never merge scratch branch). Protocol package has no test script, so CI now directly runs its core tests; Electron setup uses explicit `run setup`, not pnpm built-in setup. Local YAML validation + tsc pass, Electron headless E2E 1/1. No reference runners registered; GitHub secret inventory returns 403; nightly bench/full-HTS harnesses remain future roadmap work, not claimed passing.
   - Accept [A-host]: `gh workflow run ci.yml --ref <branch> && gh run watch --exit-status` → `ci-linux` green on the branch; a seeded failing test on a scratch branch turns it red
-- [ ] **R0.9 Scope check script** (plan §0.3) [§35.6] — `scripts/check-scope.mjs` enforces the document rules of §35.6.
+- [x] **R0.9 Scope check script** (plan §0.3) [§35.6] — `scripts/check-scope.mjs` enforces the document rules of §35.6.
+  - Evidence: `node scripts/check-scope.mjs` → "154/154 IDs, 0 undefined task refs, 0 ticks without evidence, 0 removed items", exit 0; `node --test scripts/check-scope.test.mjs` → 11/11, including scratch subprocesses exiting 1 for deleted row/task/evidence, undefined refs, missing Done evidence, later tasks, duplicate IDs and postponed milestones; rejected verdict/split-row checks pass; `npx tsc -p tsconfig.helix.json` → 0 errors; commit 222a759
   - Accept [A-local]: `node scripts/check-scope.mjs` → prints "154/154 IDs, 0 undefined task refs, 0 ticks without evidence, 0 removed items" and exits 0; exits 1 on a scratch copy with one requirement row deleted, one task removed, or one Evidence line removed
 - [ ] **G0.1 M0 exit gate (plan §12 M0)** — the CLI agent fixes a seeded failing test in 3 fixture repos **inside a container** (`local-container`), ledger totals reconcile with provider usage, and an Engine restart resumes a task.
+  - Blocked: default `gemini-3.8-flash` returned 503 and a headers timeout before any tool result; the 600 s run was stopped, not passed. Diagnostic `HELIX_SANDBOX_PROVIDER=local-container node evals/m0-exit.ts --model gemini-3.5-flash-lite` fixed 3/3 fixtures, 16 live provider responses, 0% token delta, restarted after a completed live tool and resumed without duplicate completed calls. Costs are null for that unpriced model, so the harness now rejects this as a full gate pass; reviewed artifact `evals/results/m0-exit-gemini-gemini-3.5-flash-lite-2026-11-10T11-40-26-241Z.json` has `pass: false`. Resume with an accessible priced model; do not substitute zero for unknown cost.
   - Accept [A-live]: `HELIX_SANDBOX_PROVIDER=local-container node evals/m0-exit.ts` → 3/3 fixtures fixed inside the container backend, ledger vs provider usage within ±1%, restart-resume check passes; result JSON in `evals/results/`
 - [ ] **G0.2 M0 scope complete** — every requirement row whose milestone cell names M0 has its M0 part passing with evidence (see the split-row rule above the requirement status table).
+  - Blocked: strict scope check still rejects FR-1, F-MDL-1 (R0.3 live coverage) and F-AGT-1 (structured-plan / Explore attribution gaps); do not tick or advance M1. F-SBX-1 now explicitly records its verified Linux M0 part while retaining Partial for other hosts/cloud.
   - Accept [A-local]: `node scripts/check-scope.mjs --milestone M0` → every row naming M0 is Done, or (split rows) its M0 part carries an `M0 part: Evidence:` entry
 
 ## M1 — MVP, grounded single agent
@@ -558,7 +562,7 @@ External exit gates (plan §12 M4; not build tasks, never simulated):
 | FR-11 | M1 | Partial | RED | R1.10 | `.helixignore` not supported |
 | FR-12 | M1 | Partial | RED | R1.16 | No plan edit/approve API before execution found |
 | FR-13 | M1 | Not started | MISS | R1.19 | Rename/delete tools, atomic changeset, per-hunk accept/reject |
-| FR-14 | M1 | Done | FV | M0 tools; M1 parsers | Evidence: `node --test test/sandbox.test.ts test/m1.test.ts` → sandbox command execution and live stdout/stderr streaming, structured diagnostics parsers and retry feedback, rollback; checked in R0.9 evidence refresh |
+| FR-14 | M1 | Done | FV | M0 tools; M1 parsers | Evidence: `node --test test/sandbox.test.ts test/m1.test.ts` → 16/16 pass, sandbox command execution/live stdout/stderr streaming, structured diagnostics and retry feedback, rollback; commit 222a759 |
 | FR-15 | M1 (Explore), M3 (general) | Not started | DEF(M3) | M1 T6; M3 General subagents + DAG | General subagents not on `main` |
 | FR-16 | M3 | Not started | DEF(M3) | M3 Write leases + worktrees; R3.3 | Not on `main`; two open defects |
 | FR-17 | M1 | Partial | RED | R1.29 | Not a shadow git object store (see F-GIT-2) |
@@ -611,7 +615,7 @@ External exit gates (plan §12 M4; not build tasks, never simulated):
 | F-ORC-3 | M3 | Not started | DEF(M3) | M3 Write leases + worktrees; R3.3 | Not on `main`; defects open |
 | F-ORC-4 | M1 | Partial | RED | R1.20 | Batch approval not found |
 | F-ORC-5 | M3 (local/cloud), M4 (issue triggers) | Not started | DEF(M3) | M3 workers; M3 Schedules and triggers; R3.5; R4.2 | All |
-| F-SBX-1 | M0 (local), M3 (cloud) | Partial | RED | R0.1; R0.2; M3 Cloud sandbox provider | M0: `local-container`, `local-unshare` and `local-os` (bwrap) pass the conformance suite, fail closed otherwise (R0.1 commit 81b44e1; R0.2: `HELIX_SANDBOX_BACKENDS=local-container,local-unshare,local-os node --test test/sandbox-conformance.test.ts` → 24/24, commit 66ff487); still missing: Seatbelt run on macOS (A-host, R1.37), gVisor on a host with runsc; M3: cloud backends |
+| F-SBX-1 | M0 (local), M3 (cloud) | Partial | RED | R0.1; R0.2; M3 Cloud sandbox provider | M0 part: Evidence: `local-container`, `local-unshare` and `local-os` (bwrap) pass the conformance suite, fail closed otherwise (R0.1 commit 81b44e1; R0.2: `HELIX_SANDBOX_BACKENDS=local-container,local-unshare,local-os node --test test/sandbox-conformance.test.ts` → 24/24, commit 66ff487); still missing: Seatbelt run on macOS (A-host, R1.37), gVisor on a host with runsc; M3: cloud backends |
 | F-SBX-2 | M1 | Partial | RED | R1.7 | MCP and browser containment; red-team suite (§15.5) |
 | F-SBX-3 | M1 | Partial (audit FV, residual gap) | FV | R1.9 | Per-tool allowlist |
 | F-SBX-4 | M2 | Partial | RED | R2.9 | MCP path (MCP not sandboxed); memory-dump test; persisted bindings |
@@ -700,5 +704,5 @@ External exit gates (plan §12 M4; not build tasks, never simulated):
 | PERF-12 | M1 | Not started | NI | R1.38; G1.4 | No benchmark; blocker: No fixture |
 | PERF-13 | M1 | Not started | NI | R1.3; R1.38; G1.4 | No benchmark; blocker: No harness |
 
-Totals: **154 IDs**: Done 7, Partial 91, Not started 56. The rejected items X19–X21 are not numbered requirements; task R1.46 keeps their enforcement tested.
+Totals: **154 IDs**: Done 10, Partial 88, Not started 56. The rejected items X19–X21 are not numbered requirements; task R1.46 keeps their enforcement tested.
 

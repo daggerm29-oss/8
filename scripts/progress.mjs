@@ -84,3 +84,11 @@ if (startIdx === -1 || endIdx === -1) {
 }
 writeFileSync(progressPath, progress.slice(0, startIdx) + dashboard + progress.slice(endIdx + END.length))
 console.log(dashboard.split('\n').slice(3, -1).join('\n'))
+
+const roadmap = readFileSync(roadmapPath, 'utf8')
+const requirements = roadmap.split('\n').filter((line) => /^\| (?:FR-\d+|F-[A-Z]+-\d+|NFR-\d+|SEC-\d+|PERF-\d+) \|/.test(line)).map((line) => line.split(' | ')[2])
+const requirementDone = requirements.filter((status) => status === 'Done').length
+const requirementPartial = requirements.filter((status) => status.startsWith('Partial')).length
+const requirementNotStarted = requirements.filter((status) => status === 'Not started').length
+writeFileSync(roadmapPath, roadmap.replace(/Totals: \*\*154 IDs\*\*: Done \d+, Partial \d+, Not started \d+\./, `Totals: **154 IDs**: Done ${requirementDone}, Partial ${requirementPartial}, Not started ${requirementNotStarted}.`))
+console.log(`Requirements Done: ${requirementDone}/${requirements.length}`)

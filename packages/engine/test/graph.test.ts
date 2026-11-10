@@ -82,7 +82,7 @@ test('graph: impact() walks callers transitively, scopes by imports, and finds c
   const py = idx.impact('helper');
   assert.deepEqual(py.callers.map((c) => `${c.path}:${c.line}:${c.caller}`), ['tools.py:5:main']);
 
-  const out = await impactTool.run({ target: 'applyDiscount' }, { index: idx } as never);
+  const out = await impactTool.run({ target: 'applyDiscount' }, { index: idx, sandbox: { isolation: 'strict' } } as never);
   assert.match(out.content, /src\/cart\.ts:6 in Cart\.checkout -> applyDiscount/);
   assert.match(out.summary ?? '', /impact applyDiscount: \d+ callers/);
   db.close();

@@ -40,7 +40,7 @@ test('impact: precise callers replace the name-based heuristic for TS definition
   const hSites = heuristic.callers.map((c) => `${c.path}:${c.line}`);
   assert.ok(!hSites.includes('alias.ts:3'), 'heuristic misses the aliased call');
 
-  const out = await impactTool.run({ target: 'format' }, { index: idx } as never);
+  const out = await impactTool.run({ target: 'format' }, { index: idx, sandbox: { isolation: 'strict' } } as never);
   assert.equal(out.isError, undefined);
   assert.match(out.content, /\(precise, TypeScript language service/);
   const lines = out.content.split('\n').filter((l) => /^\s+\S+:\d+ in /.test(l)).map((l) => l.trim()).sort();

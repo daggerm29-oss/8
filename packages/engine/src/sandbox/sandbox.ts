@@ -527,7 +527,7 @@ export class LocalSandbox {
       : this.localOs
       ? this.localOsArgv(cwd, shell, false)
       : ['unshare', '--user', '--map-root-user', '--net', '--mount', '--', 'bash', '-c', CONTAIN_SCRIPT, 'helix', this.newRoot!, this.root, this.scratch, cwd, shell, ...this.roPaths];
-    const quoted = argv.map((a) => `'${a.replace(/'/g, `'\\''`)}'`).join(' ');
+    const quoted = this.wsl ? '' : argv.map((a) => `'${a.replace(/'/g, `'\\''`)}'`).join(' ');
     const env = ctr ? { ...clientEnv(), TERM: 'xterm-256color' } : ptyEnv;
     if (ctr) this.live.add(ctr.name);
     // Under WSL the PTY is allocated by `script` inside the distro; the host only relays pipes. BSD `script` (macOS) takes argv.
