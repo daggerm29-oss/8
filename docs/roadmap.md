@@ -63,6 +63,8 @@
   - Accept [A-local]: `node scripts/check-scope.mjs` → prints "154/154 IDs, 0 undefined task refs, 0 ticks without evidence, 0 removed items" and exits 0; exits 1 on a scratch copy with one requirement row deleted, one task removed, or one Evidence line removed
 - [ ] **G0.1 M0 exit gate (plan §12 M0)** — the CLI agent fixes a seeded failing test in 3 fixture repos **inside a container** (`local-container`), ledger totals reconcile with provider usage, and an Engine restart resumes a task.
   - Accept [A-live]: `HELIX_SANDBOX_PROVIDER=local-container node evals/m0-exit.ts` → 3/3 fixtures fixed inside the container backend, ledger vs provider usage within ±1%, restart-resume check passes; result JSON in `evals/results/`
+- [ ] **G0.2 M0 scope complete** — every requirement row whose milestone cell names M0 has its M0 part passing with evidence (see the split-row rule above the requirement status table).
+  - Accept [A-local]: `node scripts/check-scope.mjs --milestone M0` → every row naming M0 is Done, or (split rows) its M0 part carries an `M0 part: Evidence:` entry
 
 ## M1 — MVP, grounded single agent
 
@@ -225,7 +227,7 @@ MCP, tokens, models
   - Accept [A-local]: `node --test test/depgate.test.ts test/depgate-paths.test.ts` → a vulnerable install from a hook, the dev-server start command, and an MCP server is gated like agent `run_shell`; `postinstall` runs in a sandbox whose env has no sentinels or secrets
 
 Platform, quality, security
-- [ ] **R1.37 macOS host support** (NFR-6, FR-6, F-AUTH-1) [§16.2, §8.1] — macOS arm64/x64 run of sandbox (Seatbelt light mode, container backend) and Keychain on a real macOS CI runner.
+- [ ] **R1.37 macOS host support** (NFR-6, FR-6, F-AUTH-1, SEC-2) [§16.2, §8.1] — macOS arm64/x64 run of sandbox (Seatbelt light mode, container backend) and Keychain on a real macOS CI runner.
   - Accept [A-host]: CI job `macos-latest`: `cd packages/engine && node --test test/sandbox.test.ts test/keychain-macos.test.ts` → passes on macOS arm64 and x64 runners with real Keychain (`security`) and Seatbelt light mode
 - [ ] **R1.38 Performance harness** (NFR-1, PERF-1…13) [§28.5] — 1M LOC fixture generator and benchmarks for every PERF budget on reference hardware, in CI with a ±10% regression gate (plan §15.7).
   - Accept [A-ref]: `node bench/run.mjs --all --hardware reference` → emits p95 for PERF-1…13 on the generated 1M LOC fixture; CI fails when any metric regresses > 10% vs the stored baseline; report in `bench/results/`
@@ -257,8 +259,8 @@ Automated exit gates (plan §12 M1, §19 MVP success criteria)
   - Accept [A-ref]: `node bench/run.mjs --all --hardware reference --enforce-budgets` → every PERF-1…13 p95 within its plan §17 budget
 - [ ] **G1.5 Ledger reconciliation ±1%** — on a live HTS-lite run.
   - Accept [A-live]: `node evals/hts/run.mjs --suite lite --models live --reconcile` → ledger totals within ±1% of provider-reported usage
-- [ ] **G1.6 M1 scope complete** — every ID whose milestone is M1 in the requirement status table is Done.
-  - Accept [A-local]: `node scripts/check-scope.mjs --milestone M1` → every requirement row with milestone M1 has status Done with evidence
+- [ ] **G1.6 M1 scope complete** — every requirement row whose milestone cell names M1 has its M1 part passing with evidence (split-row rule).
+  - Accept [A-local]: `node scripts/check-scope.mjs --milestone M1` → every row whose last milestone is M1 is Done with evidence; every split row naming M1 carries an `M1 part: Evidence:` entry
 
 External exit gates (plan §12 M1, §15.6; not build tasks, never simulated):
 
@@ -396,8 +398,8 @@ Automated exit gates (plan §12 M2)
   - Accept [A-local]: `node evals/e2s-eval.ts --suite real` → ≥ 95% on real React, Vue, Svelte fixtures
 - [ ] **G2.4 MCP ≤ 3k tool tokens per turn at 200 tools** — with success drop ≤ 2 pp (R2.7).
   - Accept [A-live]: `node evals/tool-search-eval.ts --tools 200` → ≤ 3k tool tokens/turn and success drop ≤ 2 pp
-- [ ] **G2.5 M2 scope complete** — every ID whose milestone is M2 in the requirement status table is Done.
-  - Accept [A-local]: `node scripts/check-scope.mjs --milestone M2` → every requirement row with milestone M2 has status Done with evidence
+- [ ] **G2.5 M2 scope complete** — every requirement row whose milestone cell names M2 has its M2 part passing with evidence (split-row rule).
+  - Accept [A-local]: `node scripts/check-scope.mjs --milestone M2` → every row whose last milestone is M2 is Done with evidence; every split row naming M2 carries an `M2 part: Evidence:` entry
 
 External exit gates (plan §12 M2; not build tasks, never simulated):
 
@@ -449,11 +451,11 @@ External exit gates (plan §12 M2; not build tasks, never simulated):
 - [ ] **R3.6 Local↔cloud handoff** (F-TEAM-3) [§28.4] — move a session between local and cloud via git + session bundle.
   - Accept [A-local]: `node --test test/handoff.test.ts` → local session exported as git branch + bundle and resumed by a second Engine instance with identical transcript and checkpoints
 
-Automated exit gates (plan §12 M3)
+Automated exit gates (plan §12 M3). The 300-file migration and visual-regression criteria are gated by the "M3 eval" item above; G3.1 covers durability.
 - [ ] **G3.1 Durable background runs** — background runs survive worker restarts with no lost or duplicated steps (R3.5).
   - Accept [A-local]: `node evals/m3-durability.ts` → 100 background runs with random worker kills: 0 lost and 0 duplicated steps
-- [ ] **G3.2 M3 scope complete** — every ID whose milestone is M3 in the requirement status table is Done.
-  - Accept [A-local]: `node scripts/check-scope.mjs --milestone M3` → every requirement row with milestone M3 has status Done with evidence
+- [ ] **G3.2 M3 scope complete** — every requirement row whose milestone cell names M3 has its M3 part passing with evidence (split-row rule).
+  - Accept [A-local]: `node scripts/check-scope.mjs --milestone M3` → every row whose last milestone is M3 is Done with evidence; every split row naming M3 carries an `M3 part: Evidence:` entry
 
 ## M4 — Team and ecosystem
 
@@ -490,8 +492,8 @@ Automated exit gates (plan §12 M3)
   - Accept [A-ref]: `node bench/cloud-load.mjs --sessions 1000` → 1,000 concurrent sessions in one region with p95 control-plane latency within SLO and 0 failed sessions
 - [ ] **R4.6 Control-plane availability** (NFR-5) [§28.3, §27] — 99.9% monthly SLO with monitoring; sandbox auto-restore from snapshot.
   - Accept [A-local]: `node --test test/control-plane-slo.test.ts` → SLO monitors and alerts configured; killing a sandbox host restores sessions from snapshot
-- [ ] **G4.1 M4 scope complete** — every ID whose milestone is M4 in the requirement status table is Done.
-  - Accept [A-local]: `node scripts/check-scope.mjs --milestone M4` → every requirement row with milestone M4 has status Done with evidence
+- [ ] **G4.1 M4 scope complete** — every requirement row whose milestone cell names M4 has its M4 part passing with evidence (split-row rule).
+  - Accept [A-local]: `node scripts/check-scope.mjs --milestone M4` → every row whose last milestone is M4 is Done with evidence; every split row naming M4 carries an `M4 part: Evidence:` entry
 
 External exit gates (plan §12 M4; not build tasks, never simulated):
 
@@ -528,6 +530,8 @@ External exit gates (plan §12 M4; not build tasks, never simulated):
 ## Requirement status (all 154 original IDs)
 
 > One row per requirement ID in `plan.md` at baseline `f474234`. **Status** starts from `SCOPE_TRACEABILITY.md` rev 2 and is stricter: an audit FV row with a listed residual gap is Partial, not Done. A status changes only when the full original acceptance criterion passes with evidence (AGENTS.md §4). **Milestone** is where plan §5, §6, §11, §12, and §19 require the ID to be Done. **Tasks** are the roadmap items that close the gap; existing items are named by milestone and title.
+>
+> **Split rows.** When the plan delivers one ID across milestones (e.g. "M1 (OSV v0), M2 (full)"), the milestone cell names each part. The first milestone is never postponed: its part must pass at that milestone's scope gate, recorded in the gap cell as `M<n> part: Evidence: <command> → <result>; commit <sha>`. The row stays **Partial** until its last part passes, then becomes **Done**. A task may only close a part in its own milestone or earlier.
 
 | ID | Milestone | Status | Audit | Tasks | Remaining gap vs original AC |
 |---|---|---|---|---|---|
@@ -540,7 +544,7 @@ External exit gates (plan §12 M4; not build tasks, never simulated):
 | FR-7 | M4 | Not started | DEF(M4) | M4 OAuth broker | Entire OAuth flow |
 | FR-8 | M1 | Partial | RED | R1.10 | No docs indexing, no file watcher (ISSUE-007), heuristic call edges |
 | FR-9 | M1 | Partial | RED | R1.11; R1.12; R1.13 | No structural (AST pattern) query; no general `graph.query`; vector is not semantic |
-| FR-10 | M1 | Partial (audit FV, residual gap) | FV | M2 Code graph v0; R2.2 | Precision limited by heuristic graph outside TS |
+| FR-10 | M1 (import graph), M2 (call graph; plan §19, §11) | Partial (audit FV, residual gap) | FV | M2 Code graph v0; R2.2 | M1 part: impact queries on the import graph without an LLM (re-verify); M2: precision limited by heuristic graph outside TS |
 | FR-11 | M1 | Partial | RED | R1.10 | `.helixignore` not supported |
 | FR-12 | M1 | Partial | RED | R1.16 | No plan edit/approve API before execution found |
 | FR-13 | M1 | Not started | MISS | R1.19 | Rename/delete tools, atomic changeset, per-hunk accept/reject |
@@ -563,7 +567,7 @@ External exit gates (plan §12 M4; not build tasks, never simulated):
 | FR-30 | M1 (instructions), M3 (memory) | Not started | DEF(M3) | R1.14; M3 typed memory | Typed memory (M3); `CLAUDE.md` / `.cursor/rules` import **not implemented** and not scheduled (only AGENTS.md/HELIX.md loaded) |
 | FR-31 | M0 | Partial (unverified) | NV | R0.4 | Attribution to tool/agent and ±1% reconciliation not re-verified (legacy evidence) |
 | FR-32 | M1 | Partial | RED | R1.33 | Session and org scopes |
-| FR-33 | M1 | Partial | RED | R1.1; R1.2; R1.3; R1.6; R2.4 | Monaco editor, Problems, Intelligence Explorer, MCP manager, docking, palette |
+| FR-33 | M1 (all panels except code-intelligence explorer; plan §12 M1), M2 (code-intelligence explorer, F-UI-3) | Partial | RED | R1.1; R1.2; R1.3; R1.6; R2.4 | M1: Monaco editor, Problems, MCP manager, docking, palette; M2: Intelligence Explorer |
 | FR-34 | M0 | Partial | RED | R0.7; G0.1 | `helix run` subcommand not found |
 | FR-35 | M2 (gen), M3 (E2E) | Not started | DEF(M3) | M2 Test generation; M3 E2E from recordings | E2E from recordings |
 | FR-36 | M2 (local), M4 (PR bot) | Not started | MISS | R2.12; M4 PR review bot | Local review agent (M2 scope) not scheduled |
@@ -658,28 +662,28 @@ External exit gates (plan §12 M4; not build tasks, never simulated):
 | NFR-11 | M1 | Not started | MISS | R1.42 | All |
 | NFR-12 | M1 | Not started | MISS | R1.5 | All |
 | NFR-13 | M2 | Not started | MISS | R2.21 | No measurement |
-| SEC-1 | M0 | Partial | RED | R0.2; R1.7 | Fail-closed or explicit opt-in; UI indicator |
-| SEC-2 | M0 | Partial | RED | R0.1; R0.2; R2.15 | Not true in `local-process` fallback or WSL |
+| SEC-1 | M0 (agent shell/tools), M1 (MCP stdio, browser; plan §12 M1) | Partial | RED | R0.2; R1.7 | M0: fail-closed or explicit opt-in with indicator; M1: MCP servers and Chrome on host |
+| SEC-2 | M0 (Linux), M1 (macOS; plan §19), M2 (Windows; plan §12 M2) | Partial | RED | R0.1; R0.2; R1.37; R2.15 | M0: not true in `local-process` fallback; M1: no real macOS run; M2: WSL |
 | SEC-3 | M1 | Done | FV | M1 T1 Egress proxy | — |
 | SEC-4 | M2 (KMS M4) | Partial | RED | R2.9; R4.4 | KMS; bindings in memory only |
 | SEC-5 | M1 | Not started | MISS | R1.32 | Sandboxing, credential scope, pinning |
 | SEC-6 | M1 | Partial (unverified) | NV | R1.40 | Red-team prompt-injection suite (§15.5) |
 | SEC-7 | M1 | Partial | RED | R1.30 | Pre-commit/pre-push secret scan |
-| SEC-8 | M1 | Partial | RED | R1.36; R2.14 | Installs from hooks, dev server, MCP; install-script policy |
+| SEC-8 | M1 (gate v0, OSV), M2 (full gate; plan §12 M1) | Partial | RED | R1.36; R2.14 | M1: installs from hooks, dev server, MCP bypass the gate; M2: install-script policy |
 | SEC-9 | M0 (export M4) | Partial | RED | R0.5; M4 control plane | Export (M4) |
 | SEC-10 | M4 | Not started | DEF(M4) | M4 OAuth broker | OAuth |
 | SEC-11 | M1 | Not started | MISS | R1.44 | Data-handling display, zero retention |
 | SEC-12 | M1 | Not started | NI | R1.8 | Reaper |
 | SEC-13 | M1 | Partial | RED | R1.4 | CSP is not strict (`frame-ancestors *`, `style-src 'unsafe-inline'`); no IPC channels exist, so there is no allowlist to validate; smoke test does not launch Electron in CI |
 | SEC-14 | M1 | Not started | MISS | R1.43 | Signing, SBOM, reproducibility |
-| PERF-1 | M1 | Not started | NI | R1.1; R1.4; G1.4 | No benchmark; blocker: No real Electron run in CI |
-| PERF-2 | M1 | Not started | NI | R1.1; G1.4 | No benchmark; blocker: No editor (Monaco missing) |
+| PERF-1 | M1 | Not started | NI | R1.1; R1.4; R1.38; G1.4 | No benchmark; blocker: No real Electron run in CI |
+| PERF-2 | M1 | Not started | NI | R1.1; R1.38; G1.4 | No benchmark; blocker: No editor (Monaco missing) |
 | PERF-3 | M1 | Not started | NI | R1.38; G1.4 | No benchmark; blocker: No harness |
 | PERF-4 | M1 | Not started | NI | R1.38; G1.4 | No benchmark; blocker: No 1M LOC fixture |
 | PERF-5 | M1 | Not started | NI | R1.12; R1.38; G1.4 | No benchmark; blocker: Brute-force cosine; no fixture |
 | PERF-6 | M1 | Not started | NI | R1.10; R1.38; G1.4 | No benchmark; blocker: No fixture |
 | PERF-7 | M1 | Not started | NI | R1.10; R1.38; G1.4 | No benchmark; blocker: No watcher (ISSUE-007) |
-| PERF-8 | M1 | Not started | NI | R2.2; R1.38; G1.4 | No benchmark; blocker: No fixture |
+| PERF-8 | M1 (import-graph Impact Report; plan §12 M1 exit), M2 (re-met on full graph) | Not started | NI | R1.38; G1.4; R2.2 | No benchmark; blocker: No fixture |
 | PERF-9 | M1 | Not started | NI | R1.8; R1.38; G1.4 | No benchmark; blocker: No suspend/resume |
 | PERF-10 | M1 | Not started | NI | R1.25; R1.38; G1.4 | No benchmark; blocker: No timing assertion |
 | PERF-11 | M1 | Not started | NI | R1.29; R1.38; G1.4 | No benchmark; blocker: No fixture |

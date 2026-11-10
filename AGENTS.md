@@ -53,7 +53,7 @@ Do not read `plan.md` or `architecture.md` in full. Do not read `docs/history/`.
 
 1. Actually run the task's Accept command. Tick the item (`- [ ]` → `- [x]`) only if the result matches the expected result. Never tick based on implementation alone.
 2. Directly under the ticked item add: `  - Evidence: <command you ran> → <actual result>; commit <sha>; artifact <path, if any>`. The script does not count ticks without it.
-3. Update the task's requirement IDs in the requirement status table in `docs/roadmap.md`: set **Done** only if the full original acceptance criterion in `plan.md` now passes with evidence, and replace its gap cell with `Evidence: <command> → <result>; commit <sha>`; otherwise keep **Partial** and shorten the gap to what is still missing.
+3. Update the task's requirement IDs in the requirement status table in `docs/roadmap.md`: set **Done** only if the full original acceptance criterion in `plan.md` now passes with evidence, and replace its gap cell with `Evidence: <command> → <result>; commit <sha>`; otherwise keep **Partial** and shorten the gap to what is still missing. For a split row (milestone cell names several milestones), record a finished part as `M<n> part: Evidence: <command> → <result>; commit <sha>` and set Done only when the last part passes.
 4. Run `node scripts/progress.mjs` (rewrites the dashboard in `progress.md`). Never type percentages by hand.
 5. Commit and push. Update the PR description's task list.
 6. Post a short update: `Done: <task> — Evidence: <command> → <result> — Checklist: Overall x% | M0 x% | … | M6 x% — Requirements Done: <n>/154`. Then continue with the next task.

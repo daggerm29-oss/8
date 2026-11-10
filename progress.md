@@ -11,13 +11,13 @@
 
 > These are **checklist completion** numbers (ticked items with recorded evidence ÷ all items). They are not a measure of product quality or release readiness; human launch gates in `docs/roadmap.md` are not counted.
 
-**Overall checklist completion: 31%** (59/193 roadmap items)  
+**Overall checklist completion: 30%** (59/194 roadmap items)  
 **Current milestone:** M0 Foundations  
 **Next task:** R0.1 `local-container` sandbox backend (F-SBX-1, SEC-2) [§16.1, §16.2]
 
 | Milestone | Progress | Items | Status |
 | --- | --- | --- | --- |
-| M0 Foundations | █████░░░░░ 52% | 11/21 | In progress |
+| M0 Foundations | █████░░░░░ 50% | 11/22 | In progress |
 | M1 MVP, grounded single agent | ███░░░░░░░ 33% | 26/78 | Partly built early |
 | M2 Precision and efficiency | █████░░░░░ 45% | 22/49 | Partly built early |
 | M3 Parallel and background | ░░░░░░░░░░ 0% | 0/20 | Not started |

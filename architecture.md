@@ -2334,7 +2334,7 @@ Fixtures are pinned by commit or content hash so results are comparable across r
 | `bench-ref` | Nightly and on PRs labeled `perf` | `bench/run.mjs --all` with regression gate | A-ref |
 | `evals-live` | Nightly and on demand (`gh workflow run evals-live`) | HTS-lite, browser eval, router/cache evals; full HTS before each milestone gate | A-live |
 
-`scripts/check-scope.mjs` fails the build when: the requirement status table does not contain exactly the 154 baseline IDs; a task ID cited in that table is not defined in the roadmap; a ticked item lacks an evidence line; a row marked Done has no evidence; or a roadmap item, exit gate, or requirement row that exists on `main` was removed without a plan §0.3 change-log entry.
+`scripts/check-scope.mjs` fails the build when: the requirement status table does not contain exactly the 154 baseline IDs; a task ID cited in that table is not defined in the roadmap; a ticked item lacks an evidence line; a row marked Done has no evidence; or a roadmap item, exit gate, or requirement row that exists on `main` was removed without a plan §0.3 change-log entry; or a row cites a task from a milestone later than every milestone in its milestone cell. With `--milestone M<n>` it also fails unless every row whose last milestone is M<n> is Done with evidence and every split row naming M<n> carries an `M<n> part: Evidence:` entry (roadmap split-row rule).
 
 ### 35.7 Release quality gates (plan §15.8)
 
