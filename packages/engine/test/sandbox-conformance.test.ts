@@ -37,7 +37,8 @@ function workspace(): string {
 
 function sandbox(backend: SandboxBackend, id: string, opts: ConstructorParameters<typeof LocalSandbox>[2] = {}): LocalSandbox {
   assert.ok(available.has(backend), `backend ${backend} is not available on this host (available: ${[...available].join(', ') || 'none'})`);
-  const sbx = new LocalSandbox(id, workspace(), { ...opts, backend });
+  // `local-os` is only constructible with the trusted-repo light-mode opt-in (R0.2); the Engine passes it from workspace.trust.
+  const sbx = new LocalSandbox(id, workspace(), { ...opts, backend, lightMode: backend === 'local-os' });
   assert.equal(sbx.provider, backend);
   return sbx;
 }
@@ -52,6 +53,10 @@ for (const backend of BACKENDS) {
       if (backend === 'local-container') {
         assert.ok(info.container, 'container info present');
         t.diagnostic(`backend=${backend} cli=${info.container!.cli} runtime=${info.container!.runtime} gvisor=${info.container!.gvisor} proc=${info.container!.proc} seccomp=${info.container!.seccomp} image=${info.container!.image ?? 'host-toolchain-rootfs'}`);
+      } else if (backend === 'local-os') {
+        assert.equal(info.isolation, 'light');
+        assert.ok(info.localOs, 'local-os info present');
+        t.diagnostic(`backend=${backend} tool=${info.localOs!.tool} proc=${info.localOs!.proc} isolation=light`);
       } else t.diagnostic(`backend=${backend} runtime=unshare gvisor=false`);
     } finally {
       sbx.destroy();

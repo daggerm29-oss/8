@@ -54,7 +54,8 @@ export function bwrapFlags(s: BwrapSpec): string[] {
   }
   a.push('--dev', '/dev');
   if (s.proc) a.push('--proc', '/proc');
-  a.push('--bind', s.scratch, '/tmp', '--bind', s.workspace, s.workspace, '--chdir', s.cwd);
+  // The tmpfs root is remounted read-only last, as in the other backends; /tmp and the workspace are separate rw mounts.
+  a.push('--bind', s.scratch, '/tmp', '--bind', s.workspace, s.workspace, '--remount-ro', '/', '--chdir', s.cwd);
   return a;
 }
 
