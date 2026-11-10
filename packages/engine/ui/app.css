@@ -29,6 +29,13 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .engine { font-family: var(--mono); font-size: 12px; color: var(--muted); }
 .engine.ok::before, .engine.bad::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--accent); }
 .engine.bad::before { background: var(--danger); }
+.isolation { font-family: var(--mono); font-size: 12px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--border); background: var(--raised); color: var(--muted); cursor: pointer; }
+.isolation[data-level="full"] { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.isolation[data-level="light"], .isolation[data-level="partial"] { color: var(--bg); background: var(--warn); border-color: var(--warn); font-weight: 600; }
+.isolation[data-level="none"] { color: var(--bg); background: var(--danger); border-color: var(--danger); font-weight: 600; }
+#trust-form .check { flex-direction: row; align-items: center; gap: 8px; font-size: 13px; color: var(--text); }
+#trust-form .err:empty { display: none; }
+#trust-form .err { color: var(--danger); margin: 0; }
 
 .layout { flex: 1; display: flex; min-height: 0; }
 .sidebar { width: 340px; flex-shrink: 0; border-right: 1px solid var(--border); padding: 16px; display: flex; flex-direction: column; gap: 16px; overflow-y: auto; }

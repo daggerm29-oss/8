@@ -1,7 +1,7 @@
 // Helix Workbench v0 (F-UI-1). Plain ES module, no build step: talks JSON-RPC 2.0 to the Engine over the
 // same-origin WebSocket (§22.2). All engine data is rendered with textContent — never innerHTML.
 
-const TOPICS = ['task.*', 'agent.*', 'tool.*', 'model.*', 'verify.*', 'approval.*', 'ledger.*', 'budget.*', 'context.*', 'artifact.*', 'checkpoint.*', 'preview.*'];
+const TOPICS = ['task.*', 'agent.*', 'tool.*', 'model.*', 'verify.*', 'approval.*', 'ledger.*', 'budget.*', 'context.*', 'artifact.*', 'checkpoint.*', 'preview.*', 'workspace.*', 'sandbox.*'];
 const TERMINAL = ['done', 'failed', 'cancelled'];
 const $ = (id) => document.getElementById(id);
 
@@ -853,6 +853,61 @@ async function select(id) {
   renderHead(t);
   renderApprovals();
   renderTab();
+  refreshIsolation();
+}
+
+/* ---------------- isolation indicator (SEC-1: permanent, never hidden) ---------------- */
+const isolation = { status: null };
+const ISOLATION_TEXT = {
+  full: (s) => `isolation: full · ${s.backend}`,
+  light: (s) => `LIGHT MODE · ${s.backend} · trusted repo`,
+  partial: (s) => `isolation: partial · ${s.backend}`,
+  none: () => 'NO SANDBOX · agent processes refused',
+};
+
+async function refreshIsolation() {
+  const ws = selectedWorkspace();
+  try {
+    isolation.status = await rpc.call('workbench.status', ws ? { workspacePath: ws } : {});
+  } catch (err) {
+    isolation.status = null;
+    console.error('[helix] workbench.status failed', err);
+  }
+  const el = $('isolation-status');
+  const s = isolation.status;
+  el.dataset.level = s?.isolation ?? 'unknown';
+  el.textContent = s ? ISOLATION_TEXT[s.isolation]?.(s) ?? `isolation: ${s.isolation}` : 'isolation: unknown';
+  el.title = s?.reason ? s.reason : `Sandbox isolation for ${ws ?? 'new workspaces'} (click to change workspace trust)`;
+}
+
+function openTrustDialog() {
+  const ws = selectedWorkspace();
+  const s = isolation.status;
+  const form = $('trust-form');
+  $('trust-path').textContent = ws ?? 'Select a task to choose its workspace.';
+  $('trust-detail').textContent = s ? `Current: ${s.isolation}${s.backend ? ` (${s.backend})` : ''}${s.reason ? ` — ${s.reason}` : ''}. Available: ${(s.available ?? []).join(', ') || 'none'}.` : '';
+  $('trust-error').textContent = '';
+  form.elements.trusted.checked = !!s?.workspace?.trusted;
+  form.elements.lightMode.checked = !!s?.workspace?.lightMode;
+  form.elements.trusted.disabled = form.elements.lightMode.disabled = !ws;
+  $('trust-dialog').showModal();
+}
+
+async function saveTrust(e) {
+  if (e.submitter?.value !== 'save') return;
+  e.preventDefault();
+  const ws = selectedWorkspace();
+  if (!ws) { $('trust-dialog').close(); return; }
+  const f = $('trust-form').elements;
+  const trusted = f.trusted.checked;
+  const lightMode = trusted && f.lightMode.checked;
+  try {
+    await rpc.call('workspace.trust', { workspacePath: ws, trusted, lightMode });
+    $('trust-dialog').close();
+    await refreshIsolation();
+  } catch (err) {
+    $('trust-error').textContent = err.message;
+  }
 }
 
 let refreshTimer = null;
@@ -870,6 +925,7 @@ setInterval(() => {
 }, 1000);
 
 function onEvent(e) {
+  if (e.topic === 'workspace.trust_changed' || e.topic === 'sandbox.light_mode') refreshIsolation();
   if (e.topic === 'preview.ready' || e.topic === 'preview.exited') {
     const wsPath = e.data?.workspacePath;
     if (wsPath) e.topic === 'preview.ready' ? preview.byWs.set(wsPath, e.data) : preview.byWs.delete(wsPath);
@@ -901,6 +957,8 @@ function setStatus(text, ok) {
 }
 
 function bindUi() {
+  $('isolation-status').addEventListener('click', openTrustDialog);
+  $('trust-form').addEventListener('submit', saveTrust);
   $('preview-start').addEventListener('click', startPreview);
   $('preview-reload').addEventListener('click', reloadPreview);
   $('preview-inspect').addEventListener('click', () => setInspect(!inspect.on));
@@ -1038,6 +1096,7 @@ async function start() {
     retry = 0;
     setStatus(`engine ${init.engineVersion} · ${init.capabilities.sandboxProviders.join(',')} · ${init.capabilities.providers.join(', ')}`, true);
     await refreshTasks();
+    await refreshIsolation();
     await loadWorkspaces();
     loadMcp();
     if (state.selected) await select(state.selected);

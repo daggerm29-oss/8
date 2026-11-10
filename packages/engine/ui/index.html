@@ -13,6 +13,7 @@
   <header class="topbar">
     <div class="brand"><span class="logo" aria-hidden="true"></span><span>Helix</span><span class="muted">Workbench</span></div>
     <div class="topbar-right">
+      <button type="button" id="isolation-status" class="isolation" data-level="unknown" aria-haspopup="dialog" aria-live="polite" title="Sandbox isolation for agent processes (click to change workspace trust)">isolation: …</button>
       <button type="button" id="show-monitor" class="ghost" aria-pressed="true">Monitor</button>
       <div class="engine" id="engine-status" role="status" aria-live="polite">connecting…</div>
     </div>
@@ -246,6 +247,22 @@
       <p class="muted">Paste the token from <code>$HELIX_HOME/engine.json</code>, or open the workbench URL printed by <code>helix-engine --ui</code>.</p>
       <label>Token<input name="token" required autocomplete="off"></label>
       <button type="submit" class="primary">Connect</button>
+    </form>
+  </dialog>
+
+  <dialog id="trust-dialog" aria-labelledby="trust-title">
+    <form method="dialog" id="trust-form" class="form">
+      <h2 id="trust-title">Workspace trust</h2>
+      <p class="muted mono" id="trust-path"></p>
+      <p class="muted" id="trust-detail"></p>
+      <label class="check"><input type="checkbox" name="trusted"> I trust this repository</label>
+      <label class="check"><input type="checkbox" name="lightMode"> Use <code>local-os</code> light mode (bubblewrap / Seatbelt: faster, weaker isolation)</label>
+      <p class="muted">Untrusted workspaces always run agent processes in full isolation. Light mode is shown permanently in the top bar and audited.</p>
+      <p class="err" id="trust-error" role="alert"></p>
+      <div class="row">
+        <button type="submit" value="cancel" class="ghost">Cancel</button>
+        <button type="submit" value="save" class="primary">Save</button>
+      </div>
     </form>
   </dialog>
 
