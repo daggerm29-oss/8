@@ -11,13 +11,13 @@
 
 > These are **checklist completion** numbers (ticked items with recorded evidence ÷ all items). They are not a measure of product quality or release readiness; human launch gates in `docs/roadmap.md` are not counted.
 
-**Overall checklist completion: 31%** (61/194 roadmap items)  
+**Overall checklist completion: 32%** (62/194 roadmap items)  
 **Current milestone:** M0 Foundations  
 **Next task:** R0.3 Provider conformance completion (F-MDL-1, FR-5, FR-1) [§7.1, §7.2]
 
 | Milestone | Progress | Items | Status |
 | --- | --- | --- | --- |
-| M0 Foundations | ██████░░░░ 59% | 13/22 | In progress |
+| M0 Foundations | ██████░░░░ 64% | 14/22 | In progress |
 | M1 MVP, grounded single agent | ███░░░░░░░ 33% | 26/78 | Partly built early |
 | M2 Precision and efficiency | █████░░░░░ 45% | 22/49 | Partly built early |
 | M3 Parallel and background | ░░░░░░░░░░ 0% | 0/20 | Not started |
@@ -29,7 +29,7 @@
 ## Current task notes (overwrite when the task changes)
 
 - R0.3 Blocked only on `OPENAI_API_KEY` (OpenAI live listing); all A-local cases + Gemini live pass (commit 663805d). Live checks: `HELIX_LIVE=1` (+ `HELIX_LIVE_GEMINI_MODEL=gemini-3.5-flash-lite`).
-- Working on R0.4 Ledger attribution and reconciliation: `packages/engine/test/ledger-reconcile.test.ts`.
+- R0.4 done (commit 4d47b3f). Working on R0.5 Trace and audit completeness: `packages/engine/test/trace-audit.test.ts`.
 - Sandbox tests need `sudo dnf install -y podman crun bubblewrap` after a VM reset; conformance: `HELIX_SANDBOX_BACKENDS=local-container,local-unshare,local-os`.
 - Parked: draft PR #19 (M3) is untouched; do not continue it until M3 is the current milestone (AGENTS.md §3). Then first fix its shared-mode write-lease bypass and worktree lease leak.
 
