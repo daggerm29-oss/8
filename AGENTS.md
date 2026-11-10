@@ -47,7 +47,7 @@ Do not read `plan.md` or `architecture.md` in full. Do not read `docs/history/`.
 - **Immediately after your first push** (even if the first task is unfinished): open ONE **draft** PR to `main` for the session branch. Later work pushes to the same branch and PR. Never open a PR per task.
 - Commit and push after every working step, not only at the end of a task.
 - **Never merge your own PR.** The user reviews and merges.
-- Tests: the focused test file + `npx tsc -p tsconfig.helix.json` while working; the full engine suite once at the end of each task.
+- Tests: for each task, run its focused test file(s) and `npx tsc -p tsconfig.helix.json` (plus the task's Accept command, section 4). Do **not** run the full engine suite after each task. Run it **once per session**, at the end, immediately before the SESSION SUMMARY (section 5).
 
 ## 4. After EVERY completed task (strict)
 
@@ -68,12 +68,14 @@ Other progress rules:
 ## 5. Ending the session (credits low, or you are about to stop) — required
 
 - If a task is unfinished: leave its box unticked, push, and write in "Current task notes" exactly where to resume (file, function, next step).
+- Run the full engine suite once (command in `progress.md` "How to run", timeout ≥ 600 s). If anything fails, fix it or record it under Unfinished and set `Safe to merge: no`. Put the result in "Last session".
 - Mark the PR ready for review (`gh pr ready`), run `node scripts/progress.mjs`, then end your reply with this block:
 
 ```
 SESSION SUMMARY
 Completed this session: <task> (evidence: <command> → <result>); <task> (...)
 Unfinished: <task — where to resume>   (or: none)
+Full engine suite (once, at session end): <command> → <passed>/<total>
 Requirements changed: <ID → Partial/Done>; ...   (or: none)
 Open exit gates for this milestone: <automated: ...> | <external: ...>
 ACTION NEEDED: Review and merge this PR into main before starting the next session: <PR URL>
