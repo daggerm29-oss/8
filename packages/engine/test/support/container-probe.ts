@@ -57,9 +57,10 @@ if (rt.cli === 'podman') {
   const ws = mkdtempSync(join(tmpdir(), 'helix-ptyrepro-'));
   const sbx = new LocalSandbox('probe_pty', ws, { backend: 'local-container' });
   let out = '';
+  let exited = false;
   const code = await new Promise<number | null>((resolve) => {
     const timer = setTimeout(() => { p.kill(); resolve(-1); }, 20_000);
-    const p = sbx.pty({ cols: 80, rows: 24, onData: (d) => { out += d; if (out.includes('pty-42')) p.write('exit\r'); }, onExit: (c) => { clearTimeout(timer); resolve(c); } });
+    const p = sbx.pty({ cols: 80, rows: 24, onData: (d) => { out += d; if (!exited && out.includes('pty-42')) { exited = true; p.write('exit\r'); } }, onExit: (c) => { clearTimeout(timer); resolve(c); } });
     setTimeout(() => p.write('echo pty-$((6*7))\r'), 500);
   });
   console.log(`LocalSandbox.pty(): exit=${code}\n    ${out.trim().replace(/\n/g, '\n    ')}`);
