@@ -11,7 +11,7 @@ import { isDeniedHostPath, Vault } from '../vault/vault.ts';
 import { globalRedactor } from '../util/redact.ts';
 import type { SpanRunner } from '../obs/tracing.ts';
 import { wslEnvList, wslExecArgs, wslFromEnv, type WslConfig } from './wsl.ts';
-import { buildRootfs, clientEnv, containerRuntime, removeContainer, removeContainerDirectory, runArgs, type ContainerRuntime } from './container.ts';
+import { buildRootfs, clientEnv, containerRuntime, describeContainerProbe, removeContainer, removeContainerDirectory, runArgs, type ContainerRuntime } from './container.ts';
 import { bwrapArgv, localOsTool, seatbeltArgv, type LocalOsTool } from './localos.ts';
 
 export type SandboxBackend = 'local-container' | 'local-unshare' | 'local-os';
@@ -49,7 +49,7 @@ export function resolveBackend(opts: { lightMode?: boolean } = {}): SandboxBacke
   if (forced && forced !== 'wsl') {
     if (forced === 'local-container') {
       if (containerRuntime()) return forced;
-      throw new SandboxUnavailableError('HELIX_SANDBOX_PROVIDER=local-container, but no working rootless podman/docker was found; agent processes are refused');
+      throw new SandboxUnavailableError(`HELIX_SANDBOX_PROVIDER=local-container, but no working rootless podman/docker was found; agent processes are refused\n${describeContainerProbe()}`);
     }
     if (forced === 'local-unshare') {
       if (unshareIsolates()) return forced;

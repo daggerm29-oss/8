@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { LocalSandbox, availableBackends, type SandboxBackend } from '../src/sandbox/sandbox.ts';
 import { Engine } from '../src/engine.ts';
 import { Vault } from '../src/vault/vault.ts';
+import { describeContainerProbe } from '../src/sandbox/container.ts';
 
 /**
  * Sandbox backend conformance (F-SBX-1, SEC-2, architecture §16.1/§16.2). Every case runs against every backend
@@ -36,7 +37,7 @@ function workspace(): string {
 }
 
 function sandbox(backend: SandboxBackend, id: string, opts: ConstructorParameters<typeof LocalSandbox>[2] = {}): LocalSandbox {
-  assert.ok(available.has(backend), `backend ${backend} is not available on this host (available: ${[...available].join(', ') || 'none'})`);
+  assert.ok(available.has(backend), `backend ${backend} is not available on this host (available: ${[...available].join(', ') || 'none'})${backend === 'local-container' ? `\ncontainer probe:\n${describeContainerProbe()}` : ''}`);
   // `local-os` is only constructible with the trusted-repo light-mode opt-in (R0.2); the Engine passes it from workspace.trust.
   const sbx = new LocalSandbox(id, workspace(), { ...opts, backend, lightMode: backend === 'local-os' });
   assert.equal(sbx.provider, backend);

@@ -35,6 +35,10 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: TypeScript
         run: npx tsc -p tsconfig.helix.json
+      - name: local-container runtime capability probe (diagnostic, fail fast)
+        timeout-minutes: 5
+        working-directory: packages/engine
+        run: node --disable-warning=ExperimentalWarning test/support/container-probe.ts
       - name: Protocol A-local suites
         run: node --test packages/engine/test/core.test.ts
       - name: Provider conformance (no live credentials)

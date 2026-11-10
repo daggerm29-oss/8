@@ -107,13 +107,53 @@ export function runArgs(s: RunSpec): string[] {
   return a;
 }
 
+/** One capability-probe candidate and the concrete reason it was accepted or rejected. */
+export interface ContainerProbeAttempt {
+  cli: ContainerCli;
+  runtime: string;
+  proc: 'proc' | 'masked';
+  ok: boolean;
+  status: number | null;
+  signal: string | null;
+  /** Spawn or setup error (e.g. ENOENT, ETIMEDOUT), if any. */
+  error: string | null;
+  /** Tail of the container CLI's stderr/stdout. */
+  output: string;
+  probeFile: boolean;
+  /** Cleanup failure; a probe whose temporary tree cannot be removed is rejected. */
+  cleanup: string | null;
+}
+
 let probed: ContainerRuntime | null | undefined;
 let probedKey: string | undefined;
+let attempts: ContainerProbeAttempt[] = [];
+let skipped: string[] = [];
 
 /** Reset the cached probe (tests that change PATH). */
 export function resetContainerProbe(): void {
   probed = undefined;
+  attempts = [];
+  skipped = [];
 }
+
+/** Every candidate tried by the last `containerRuntime()` probe, in order. */
+export function containerProbeReport(): { attempts: ContainerProbeAttempt[]; skipped: string[] } {
+  return { attempts: attempts.map((a) => ({ ...a })), skipped: [...skipped] };
+}
+
+/** Human-readable reason the last probe rejected each candidate (for errors, CI logs and conformance failures). */
+export function describeContainerProbe(): string {
+  const lines = skipped.map((s) => `- ${s}`);
+  for (const a of attempts) {
+    const head = `- ${a.cli} runtime=${a.runtime} proc=${a.proc}: ${a.ok ? 'ok' : 'rejected'}`;
+    if (a.ok) { lines.push(head); continue; }
+    const why = [a.status !== null ? `exit=${a.status}` : null, a.signal ? `signal=${a.signal}` : null, a.error ? `error=${a.error}` : null, a.status === 0 && !a.probeFile ? 'probe file missing' : null, a.cleanup ? `cleanup=${a.cleanup}` : null].filter(Boolean).join(' ');
+    lines.push(`${head} (${why})${a.output ? `\n    ${a.output.replace(/\n/g, '\n    ')}` : ''}`);
+  }
+  return lines.length ? lines.join('\n') : '- no container CLI candidates were probed';
+}
+
+const tail = (s: string, max = 1200) => (s.length > max ? `…${s.slice(-max)}` : s).trim();
 
 const probeKey = () => ['PATH', 'HELIX_CONTAINER_CLI', 'HELIX_CONTAINER_RUNTIME', 'HELIX_SANDBOX_IMAGE'].map((k) => process.env[k] ?? '').join('\0');
 
@@ -127,10 +167,12 @@ export function containerRuntime(): ContainerRuntime | null {
   if (probed !== undefined && probedKey === key) return probed;
   probedKey = key;
   probed = null;
+  attempts = [];
+  skipped = [];
   const forcedCli = process.env.HELIX_CONTAINER_CLI as ContainerCli | undefined;
   const clis: ContainerCli[] = forcedCli ? [forcedCli] : ['podman', 'docker'];
   for (const cli of clis) {
-    if (!onPath(cli)) continue;
+    if (!onPath(cli)) { skipped.push(`${cli}: not found on PATH`); continue; }
     const runtimes: Array<string | null> = [];
     if (process.env.HELIX_CONTAINER_RUNTIME) runtimes.push(process.env.HELIX_CONTAINER_RUNTIME);
     else {
@@ -176,6 +218,8 @@ export function removeContainerDirectory(cli: ContainerCli, dir: string): void {
 }
 
 function tryRun(rt: ContainerRuntime): boolean {
+  const attempt: ContainerProbeAttempt = { cli: rt.cli, runtime: rt.runtime ?? `${rt.runtimeName} (engine default)`, proc: rt.proc, ok: false, status: null, signal: null, error: null, output: '', probeFile: false, cleanup: null };
+  attempts.push(attempt);
   const dir = mkdtempSync(join(tmpdir(), 'helix-cprobe-'));
   const rootfs = join(dir, 'root');
   const scratch = join(dir, 'tmp');
@@ -190,13 +234,20 @@ function tryRun(rt: ContainerRuntime): boolean {
     const envFile = join(dir, 'env');
     writeFileSync(envFile, '');
     const args = runArgs({ rt, name: `helix-probe-${process.pid}-${Date.now().toString(36)}`, labels: { 'helix.probe': '1' }, rootfs, roPaths: [...roPaths, ...extra], workspace: ws, scratch, cwd: ws, envFile, tty: false, argv: ['bash', '-c', 'echo ok > ./probe && test -d /usr/bin'] });
-    const r = spawnSync(rt.cli, args, { stdio: ['ignore', 'ignore', 'ignore'], env: clientEnv(), timeout: 60_000 });
-    supported = r.status === 0 && existsSync(join(ws, 'probe'));
-  } catch {
+    const r = spawnSync(rt.cli, args, { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', env: clientEnv(), timeout: 60_000, maxBuffer: 1 << 20 });
+    attempt.status = r.status;
+    attempt.signal = r.signal ?? null;
+    if (r.error) attempt.error = (r.error as NodeJS.ErrnoException).code ?? r.error.message;
+    attempt.output = tail([r.stderr, r.stdout].filter((s) => typeof s === 'string' && s.trim()).join('\n'));
+    attempt.probeFile = existsSync(join(ws, 'probe'));
+    supported = r.status === 0 && attempt.probeFile;
+  } catch (error) {
+    attempt.error = (error as Error).message;
     supported = false;
   } finally {
-    try { removeContainerDirectory(rt.cli, dir); } catch { supported = false; }
+    try { removeContainerDirectory(rt.cli, dir); } catch (error) { attempt.cleanup = (error as Error).message; supported = false; }
   }
+  attempt.ok = supported;
   return supported;
 }
 
