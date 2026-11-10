@@ -5,6 +5,7 @@ const base = {
   modalities: { input: ['text', 'image', 'pdf'] as Array<'text' | 'image' | 'pdf'>, output: ['text'] as Array<'text'> },
   tools: { supported: true, parallel: true, strictSchema: false, dialect: 'gemini' as const },
   reasoning: { controls: ['level'] as Array<'level'>, returnsSummary: true, statefulItems: true },
+  structuredOutput: { supported: true, strict: false },
   caching: { kind: 'implicit' as const },
   origin: 'bundled' as const,
 };

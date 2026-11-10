@@ -141,3 +141,30 @@ test('gemini 429s: per-minute limits stay retryable, daily quotas become non-ret
   assert.equal(day.kind, 'plan_limit');
   assert.ok(!day.retryable);
 });
+
+test('gateway logs capability degradations and records them on the model.call span (F-MDL-1 AC3)', async () => {
+  const fake = await startFakeProvider('openai', () => ({ toolCalls: [{ name: 'read_file', args: { path: 'a' } }, { name: 'read_file', args: { path: 'b' } }] }));
+  try {
+    const db = new Db(':memory:');
+    const bus = new EventBus(db, { flushMs: 1 });
+    const tracer = new Tracer(db, { otlpEndpoint: null });
+    const logged: Array<{ msg: string; f?: Record<string, unknown> }> = [];
+    const logger = { info: (msg: string, f?: Record<string, unknown>) => void logged.push({ msg, f }), warn: () => {}, error: () => {}, debug: () => {} } as unknown as import('../src/util/log.ts').Logger;
+    const { OPENAI_MODELS } = await import('@helix/provider-openai');
+    const serialOnly = new OpenAIAdapter({ models: OPENAI_MODELS.map((m) => ({ ...m, tools: { ...m.tools, parallel: false } })) });
+    const gateway = new ModelGateway({ adapters: [serialOnly], vault: new Vault({ OPENAI_API_KEY: fake.apiKey, HELIX_OPENAI_BASE_URL: fake.url }), ledger: new Ledger(db, bus), tracer, logger });
+    const seen: string[] = [];
+    const r = await gateway.call({
+      provider: 'openai', model: 'gpt-5-mini', role: 'coder', task: 't1', onEvent: (e) => { if (e.type === 'notice') seen.push(e.feature); },
+      request: { ...userMsg('read'), tools: [{ name: 'read_file', description: 'r', inputSchema: { type: 'object', properties: { path: { type: 'string' } } } }] },
+    });
+    assert.equal(r.message.parts.filter((p) => p.type === 'tool_call').length, 1);
+    assert.deepEqual(seen, ['parallel_tool_calls']);
+    assert.deepEqual(logged.filter((l) => l.msg === 'capability degraded').map((l) => l.f?.feature), ['parallel_tool_calls']);
+    const row = db.get<{ events_json: string }>("SELECT events_json FROM spans WHERE name = 'model.call'");
+    assert.ok(row && JSON.parse(row.events_json).some((e: { name: string }) => e.name === 'capability.degraded'), row?.events_json);
+    assert.equal(fake.requests.at(-1)!.body.parallel_tool_calls, false);
+  } finally {
+    await fake.close();
+  }
+});

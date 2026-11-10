@@ -2,6 +2,7 @@ import {
   ProviderError,
   estimateTokens,
   emptyUsage,
+  retryDelayMs,
   type FinishReason,
   type Message,
   type ModelManifest,
@@ -165,9 +166,7 @@ export class ModelGateway {
   }
 
   private backoff(attempt: number, retryAfterMs?: number): number {
-    if (retryAfterMs !== undefined) return Math.min(retryAfterMs, this.maxDelayMs);
-    const exp = this.baseDelayMs * 2 ** attempt;
-    return Math.min(this.maxDelayMs, Math.round(exp / 2 + Math.random() * (exp / 2)));
+    return retryDelayMs(attempt, retryAfterMs, { baseDelayMs: this.baseDelayMs, maxDelayMs: this.maxDelayMs });
   }
 
   async call(c: GatewayCall): Promise<GatewayResult> {
@@ -196,7 +195,14 @@ export class ModelGateway {
           let final: Extract<StreamEvent, { type: 'done' }> | undefined;
           for await (const e of adapter.stream(req, auth, c.signal ?? new AbortController().signal)) {
             if (e.type === 'done') final = e;
-            else c.onEvent?.(e);
+            else {
+              if (e.type === 'notice') {
+                // F-MDL-1 AC3: every degradation is logged and visible on the model.call span.
+                span.addEvent('capability.degraded', { feature: e.feature, detail: e.detail });
+                this.logger?.info('capability degraded', { provider: c.provider, model: c.model, feature: e.feature, detail: e.detail, task: c.task });
+              }
+              c.onEvent?.(e);
+            }
           }
           if (!final) throw new ProviderError(c.provider, 'transient', 'stream ended without a final event');
           span.setAttributes({ 'usage.input_tokens': final.usage.inputTokens, 'usage.cached_input_tokens': final.usage.cachedInputTokens, 'usage.output_tokens': final.usage.outputTokens, 'usage.source': final.usage.source, finish_reason: final.finishReason });

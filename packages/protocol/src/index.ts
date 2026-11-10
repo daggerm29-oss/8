@@ -1,6 +1,8 @@
 export * from './jsonrpc.ts';
 export * from './models.ts';
 export * from './sse.ts';
+export * from './capabilities.ts';
+export * from './retry.ts';
 
 export const PROTOCOL_VERSION = '0.1.0';
 

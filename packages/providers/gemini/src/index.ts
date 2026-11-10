@@ -1,6 +1,10 @@
 import {
   ProviderError,
+  degradationEvents,
   estimateTokens,
+  parseRetryAfter,
+  parseStructured,
+  planCapabilities,
   emptyUsage,
   readSse,
   type AuthContext,
@@ -22,6 +26,8 @@ export { GEMINI_MODELS, GEMINI_DEFAULT_MODEL };
 export const GEMINI_DEFAULT_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
 const PROVIDER = 'gemini';
 const SYNTHETIC_ID_PREFIX = 'gcall_';
+/** generateContent-capable models that are not text chat/agent models (speech, image, music, transcription). */
+const NON_CHAT_MODEL = /(^|-)(tts|image|transcribe|embedding|robotics|computer-use|nano-banana|lyria|aqa)(-|$)|^lyria|^nano-banana/;
 /**
  * Documented escape hatch for function calls that carry no Gemini thought signature
  * (for example, transcript turns produced by another provider after a fallback).
@@ -111,6 +117,10 @@ export function toGeminiRequest(req: ModelRequest): Record<string, unknown> {
   if (req.maxOutputTokens) generationConfig.maxOutputTokens = req.maxOutputTokens;
   if (req.temperature !== undefined) generationConfig.temperature = req.temperature;
   if (req.reasoningEffort) generationConfig.thinkingConfig = { thinkingLevel: req.reasoningEffort === 'low' ? 'low' : 'high' };
+  if (req.responseFormat) {
+    generationConfig.responseMimeType = 'application/json';
+    generationConfig.responseSchema = toGeminiSchema(req.responseFormat.schema);
+  }
   if (Object.keys(generationConfig).length) body.generationConfig = generationConfig;
   return body;
 }
@@ -172,10 +182,7 @@ export function geminiHttpError(status: number, bodyText: string, retryAfterHead
   } catch {
     // Non-JSON error body; keep the raw text.
   }
-  if (retryAfterMs === undefined && retryAfterHeader) {
-    const seconds = Number.parseFloat(retryAfterHeader);
-    if (Number.isFinite(seconds)) retryAfterMs = seconds * 1000;
-  }
+  retryAfterMs ??= parseRetryAfter(retryAfterHeader);
   const text = `gemini ${status}${rpcStatus ? ` ${rpcStatus}` : ''}: ${message}`;
   if (status === 429 || rpcStatus === 'RESOURCE_EXHAUSTED') {
     // A daily/plan quota (e.g. free tier "requests per day", retry in hours) is not worth retrying in-task.
@@ -198,13 +205,22 @@ export class GeminiAdapter implements ProviderAdapter {
   readonly id = PROVIDER;
   readonly defaultModel = GEMINI_DEFAULT_MODEL;
   private readonly fetchImpl: typeof fetch;
+  private readonly models: ModelManifest[];
+  private readonly live = new Map<string, ModelManifest>();
 
-  constructor(opts: { fetch?: typeof fetch } = {}) {
+  /** `models` replaces the bundled overlay (used to describe deployments with narrower capabilities). */
+  constructor(opts: { fetch?: typeof fetch; models?: ModelManifest[] } = {}) {
     this.fetchImpl = opts.fetch ?? fetch;
+    this.models = opts.models ?? GEMINI_MODELS;
   }
 
   bundledModels(): ModelManifest[] {
-    return GEMINI_MODELS.map((m) => ({ ...m }));
+    return this.models.map((m) => ({ ...m }));
+  }
+
+  /** Capability manifest for a model: last live listing, else the bundled overlay. */
+  manifestFor(model: string): ModelManifest | undefined {
+    return this.live.get(model) ?? this.models.find((m) => m.id === model);
   }
 
   private base(auth: AuthContext): string {
@@ -221,21 +237,23 @@ export class GeminiAdapter implements ProviderAdapter {
       const res = await this.fetchImpl(`${this.base(auth)}/models?pageSize=1000`, { headers: this.headers(auth) });
       if (!res.ok) throw geminiHttpError(res.status, await res.text());
       const body = (await res.json()) as { models?: Array<{ name: string; displayName?: string; inputTokenLimit?: number; outputTokenLimit?: number; supportedGenerationMethods?: string[] }> };
-      const overlay = new Map(GEMINI_MODELS.map((m) => [m.id, m]));
+      const overlay = new Map(this.models.map((m) => [m.id, m]));
       const out: ModelManifest[] = [];
       for (const live of body.models ?? []) {
         if (!live.supportedGenerationMethods?.includes('generateContent')) continue;
         const id = live.name.replace(/^models\//, '');
+        if (NON_CHAT_MODEL.test(id)) continue;
         const known = overlay.get(id);
         if (known) {
           out.push({ ...known, contextWindow: live.inputTokenLimit ?? known.contextWindow, maxOutput: live.outputTokenLimit ?? known.maxOutput, origin: 'live+bundled' });
         } else {
           out.push({
-            ...GEMINI_MODELS[0], id, displayName: live.displayName ?? id, status: /preview/.test(id) ? 'preview' : /exp/.test(id) ? 'experimental' : 'stable',
+            ...this.models[0], id, displayName: live.displayName ?? id, status: /preview/.test(id) ? 'preview' : /exp/.test(id) ? 'experimental' : 'stable',
             contextWindow: live.inputTokenLimit ?? 32_768, maxOutput: live.outputTokenLimit ?? 8_192, pricing: null, origin: 'live',
           });
         }
       }
+      for (const m of out) this.live.set(m.id, m);
       return out.length ? out : this.bundledModels();
     } catch (error) {
       const e = this.normalizeError(error);
@@ -268,7 +286,12 @@ export class GeminiAdapter implements ProviderAdapter {
     return new ProviderError(PROVIDER, 'fatal', e?.message ?? String(error));
   }
 
-  async *stream(req: ModelRequest, auth: AuthContext, signal: AbortSignal): AsyncGenerator<StreamEvent> {
+  async *stream(original: ModelRequest, auth: AuthContext, signal: AbortSignal): AsyncGenerator<StreamEvent> {
+    const plan = planCapabilities(original, this.manifestFor(original.model));
+    const req = plan.request;
+    yield* degradationEvents(plan.degradations);
+    const serial = req.parallelToolCalls === false;
+    let droppedCalls = 0;
     const url = `${this.base(auth)}/models/${encodeURIComponent(req.model)}:streamGenerateContent?alt=sse`;
     let res: Response;
     try {
@@ -302,6 +325,11 @@ export class GeminiAdapter implements ProviderAdapter {
         const candidate = chunk.candidates?.[0];
         for (const p of candidate?.content?.parts ?? []) {
           if (p.functionCall) {
+            // Gemini has no request flag for this; enforce one call per turn client-side.
+            if (serial && toolCalls >= 1) {
+              droppedCalls++;
+              continue;
+            }
             currentText = null;
             const id = p.functionCall.id ?? `${SYNTHETIC_ID_PREFIX}${callIndex}`;
             callIndex++;
@@ -332,6 +360,10 @@ export class GeminiAdapter implements ProviderAdapter {
     if (reasoning) finalParts.push({ type: 'reasoning', summary: reasoning });
     for (const p of parts) if (!(p.type === 'text' && p.text === '' && !p.opaque)) finalParts.push(p);
     const message: Message = { role: 'assistant', parts: finalParts };
-    yield { type: 'done', message, usage: usage ?? { ...emptyUsage('estimate'), inputTokens: estimateTokens(req) }, finishReason: mapFinish(finish, toolCalls > 0), responseId };
+    if (droppedCalls > 0) yield* degradationEvents([{ feature: 'parallel_tool_calls', detail: `serialized: kept 1 of ${droppedCalls + 1} tool calls this turn` }]);
+    const structured = plan.validateSchema && toolCalls === 0
+      ? parseStructured(finalParts.filter((p) => p.type === 'text').map((p) => (p as { text: string }).text).join(''), plan.validateSchema)
+      : undefined;
+    yield { type: 'done', message, usage: usage ?? { ...emptyUsage('estimate'), inputTokens: estimateTokens(req) }, finishReason: mapFinish(finish, toolCalls > 0), responseId, structured };
   }
 }

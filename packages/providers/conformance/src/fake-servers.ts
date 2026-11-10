@@ -17,6 +17,8 @@ export interface FakeToolCall {
 
 export interface FakeTurn {
   text?: string;
+  /** Structured output: emitted as the JSON text of the answer. */
+  json?: unknown;
   toolCalls?: FakeToolCall[];
   reasoningSummary?: string;
   usage?: { input: number; cached?: number; output: number; reasoning?: number };
@@ -118,6 +120,12 @@ function validateGemini(body: any, issuedSignatures: Set<string>): string | null
     }
     pendingCalls = c.role === 'model' ? calls : 0;
   }
+  const gc = body.generationConfig ?? {};
+  if (gc.responseSchema !== undefined) {
+    if (gc.responseMimeType !== 'application/json') return 'responseSchema requires responseMimeType "application/json".';
+    if (typeof gc.responseSchema.type !== 'string' || gc.responseSchema.type !== gc.responseSchema.type.toUpperCase()) return `invalid responseSchema type ${gc.responseSchema.type}`;
+    if (JSON.stringify(gc.responseSchema).includes('additionalProperties')) return 'Invalid JSON payload received. Unknown name "additionalProperties" at generation_config.response_schema';
+  }
   for (const t of body.tools ?? []) {
     for (const fd of t.functionDeclarations ?? []) {
       if (fd.parameters && typeof fd.parameters.type === 'string' && fd.parameters.type !== fd.parameters.type.toUpperCase()) return `invalid schema type ${fd.parameters.type}`;
@@ -129,6 +137,7 @@ function validateGemini(body: any, issuedSignatures: Set<string>): string | null
 function geminiFrames(turn: FakeTurn, body: any, index: number, signatures: Set<string>, reported: UsageTotals): string[] {
   const frames: string[] = [];
   const responseId = `resp_${index}`;
+  if (turn.json !== undefined) turn = { ...turn, text: JSON.stringify(turn.json) };
   if (turn.reasoningSummary) frames.push(`data: ${JSON.stringify({ candidates: [{ content: { role: 'model', parts: [{ text: turn.reasoningSummary, thought: true }] } }], responseId })}\r\n\r\n`);
   for (const piece of turn.text ? splitText(turn.text) : []) {
     frames.push(`data: ${JSON.stringify({ candidates: [{ content: { role: 'model', parts: [{ text: piece }] } }], responseId })}\r\n\r\n`);
@@ -158,6 +167,20 @@ function openaiError(message: string, code: string | null, type = 'invalid_reque
   return { error: { message, type, param: null, code } };
 }
 
+/** Mirrors the Responses API strict-schema rules (every object: all properties required, additionalProperties false). */
+function strictSchemaError(schema: any, path = 'schema'): string | null {
+  if (schema?.type === 'object') {
+    if (schema.additionalProperties !== false) return `Invalid schema for response_format: In context=('${path}'), 'additionalProperties' is required to be supplied and to be false.`;
+    for (const k of Object.keys(schema.properties ?? {})) {
+      if (!schema.required?.includes(k)) return `Invalid schema for response_format: In context=('${path}'), 'required' is required to include every key in properties. Missing '${k}'.`;
+      const sub = strictSchemaError(schema.properties[k], `${path}.${k}`);
+      if (sub) return sub;
+    }
+  }
+  if (schema?.type === 'array' && schema.items) return strictSchemaError(schema.items, `${path}[]`);
+  return null;
+}
+
 function validateOpenAI(body: any): string | null {
   if (typeof body?.model !== 'string') return "Missing required parameter: 'model'.";
   if (!Array.isArray(body.input)) return "Invalid type for 'input'.";
@@ -168,6 +191,17 @@ function validateOpenAI(body: any): string | null {
     if (item.type === 'function_call_output' && !calls.has(item.call_id)) return `No tool call found for function call output with call_id ${item.call_id}.`;
     if (item.type === 'reasoning' && (!item.id || !item.encrypted_content)) return 'reasoning items require id and encrypted_content when store=false';
   }
+  const format = body.text?.format;
+  if (format) {
+    if (format.type !== 'json_schema') return `Invalid value for 'text.format.type': ${format.type}`;
+    if (typeof format.name !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(format.name)) return "Invalid 'text.format.name'.";
+    if (!format.schema || typeof format.schema !== 'object') return "Missing required parameter: 'text.format.schema'.";
+    if (format.strict) {
+      const err = strictSchemaError(format.schema);
+      if (err) return err;
+    }
+  }
+  if (body.parallel_tool_calls !== undefined && typeof body.parallel_tool_calls !== 'boolean') return "Invalid type for 'parallel_tool_calls'.";
   return null;
 }
 
@@ -175,6 +209,9 @@ function openaiFrames(turn: FakeTurn, body: any, index: number, reported: UsageT
   const frames: string[] = [];
   const ev = (type: string, data: Record<string, unknown>) => frames.push(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
   const id = `resp_${index}`;
+  if (turn.json !== undefined) turn = { ...turn, text: JSON.stringify(turn.json) };
+  // Real API behavior: parallel_tool_calls=false yields at most one function call per response.
+  if (body.parallel_tool_calls === false && (turn.toolCalls?.length ?? 0) > 1) turn = { ...turn, toolCalls: turn.toolCalls!.slice(0, 1) };
   ev('response.created', { response: { id, status: 'in_progress', output: [] } });
   const output: any[] = [];
   if (body.include?.includes('reasoning.encrypted_content')) {
@@ -237,6 +274,8 @@ export async function startFakeProvider(kind: 'gemini' | 'openai', script: FakeS
           { name: 'models/gemini-3.8-flash', displayName: 'Gemini 3.8 Flash', inputTokenLimit: 1_048_576, outputTokenLimit: 65_536, supportedGenerationMethods: ['generateContent', 'countTokens'] },
           { name: 'models/gemini-9-test', displayName: 'Gemini 9 Test', inputTokenLimit: 2_000_000, outputTokenLimit: 8192, supportedGenerationMethods: ['generateContent'] },
           { name: 'models/gemini-embedding-2', supportedGenerationMethods: ['embedContent'] },
+          { name: 'models/gemini-3.8-flash-tts', displayName: 'Gemini 3.8 Flash TTS', supportedGenerationMethods: ['generateContent'] },
+          { name: 'models/gemini-3.1-flash-image', displayName: 'Gemini 3.1 Flash Image', supportedGenerationMethods: ['generateContent'] },
         ] })
         : json(res, 200, { object: 'list', data: [{ id: 'gpt-5-mini', object: 'model' }, { id: 'gpt-5-test', object: 'model' }, { id: 'tts-1', object: 'model' }] });
     }

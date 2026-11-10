@@ -770,7 +770,10 @@ export class TaskRuntime {
     const call = () => this.callRole(t, plan ? 'planner' : 'coder', plan ? 'plan' : 'edit', {
       ws: t.ws, task: t.id, agent: 'primary', step: stepId, signal,
       request: { system, messages: view, tools, toolChoice: 'auto', maxOutputTokens: 8192 },
-      onEvent: (e) => { if (e.type === 'text_delta') this.publish(t.id, t.ws, 'model.delta', { stepId, text: e.text }, 'none'); },
+      onEvent: (e) => {
+        if (e.type === 'text_delta') this.publish(t.id, t.ws, 'model.delta', { stepId, text: e.text }, 'none');
+        else if (e.type === 'notice') this.publish(t.id, t.ws, 'capability.degraded', { stepId, feature: e.feature, detail: e.detail }, 'log');
+      },
     });
     let result: Awaited<ReturnType<typeof call>>;
     for (let attempt = 0; ; attempt++) {
