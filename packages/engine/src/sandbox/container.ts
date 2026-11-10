@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 
@@ -58,6 +58,10 @@ function onPath(bin: string): string | null {
 /** Skeleton rootfs for podman `--rootfs`: empty mount points plus the host's merged-/usr symlinks. */
 export function buildRootfs(dir: string, roPaths: string[]): string[] {
   const extraBinds: string[] = [];
+  // mkdtemp roots are 0700. Podman 4.9's ephemeral `:O` overlay root (PTY path) then denies the keep-id user
+  // traversal of `/` (`exec /run/podman-init: Permission denied`, CI run 42821213020). The skeleton holds only
+  // empty mountpoints and symlinks, so 0755 exposes no host content.
+  chmodSync(dir, 0o755);
   for (const d of ['dev', 'proc', 'sys', 'tmp', 'run', 'etc', 'usr', 'opt', 'var']) mkdirSync(join(dir, d), { recursive: true });
   for (const l of ROOT_LINKS) {
     if (!existsSync(l)) continue;

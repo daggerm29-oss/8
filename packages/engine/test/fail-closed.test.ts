@@ -14,7 +14,7 @@ import { startFakeProvider, type FakeScript, type FakeTurn } from '@helix/provid
 import { Engine, wsTransport } from '../src/engine.ts';
 import { LocalSandbox, SandboxUnavailableError, resolveBackend, sandboxStatus } from '../src/sandbox/sandbox.ts';
 import { localOsTool } from '../src/sandbox/localos.ts';
-import { containerRuntime, describeContainerProbe, resetContainerProbe } from '../src/sandbox/container.ts';
+import { buildRootfs, containerRuntime, describeContainerProbe, resetContainerProbe } from '../src/sandbox/container.ts';
 
 const SRC = fileURLToPath(new URL('../src/', import.meta.url));
 const UI = fileURLToPath(new URL('../ui/', import.meta.url));
@@ -286,6 +286,25 @@ for (const podman of [{ version: '4.9.3', noHostname: false }, { version: '5.6.1
     }
   });
 }
+
+// CI run 42821213020 (Podman 4.9.3): a 0700 mkdtemp rootfs under the `:O` overlay root denied exec of /run/podman-init.
+test('local-container rootfs skeleton is 0755 and holds only empty mountpoints and symlinks', () => {
+  const root = mkdtempSync(join(tmpdir(), 'helix-root-'));
+  try {
+    assert.equal(statSync(root).mode & 0o777, 0o700);
+    buildRootfs(root, ['/usr', '/etc', '/opt']);
+    assert.equal(statSync(root).mode & 0o777, 0o755);
+    const walk = (d: string): void => {
+      for (const e of readdirSync(d, { withFileTypes: true })) {
+        assert.ok(e.isDirectory() || e.isSymbolicLink(), `unexpected host content ${join(d, e.name)}`);
+        if (e.isDirectory()) walk(join(d, e.name));
+      }
+    };
+    walk(root);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test('forced or environment-selected backends never silently fall back', async () => {
   const noIso = pathWithoutIsolation();
