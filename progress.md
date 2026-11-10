@@ -11,14 +11,14 @@
 
 > These are **checklist completion** numbers (ticked items with recorded evidence ÷ all items). They are not a measure of product quality or release readiness; human launch gates in `docs/roadmap.md` are not counted.
 
-**Overall checklist completion: 35%** (68/195 roadmap items)  
+**Overall checklist completion: 35%** (69/196 roadmap items)  
 **Current milestone:** M0 Foundations  
-**Next task:** R0.3 Provider conformance completion (F-MDL-1, FR-5, FR-1) [§7.1, §7.2]
+**Next task:** R0.8 CI pipeline (plan §15.1, §15.7) [§35.6]
 
 | Milestone | Progress | Items | Status |
 | --- | --- | --- | --- |
-| M0 Foundations | █████████░ 87% | 20/23 | In progress |
-| M1 MVP, grounded single agent | ███░░░░░░░ 33% | 26/78 | Partly built early |
+| M0 Foundations | █████████░ 91% | 21/23 | In progress |
+| M1 MVP, grounded single agent | ███░░░░░░░ 33% | 26/79 | Partly built early |
 | M2 Precision and efficiency | █████░░░░░ 45% | 22/49 | Partly built early |
 | M3 Parallel and background | ░░░░░░░░░░ 0% | 0/20 | Not started |
 | M4 Team and ecosystem | ░░░░░░░░░░ 0% | 0/16 | Not started |

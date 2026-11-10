@@ -53,6 +53,34 @@ test('R0.9 missing split-row M0 evidence fails the milestone gate', () => {
   assert.ok(result.errors.some((e) => e.includes('missing M0 part: Evidence:')));
 });
 
+test('approved F-AGT-1 split accepts evidenced M0 without completing M1', () => {
+  const m0 = checkScope({ ...base, milestone: 'M0' });
+  assert.deepEqual(m0.errors, []);
+  const row = roadmap.split('\n').find((line) => line.startsWith('| F-AGT-1 |'));
+  assert.ok(row);
+  assert.ok(row.includes('| M0 (primary loop), M1 (editable Plan Mode / Explore) | Partial |'));
+  assert.ok(row.includes('R1.16; R1.47; M1 T6'));
+  const m1 = checkScope({ ...base, milestone: 'M1' });
+  assert.ok(m1.errors.some((error) => error.includes('F-AGT-1: M1 requirement not Done with evidence')));
+});
+
+test('approved F-AGT-1 split still rejects missing M0 evidence', () => {
+  const mutated = roadmap.replace(/^\| F-AGT-1 \|[^\n]*/m, (row) => row.replace('M0 part: Evidence:', 'M0 part: unverified:'));
+  assert.notEqual(mutated, roadmap);
+  const result = checkScope({ ...base, roadmap: mutated, milestone: 'M0' });
+  assert.ok(result.errors.some((error) => error.includes('F-AGT-1: missing M0 part: Evidence:')));
+});
+
+test('R0.3 retains both adapter criteria and only approved OpenAI live exemption', () => {
+  const section = roadmap.match(/^- \[[ x]\] \*\*R0\.3 [\s\S]*?(?=^- \[[ x]\] \*\*R0\.4)/m)?.[0];
+  assert.ok(section.includes('both Gemini and OpenAI API-key adapters pass streaming, tool round-trip, structured output, cancellation, rate-limit retry and explicit logged degradation'));
+  assert.ok(section.includes('one standalone adapter package loads through the public gateway without agent-core changes'));
+  assert.ok(section.includes('Only OpenAI live API-key smoke is exempt'));
+  assert.ok(section.includes('F-MDL-3/F-AUTH-2 and M2 SIWC remain separately gated'));
+  assert.ok(plan.includes('User explicitly approved “Exempt OpenAI smoke (Recommended)”'));
+  assert.ok(plan.includes('User explicitly approved “Approve original split (Recommended)”'));
+});
+
 test('R0.9 rejected verdicts cannot be silently reversed', () => {
   const result = checkScope({ ...base, plan: plan.replace(/(\| X19 \|)[^\n]*/, '$1 reversed |') });
   assert.ok(result.errors.some((e) => e.includes('X19')));

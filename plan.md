@@ -52,7 +52,9 @@ Rules that follow from this order:
 
 | Date | IDs | Change | Reason | Approved by |
 |---|---|---|---|---|
-| — | — | None. The roadmap note that claimed to override §11, §12, and §19 was removed on 2026-11-10; it was never an approved scope change. | Restoring baseline authority | User (scope-restoration task) |
+| — | — | Baseline restoration: the roadmap note that claimed to override §11, §12, and §19 was removed on 2026-11-10; it was never an approved scope change. | Restoring baseline authority | User (scope-restoration task) |
+| 2026-11-10 | R0.3, F-MDL-1, FR-1, FR-5 | R0.3 M0 acceptance: live API-key model listing for Gemini and OpenAI → retain live Gemini discovery and authenticated per-request configuration; exempt only OpenAI live API-key smoke in this M0 environment. Both adapters still require all five A-local conformance categories and logged degradation; a new adapter still requires one package without agent-core changes. No F-MDL-3/F-AUTH-2 or M2 SIWC acceptance changes. | User will not use OpenAI Platform API-key billing; recorded fixtures prove adapter mechanics, not live OpenAI access or OAuth. Exact comparison: docs/r0-3-auth-decision.md, option B. | User explicitly approved “Exempt OpenAI smoke (Recommended)” after PR #22 checkpoint 6fd0907 |
+| 2026-11-10 | F-AGT-1 | Requirement mapping M0 only → M0 (primary-loop spans, model-cost attribution, checkpoints, cancellation within 1 s, restart) and M1 (visible/editable Plan Mode and nested Explore guarantees), as assigned by original §12. Keep F-AGT-1 Partial until its M1 part passes; R1.16 and explicit Explore coverage remain required. No original acceptance criterion removed; no M1 implementation authorized. | Resolve the roadmap mapping ambiguity in favor of original §12 M0/M1, without treating M0 task completion as full requirement completion. | User explicitly approved “Approve original split (Recommended)” after PR #22 checkpoint 6fd0907 |
 
 ---
 
