@@ -575,6 +575,7 @@ export class Engine {
         return;
       }
       if (!opts.ui) { res.writeHead(404).end('not found'); return; }
+      if (path === '/' && opts.desktopUiDir) { res.writeHead(302, { location: '/desktop/index.html', 'cache-control': 'no-store' }).end(); return; }
       const file = path.startsWith('/desktop/') && opts.desktopUiDir ? desktopAsset(opts.desktopUiDir, path) : UI_FILES[path === '/' ? '/index.html' : path];
       if (!file) { res.writeHead(404).end('not found'); return; }
       res.writeHead(200, {

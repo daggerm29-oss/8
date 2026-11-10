@@ -1,1 +1,1 @@
-import 'monaco-editor/editor/editor.worker.js';
+import "monaco-editor/editor/editor.worker.js";

@@ -307,7 +307,8 @@ export class LocalSandbox {
       if (!nodeVisible) {
         // Packaged Node may live under Downloads or /tmp; never mount its host parent into the sandbox.
         copyFileSync(process.execPath, join(hostDir, 'node'), constants.COPYFILE_FICLONE);
-        chmodSync(join(hostDir, 'node'), 0o500);
+        // Reflink copies may retain a different owner across nested user namespaces; the private bridge directory still limits access.
+        chmodSync(join(hostDir, 'node'), 0o555);
         this.bridgeNode = join(this.bridgeDir, 'node');
       }
     }

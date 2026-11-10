@@ -42,10 +42,15 @@ test.beforeAll(async () => {
   await expect(page.getByRole('button', { name: 'src/hello.ts', exact: true })).toBeVisible();
 });
 test.afterAll(async () => {
-  await app?.close();
-  display?.kill('SIGTERM');
-  await fake?.close();
-  if (root) rmSync(root, { recursive: true, force: true });
+  const timer = setTimeout(() => app?.process().kill('SIGKILL'), 10_000);
+  try {
+    await app?.close();
+  } finally {
+    clearTimeout(timer);
+    display?.kill('SIGTERM');
+    await fake?.close();
+    if (root) rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('R1.1: packaged panels work; Monaco saves and reloads actual disk bytes', async ({}, testInfo) => {
@@ -63,7 +68,7 @@ test('R1.1: packaged panels work; Monaco saves and reloads actual disk bytes', a
     await page.getByRole('button', { name: 'package.json', exact: true }).click();
     await page.getByRole('button', { name: 'src/hello.ts', exact: true }).click();
     await expect(page.getByTestId('monaco-host')).toHaveAttribute('data-ready', 'true');
-    await expect(editor).toHaveValue(/saved from packaged Monaco/);
+    await expect(page.getByTestId('monaco-host')).toContainText('// saved from packaged Monaco');
   });
   await test.step('Sandboxed terminal runs a real command and PTY input/output', async () => {
     await page.getByRole('button', { name: 'Terminal', exact: true }).first().click();
