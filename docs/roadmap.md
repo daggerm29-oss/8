@@ -43,7 +43,9 @@
 
 ### M0 scope restoration (plan §12 M0)
 
-- [ ] **R0.1 `local-container` sandbox backend** (F-SBX-1, SEC-2) [§16.1, §16.2] — Podman/Docker backend with gVisor (`runsc`) when available, as the default local backend; same `SandboxProvider` contract and policy as `local-unshare`; backend conformance suite run against every backend. Done when: the conformance suite passes on `local-container` and `local-unshare`, and the host home is unreadable from inside both.
+- [x] **R0.1 `local-container` sandbox backend** (F-SBX-1, SEC-2) [§16.1, §16.2] — Podman/Docker backend with gVisor (`runsc`) when available, as the default local backend; same `SandboxProvider` contract and policy as `local-unshare`; backend conformance suite run against every backend. Done when: the conformance suite passes on `local-container` and `local-unshare`, and the host home is unreadable from inside both.
+  - Evidence: `HELIX_SANDBOX_BACKENDS=local-container,local-unshare node --test test/sandbox-conformance.test.ts` → 16/16 pass (8 cases × 2 backends: info, exec, env scrub, mounts incl. `ls $HOST_HOME` + `cat $HOST_HOME/.ssh/id_*` fail, timeouts/cancel kill all processes, no direct egress, egress via proxy, PTY); diagnostic `backend=local-container cli=podman runtime=crun gvisor=false proc=masked seccomp=true` (runsc not installed on this host, so not used); `npx tsc -p tsconfig.helix.json` → 0 errors; commit 81b44e1
+  - Requirement status: Partial (F-SBX-1, SEC-2): `local-os` light mode and fail-closed → R0.2; cgroup limits/reaper → R1.8; gVisor path not exercised (runsc unavailable in v0 VM); Docker path implemented but not exercised (no Docker in v0 VM)
   - Accept [A-local]: `node --test test/sandbox-conformance.test.ts` with `HELIX_SANDBOX_BACKENDS=local-container,local-unshare` → every conformance case passes on both backends (exec, PTY, timeouts, env scrub, mounts, egress via proxy); `cat ~/.ssh/id_*` and `ls $HOME` from inside fail on both; runsc used when present (reported in output)
 - [ ] **R0.2 Fail closed; explicit `local-os` light mode** (SEC-1, SEC-2, FR-19, F-SBX-1) [§16.2, §25.5] — remove the silent `local-process` fallback; when no isolating backend is available the Engine refuses to run agent processes. `local-os` light mode (bubblewrap on Linux, Seatbelt on macOS) only for a repo the user marks trusted, with a permanent workbench indicator and an audit event. Done when: no agent process ever starts unisolated without an explicit trusted-repo opt-in.
   - Accept [A-local]: `node --test test/fail-closed.test.ts` → with no isolating backend (PATH without unshare/podman/docker) `task.create` returns `sandbox_unavailable` and no child process is spawned; trusted-repo `local-os` opt-in runs, emits `sandbox.light_mode` audit event, and `workbench.status` reports `isolation: "light"`; `local-process` provider no longer exists (`grep -r local-process src` → 0 hits)
@@ -601,7 +603,7 @@ External exit gates (plan §12 M4; not build tasks, never simulated):
 | F-ORC-3 | M3 | Not started | DEF(M3) | M3 Write leases + worktrees; R3.3 | Not on `main`; defects open |
 | F-ORC-4 | M1 | Partial | RED | R1.20 | Batch approval not found |
 | F-ORC-5 | M3 (local/cloud), M4 (issue triggers) | Not started | DEF(M3) | M3 workers; M3 Schedules and triggers; R3.5; R4.2 | All |
-| F-SBX-1 | M0 (local), M3 (cloud) | Partial | RED | R0.1; R0.2; M3 Cloud sandbox provider | Containers, gVisor, Seatbelt, bwrap (container backend not scheduled); conformance across backends |
+| F-SBX-1 | M0 (local), M3 (cloud) | Partial | RED | R0.1; R0.2; M3 Cloud sandbox provider | M0: `local-container` + `local-unshare` pass the conformance suite (R0.1, commit 81b44e1); still missing `local-os` (bwrap/Seatbelt) in the suite and fail-closed (R0.2); gVisor not exercised on a host with runsc; M3: cloud backends |
 | F-SBX-2 | M1 | Partial | RED | R1.7 | MCP and browser containment; red-team suite (§15.5) |
 | F-SBX-3 | M1 | Partial (audit FV, residual gap) | FV | R1.9 | Per-tool allowlist |
 | F-SBX-4 | M2 | Partial | RED | R2.9 | MCP path (MCP not sandboxed); memory-dump test; persisted bindings |
@@ -663,7 +665,7 @@ External exit gates (plan §12 M4; not build tasks, never simulated):
 | NFR-12 | M1 | Not started | MISS | R1.5 | All |
 | NFR-13 | M2 | Not started | MISS | R2.21 | No measurement |
 | SEC-1 | M0 (agent shell/tools), M1 (MCP stdio, browser; plan §12 M1) | Partial | RED | R0.2; R1.7 | M0: fail-closed or explicit opt-in with indicator; M1: MCP servers and Chrome on host |
-| SEC-2 | M0 (Linux), M1 (macOS; plan §19), M2 (Windows; plan §12 M2) | Partial | RED | R0.1; R0.2; R1.37; R2.15 | M0: not true in `local-process` fallback; M1: no real macOS run; M2: WSL |
+| SEC-2 | M0 (Linux), M1 (macOS; plan §19), M2 (Windows; plan §12 M2) | Partial | RED | R0.1; R0.2; R1.37; R2.15 | M0: host home/SSH keys unreadable in `local-container` and `local-unshare` (R0.1 conformance, commit 81b44e1); still not true in the `local-process` fallback (R0.2); M1: no real macOS run; M2: WSL |
 | SEC-3 | M1 | Done | FV | M1 T1 Egress proxy | — |
 | SEC-4 | M2 (KMS M4) | Partial | RED | R2.9; R4.4 | KMS; bindings in memory only |
 | SEC-5 | M1 | Not started | MISS | R1.32 | Sandboxing, credential scope, pinning |

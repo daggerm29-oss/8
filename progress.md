@@ -11,13 +11,13 @@
 
 > These are **checklist completion** numbers (ticked items with recorded evidence ÷ all items). They are not a measure of product quality or release readiness; human launch gates in `docs/roadmap.md` are not counted.
 
-**Overall checklist completion: 30%** (59/194 roadmap items)  
+**Overall checklist completion: 31%** (60/194 roadmap items)  
 **Current milestone:** M0 Foundations  
-**Next task:** R0.1 `local-container` sandbox backend (F-SBX-1, SEC-2) [§16.1, §16.2]
+**Next task:** R0.2 Fail closed; explicit `local-os` light mode (SEC-1, SEC-2, FR-19, F-SBX-1) [§16.2, §25.5]
 
 | Milestone | Progress | Items | Status |
 | --- | --- | --- | --- |
-| M0 Foundations | █████░░░░░ 50% | 11/22 | In progress |
+| M0 Foundations | ██████░░░░ 55% | 12/22 | In progress |
 | M1 MVP, grounded single agent | ███░░░░░░░ 33% | 26/78 | Partly built early |
 | M2 Precision and efficiency | █████░░░░░ 45% | 22/49 | Partly built early |
 | M3 Parallel and background | ░░░░░░░░░░ 0% | 0/20 | Not started |
@@ -28,9 +28,10 @@
 
 ## Current task notes (overwrite when the task changes)
 
-- Next: M0 R0.1 `local-container` sandbox backend (F-SBX-1, SEC-2) [§16.1, §16.2]. This matches the dashboard above. Accept: `node --test test/sandbox-conformance.test.ts` with `HELIX_SANDBOX_BACKENDS=local-container,local-unshare` (see `docs/roadmap.md`).
-- Risk for R0.1: the v0 VM has no Docker or Podman (see Environment notes). If neither can run, record a `Blocked:` line and do not tick the task.
-- Parked: draft PR #19 (`helix/session-2026-11-09-m3-orchestration`) holds M3 "General subagents + task DAG scheduler (F-ORC-2)" and "Write leases + worktrees". Do not continue it until M3 is the current milestone (AGENTS.md §3). Then reuse it, and first fix its known review issues: shared-mode write-lease bypass and worktree lease leak.
+- Next: M0 R0.2 Fail closed; explicit `local-os` light mode. Accept: `node --test test/fail-closed.test.ts` (see `docs/roadmap.md`).
+- R0.1 done: `local-container` is now the default backend when rootless podman/docker works (`src/sandbox/container.ts`, IMPL-ADR-032). `HELIX_SANDBOX_PROVIDER=local-unshare|local-container` forces one.
+- Risk for R0.2: `local-os` needs bubblewrap (`sudo dnf install -y bubblewrap` if available) on Linux; Seatbelt is macOS-only (A-host).
+- Parked: draft PR #19 (M3) is untouched; do not continue it until M3 is the current milestone (AGENTS.md §3). Then first fix its shared-mode write-lease bypass and worktree lease leak.
 
 ## Ideas parking lot (one line each, max 15 — do not implement)
 
@@ -57,7 +58,8 @@
 
 ## Environment notes
 
-- No Docker; `unshare` works; no cgroups; no /proc in sandbox (see `docs/decisions.md`).
+- No Docker. Rootless Podman is installable: `sudo dnf install -y podman crun` (not persisted across VM resets; reinstall before sandbox tests). runc cannot mask /proc here, so the probe picks crun with masked /proc.
+- `unshare` works; no cgroups; /proc cannot be mounted in a user namespace (locked /proc overmounts); runsc download 404s.
 
 ## Last session (overwrite each session, max 5 lines)
 
