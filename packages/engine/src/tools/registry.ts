@@ -126,6 +126,7 @@ export class ToolRegistry {
     const errors = validate(tool.spec.inputSchema, args);
     if (errors.length) return { content: `invalid arguments: ${errors.join('; ')}`, isError: true };
     try {
+      ctx.signal.throwIfAborted();
       const out = await tool.run(args as Record<string, unknown>, ctx);
       return { ...out, content: truncate(out.content) };
     } catch (error) {

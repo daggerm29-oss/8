@@ -59,7 +59,7 @@ for (const spec of FIXTURE_SPECS) {
       );
       const sbx = engine.db.get<{ state: string; provider: string }>('SELECT state, provider FROM sandboxes WHERE ws = ?', done.workspaceId)!;
       assert.equal(sbx.state, 'destroyed');
-      assert.equal(engine.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM checkpoints WHERE task = ?', created.id)!.n, 1);
+      assert.equal(engine.db.get<{ n: number }>("SELECT COUNT(*) AS n FROM checkpoints WHERE task = ? AND files_json != '[]'", created.id)!.n, 1);
       assert.equal(engine.bus.verifyAuditChain(), null);
     } finally {
       await engine.close();

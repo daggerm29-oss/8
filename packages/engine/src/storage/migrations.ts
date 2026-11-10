@@ -115,4 +115,12 @@ export const MIGRATIONS: string[] = [
   CREATE TRIGGER audit_log_no_update BEFORE UPDATE ON audit_log BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END;
   CREATE TRIGGER audit_log_no_delete BEFORE DELETE ON audit_log BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END;
   `,
+  /* v9: every tool invocation, including read-only, denied and interrupted calls, owns a durable checkpoint. */ `
+  ALTER TABLE tool_calls ADD COLUMN checkpoint TEXT REFERENCES checkpoints(id);
+  INSERT INTO checkpoints (id, task, step, files_json, at)
+    SELECT 'ckpt_legacy_' || id, task, step, '[]', at FROM tool_calls;
+  UPDATE tool_calls SET checkpoint = 'ckpt_legacy_' || id;
+  CREATE TRIGGER tool_call_checkpoint_required BEFORE INSERT ON tool_calls WHEN NEW.checkpoint IS NULL
+    BEGIN SELECT RAISE(ABORT, 'tool call requires checkpoint'); END;
+  `,
 ];

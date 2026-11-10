@@ -405,7 +405,11 @@ export class TaskRuntime {
       run.controller.abort();
       await run.done;
     }
-    if (!TERMINAL.includes(this.row(id).status)) this.setStatus(id, 'cancelled');
+    if (!TERMINAL.includes(this.row(id).status)) {
+      this.setStatus(id, 'cancelled');
+      this.o.db.run("UPDATE tool_calls SET status = 'cancelled' WHERE task = ? AND status = 'running'", id);
+      this.publish(id, this.row(id).ws, 'task.cancelled', { status: 'cancelled' }, 'audit');
+    }
     return this.summary(id);
   }
 
@@ -506,6 +510,7 @@ export class TaskRuntime {
         }
       }
     } finally {
+      await sandbox.stopProcesses();
       sandbox.destroy();
       this.o.db.run(`UPDATE sandboxes SET state = 'destroyed', destroyed_at = ? WHERE id = ?`, new Date().toISOString(), sandbox.id);
     }
@@ -911,6 +916,13 @@ export class TaskRuntime {
     let tainted = this.transcript(t.id).some((m) => m.parts.some((p) => p.type === 'tool_result' && p.provenance?.taint));
     for (const call of calls) {
       if (signal.aborted) return;
+      const existing = this.o.db.get<{ id: string; checkpoint: string }>('SELECT id, checkpoint FROM tool_calls WHERE task = ? AND call_id = ? AND status = ?', t.id, call.id, 'running');
+      const toolId = existing?.id ?? prefixedId('tc');
+      const checkpointId = existing?.checkpoint ?? prefixedId('ckpt');
+      if (!existing) this.o.db.transaction(() => {
+        this.o.db.run('INSERT INTO checkpoints (id, task, step, files_json, at) VALUES (?, ?, ?, ?, ?)', checkpointId, t.id, null, '[]', new Date().toISOString());
+        this.o.db.run('INSERT INTO tool_calls (id, task, step, call_id, tool, args_json, status, checkpoint, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', toolId, t.id, 'tools', call.id, call.name, json(call.args), 'running', checkpointId, new Date().toISOString());
+      });
       const decision = evaluate({ tool: call.name, args: call.args, profile: t.policy_profile, preapprove, sandboxHasNetwork: sandbox.info().network, tainted });
       let allowed = decision.verdict === 'allow';
       if (decision.verdict === 'ask') allowed = await this.ask(t, call, decision.actionClass, signal);
@@ -936,7 +948,7 @@ export class TaskRuntime {
       const replayed = script?.next(call, allowed ? 'allowed' : 'denied');
       // One `tool.call` span per call, denied ones included (§26.1), under the agent step that requested it.
       const out: ToolOutput = await this.o.tracer.withSpan('tool.call', {
-        tool: call.name, 'task.id': t.id, call_id: call.id, action_class: decision.actionClass, 'policy.decision': allowed ? 'allow' : 'deny', 'policy.reason': decision.reason.slice(0, 200), replayed: Boolean(replayed),
+        tool: call.name, 'task.id': t.id, call_id: call.id, 'checkpoint.id': checkpointId, action_class: decision.actionClass, 'policy.decision': allowed ? 'allow' : 'deny', 'policy.reason': decision.reason.slice(0, 200), replayed: Boolean(replayed),
       }, async (span) => {
         const hooks = replayed || !allowed ? [] : this.hooksFor(sandbox.root);
         const pre = await runHooks(sandbox, hooks, 'pre_tool', { tool: call.name, args: call.args }, signal);
@@ -953,7 +965,7 @@ export class TaskRuntime {
               startDevServer: this.o.devServers ? () => this.o.devServers!.start(sandbox.root) : undefined,
               previewBrowser: this.previewBrowserFor(sandbox.root),
               explore: (question) => this.explore(t, question, sandbox, signal, index),
-              beforeWrite: (abs, prev) => this.checkpoint(t, sandbox, abs, prev),
+              beforeWrite: (abs, prev) => this.checkpoint(t, sandbox, abs, prev, checkpointId),
               submitArtifact: t.policy_profile === 'plan' ? (kind, title, data) => {
                 const artId = this.saveArtifact(t.id, kind, title, data);
                 this.publish(t.id, t.ws, 'artifact.created', { artifactId: artId, kind, title });
@@ -976,11 +988,11 @@ export class TaskRuntime {
         if (res.isError) span.setStatus(StatusCode.ERROR, (res.summary ?? res.content).slice(0, 200));
         return res;
       }, undefined, this.stepSpans.get(t.id));
-      if (signal.aborted) return;
       const durationMs = Math.round(performance.now() - started);
+      this.o.db.run('UPDATE tool_calls SET status = ?, summary = ?, result_tokens = ?, duration_ms = ? WHERE id = ?',
+        signal.aborted ? 'cancelled' : allowed ? (out.isError ? 'error' : 'ok') : 'denied', out.summary ?? null, Math.ceil(out.content.length / 4), durationMs, toolId);
+      if (signal.aborted) return;
       this.o.db.transaction(() => {
-        this.o.db.run('INSERT INTO tool_calls (id, task, step, call_id, tool, args_json, status, summary, result_tokens, duration_ms, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-          prefixedId('tc'), t.id, 'tools', call.id, call.name, json(call.args), allowed ? (out.isError ? 'error' : 'ok') : 'denied', out.summary ?? null, Math.ceil(out.content.length / 4), durationMs, new Date().toISOString());
         this.addMessage(t.id, null, { role: 'tool', parts: [{ type: 'tool_result', callId: call.id, name: call.name, content: out.content, isError: out.isError, provenance: out.provenance ?? { source: 'builtin', trust: 'trusted', taint: false }, ...(out.dataRef ? { dataRef: out.dataRef } : {}) }] });
         if (out.provenance?.taint) tainted = true;
       });
@@ -1006,9 +1018,14 @@ export class TaskRuntime {
     this.publish(id, t.ws, 'hook.ran', { event: 'task_done', status: t.status, runs: runs.map((r) => ({ run: r.run, exitCode: r.exitCode })) }, 'audit');
   }
 
-  private checkpoint(t: TaskRow, sandbox: LocalSandbox, abs: string, previous: string | null): void {
+  private checkpoint(t: TaskRow, sandbox: LocalSandbox, abs: string, previous: string | null, checkpointId: string): void {
+    const row = this.o.db.get<{ files_json: string }>('SELECT files_json FROM checkpoints WHERE id = ?', checkpointId)!;
+    const files = parseJson<Array<{ path: string; before: string | null }>>(row.files_json, []);
+    const path = sandbox.relative(abs);
+    if (files.some((file) => file.path === path)) return;
     const ref = previous === null ? null : this.o.blobs ? this.o.blobs.put(previous, { kind: 'checkpoint', id: t.id }) : previous;
-    this.o.db.run('INSERT INTO checkpoints (id, task, step, files_json, at) VALUES (?, ?, ?, ?, ?)', prefixedId('ckpt'), t.id, null, json([{ path: sandbox.relative(abs), before: ref }]), new Date().toISOString());
+    files.push({ path, before: ref });
+    this.o.db.run('UPDATE checkpoints SET files_json = ? WHERE id = ?', json(files), checkpointId);
   }
 
   private ask(t: TaskRow, call: Extract<Part, { type: 'tool_call' }>, actionClass: string, signal: AbortSignal): Promise<boolean> {

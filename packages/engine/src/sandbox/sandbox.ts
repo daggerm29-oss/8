@@ -211,7 +211,7 @@ export function mountNsAvailable(): boolean {
     const nr = mkdtempSync(join(tmpdir(), 'helix-probe-root-'));
     const sc = mkdtempSync(join(tmpdir(), 'helix-probe-tmp-'));
     try {
-      const r = spawnSync('unshare', ['--user', '--map-root-user', '--net', '--mount', '--pid', '--fork', '--', 'bash', '-c', CONTAIN_SCRIPT, 'helix', nr, sc, sc, sc, 'test -d /usr/bin && ! test -e /home/.helix-probe', ...DEFAULT_RO_PATHS], { stdio: 'ignore', timeout: 10_000 });
+      const r = spawnSync('unshare', ['--user', '--map-root-user', '--net', '--mount', '--pid', '--fork', '--kill-child=KILL', '--', 'bash', '-c', CONTAIN_SCRIPT, 'helix', nr, sc, sc, sc, 'test -d /usr/bin && ! test -e /home/.helix-probe', ...DEFAULT_RO_PATHS], { stdio: 'ignore', timeout: 10_000 });
       ok = r.status === 0;
     } finally {
       rmSync(nr, { recursive: true, force: true });
@@ -249,6 +249,8 @@ export class LocalSandbox {
   /** Host-only directory for per-exec env files (never mounted into the sandbox). */
   private readonly ctlDir: string | null = null;
   private readonly live = new Set<string>();
+  private readonly processes = new Map<() => void, Promise<void>>();
+  private readonly removals = new Map<string, Promise<void>>();
   private seq = 0;
   readonly fsIsolation: boolean;
   private readonly scratch: string;
@@ -344,7 +346,7 @@ export class LocalSandbox {
 
   private stopContainer(name: string): void {
     if (!this.container || !this.live.has(name)) return;
-    void removeContainer(this.container.cli, name);
+    if (!this.removals.has(name)) this.removals.set(name, removeContainer(this.container.cli, name));
   }
 
   private finishContainer(name: string): void {
@@ -428,6 +430,8 @@ export class LocalSandbox {
     if (this.destroyed) throw new Error(`sandbox ${this.id} is destroyed`);
     const cwd = this.resolvePath(opts.cwd ?? '.', 'read');
     const egress = !!(await this.egressReady);
+    opts.signal?.throwIfAborted();
+    if (this.destroyed) throw new Error(`sandbox ${this.id} is destroyed`);
     command = this.prelude(egress, opts.exposePorts?.filter((p) => Number.isInteger(p) && p > 0 && p < 65536)) + command;
     const timeoutMs = opts.timeoutMs ?? 120_000;
     const max = opts.maxOutputBytes ?? 256 * 1024;
@@ -440,7 +444,7 @@ export class LocalSandbox {
       ? [this.container!.cli, ctr.args]
       : lightArgv
       ? [lightArgv[0], lightArgv.slice(1)]
-      : ['unshare', ['--user', '--map-root-user', '--net', '--mount', '--pid', '--fork', '--', 'bash', '-c', CONTAIN_SCRIPT, 'helix', this.newRoot!, this.root, this.scratch, cwd, command, ...this.roPaths]];
+      : ['unshare', ['--user', '--map-root-user', '--net', '--mount', '--pid', '--fork', '--kill-child=KILL', '--', 'bash', '-c', CONTAIN_SCRIPT, 'helix', this.newRoot!, this.root, this.scratch, cwd, command, ...this.roPaths]];
     const started = performance.now();
     return new Promise((resolveExec) => {
       if (ctr) this.live.add(ctr.name);
@@ -469,6 +473,8 @@ export class LocalSandbox {
         if (ctr) this.stopContainer(ctr.name);
         else killTree(child.pid);
       };
+      let closed!: () => void;
+      this.processes.set(kill, new Promise<void>((resolve) => { closed = resolve; }));
       const timer = setTimeout(() => {
         timedOut = true;
         kill();
@@ -477,6 +483,8 @@ export class LocalSandbox {
       opts.signal?.addEventListener('abort', onAbort, { once: true });
       child.on('close', (code, signal) => {
         clearTimeout(timer);
+        closed();
+        this.processes.delete(kill);
         opts.signal?.removeEventListener('abort', onAbort);
         if (ctr) this.finishContainer(ctr.name);
         if (ctr && timedOut) { code = null; signal = signal ?? 'SIGKILL'; }
@@ -487,6 +495,9 @@ export class LocalSandbox {
       });
       child.on('error', (err) => {
         clearTimeout(timer);
+        closed();
+        this.processes.delete(kill);
+        opts.signal?.removeEventListener('abort', onAbort);
         if (ctr) this.finishContainer(ctr.name);
         resolveExec({ exitCode: null, signal: null, timedOut, truncated, durationMs: 0, stdout: '', stderr: `spawn failed: ${err.message}` });
       });
@@ -530,23 +541,33 @@ export class LocalSandbox {
     child.stdout.on('data', emit);
     child.stderr.on('data', emit);
     child.stdin.on('error', () => { /* shell already gone */ });
+    const kill = () => {
+      if (ctr) this.stopContainer(ctr.name);
+      else killTree(child.pid);
+    };
+    let closed!: () => void;
+    this.processes.set(kill, new Promise<void>((resolve) => { closed = resolve; }));
     let exited = false;
-    const done = (code: number | null) => { if (!exited) { exited = true; if (ctr) this.finishContainer(ctr.name); opts.onExit(code); } };
+    const done = (code: number | null) => { if (!exited) { exited = true; closed(); this.processes.delete(kill); if (ctr) this.finishContainer(ctr.name); opts.onExit(code); } };
     child.on('close', (code) => done(code));
     child.on('error', (err) => { opts.onData(`spawn failed: ${err.message}\r\n`); done(null); });
     return {
       pid: child.pid,
       write: (data) => { if (!exited && typeof data === 'string') child.stdin.write(data); },
-      kill: () => {
-        if (ctr) this.stopContainer(ctr.name);
-        killTree(child.pid);
-      },
+      kill,
     };
+  }
+
+  async stopProcesses(): Promise<void> {
+    const active = [...this.processes];
+    for (const [kill] of active) kill();
+    await Promise.all([...active.map(([, closed]) => closed), ...this.removals.values()]);
   }
 
   destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
+    for (const kill of this.processes.keys()) kill();
     for (const name of this.live) this.stopContainer(name);
     if (this.ctlDir) rmSync(this.ctlDir, { recursive: true, force: true });
     void this.egressReady.then((close) => close?.());
