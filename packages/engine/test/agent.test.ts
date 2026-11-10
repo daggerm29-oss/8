@@ -132,11 +132,12 @@ test('interactive approvals block until agent.approve and the transient overload
   }
 });
 
-test('[exit-3] SIGKILLed engine: a new engine resumes the task without repeating completed tool calls', async () => {
+test('[exit-3] SIGKILLed engine: a new engine resumes the task without repeating completed tool calls', async (t) => {
   const spec = FIXTURE_SPECS[2];
   const turns = solver(spec);
   // Turn 3 (the post-edit test run) hangs so the engine is killed mid-model-call after the edit was persisted.
   const fake = await startFakeProvider('gemini', ({ index }) => (index === 3 && !resumed ? { ...turns[3], delayMs: 8_000 } : turns[Math.min(index, turns.length - 1)]));
+  t.after(() => fake.close());
   let resumed = false;
   const home = mkdtempSync(join(tmpdir(), 'helix-home-'));
   const dir = copyFixture(spec.name);
@@ -173,6 +174,5 @@ test('[exit-3] SIGKILLed engine: a new engine resumes the task without repeating
     assert.ok(engine.db.get(`SELECT 1 FROM events WHERE task = ? AND topic = 'task.resumed'`, taskId));
   } finally {
     await engine.close();
-    await fake.close();
   }
 });
