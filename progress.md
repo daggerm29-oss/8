@@ -30,9 +30,9 @@
 
 - R0.3 DONE / F-MDL-1 Done: explicit user-approved OpenAI M0 live-smoke exemption in plan §0.3. Both adapters 23/23 A-local; package/degradation gateway 11/11; Gemini live listing + two authenticated configuration/access responses 2/2 (28 models), fresh artifact fr-1-gemini-controls-2026-11-10T14-50-33-405Z.json. No OpenAI key, OAuth or billing claim.
 - G0.2 DONE: exact strict M0 scope command exits 0, all 154 IDs retained; scope guardrails 14/14, tsc clean. F-AGT-1 stays Partial across approved original M0/M1 split; R1.16 and new R1.47 retain M1 editable-plan/nested-Explore coverage (documentation only). Previous failed scope/exit artifacts retained unchanged.
-- R0.8 remains OPEN: prior green host CI and current-workflow seeded negative remain proven; exact dispatch HTTP 403 and uncertified nightly reference/full-HTS provisioning are not waived. No M1 implementation, no merge, PR #19 untouched.
-- Current full engine run ONCE: 157/165 pass, 8 container-conformance failures, 0 skipped (126.2 s). Podman cached boot ID differs after workspace reboot; one fresh isolated-storage recovery attempt fails with cannot re-exec process to join the existing user namespace, so focused container recovery checks never start. Earlier 166/166 artifact remains historical, not today's result.
-- Resume R0.8 authorization/reference provisioning and restore the container verification runtime before claiming a new full pass. Actual live G0.1/R0.10 evidence is preserved; no unisolated fallback or containment change. M0 remains incomplete; Safe to merge: no.
+- R0.8 remains OPEN (owner action needed). Dispatch 403 = v0 GitHub App token lacks `actions=write` (header X-Accepted-Github-Permissions). Fix: grant the app "Actions: Read and write", or the owner runs the Accept command. Nightly: no workflows on `main`, 0 `helix-reference` runners, GEMINI_API Actions secret unverified. Not waived.
+- Container runtime RESTORED: VM had been reset (no Podman, crun, bwrap or storage left, so nothing deleted). Reinstalled them; probe picks crun with masked /proc and PTY ok. Focused sandbox/conformance/cancel/fail-closed/egress tests 51/51, 0 skipped, all three backends. Fresh full engine 166/166, 0 skipped.
+- Current commit 2b55cfe ci-linux green (push 42840845440, PR 42840864785). Evidence: evals/results/m0-container-recovery-r0-8-diagnosis-2026-11-10.json. No code, CI or isolation change; no M1, no merge, PR #19 untouched. Safe to merge: no while R0.8 is open.
 
 ## Ideas parking lot (one line each, max 15 — do not implement)
 
@@ -59,13 +59,14 @@
 
 ## Environment notes
 
-- No Docker. Rootless Podman is installable: `sudo dnf install -y podman crun` (not persisted across VM resets; reinstall before sandbox tests). runc cannot mask /proc here, so the probe picks crun with masked /proc.
+- No Docker. Rootless Podman is installable: `sudo dnf install -y podman crun bubblewrap` (none persist across VM resets; reinstall before sandbox tests; bwrap is the `local-os` backend). Then `pnpm install --frozen-lockfile` (snapshot node_modules can lag the lockfile). runc cannot mask /proc here, so the probe picks crun with masked /proc.
+- Podman "boot ID differs" / "cannot re-exec ... user namespace": state left over from a previous boot. Check `podman ps -a` and `ls ~/.local/share/containers` first, and never delete storage blindly. A fully reset VM has no state, and a fresh install works.
 - `unshare` works; no cgroups; /proc cannot be mounted in a user namespace (locked /proc overmounts); runsc download 404s.
 
 ## Last session (overwrite each session, max 5 lines)
 
-- 2026-11-10 PR #22 approval follow-up: both explicit §0.3 decisions recorded; R0.3 and G0.2 complete, F-MDL-1 → Done, F-AGT-1 → Partial with evidenced M0 / open M1. Added R1.47 only to preserve missing original Explore coverage; no M1 implementation, no merge, PR #19 untouched.
-- Full engine suite ONCE: `HELIX_SANDBOX_BACKENDS=local-container,local-unshare,local-os node --disable-warning=ExperimentalWarning --test --test-concurrency=1 "test/**/*.test.ts"` → 157/165, 8 failed, 0 skipped (126183 ms), exit 1: Podman stale boot ID. Single isolated-storage recovery fails at namespace re-exec before focused tests; no passing full-suite claim.
-- Narrow checks PASS: both adapters 23/23 A-local (7 live-only skips); Gemini live discovery/configuration 2/2, 0 skipped; gateway/package/degradation 11/11; scope guardrails 14/14, strict M0 gate exit 0, tsc clean. Evidence: evals/results/m0-approval-session-verification-2026-11-10.json and g0-2-scope-approved-2026-11-10.json; previous failed/historical evidence unchanged.
-- Existing PR CI is green at saved checkpoint 6fd0907 (runs 42832595714/42832584814), not proof of the approval-session checkpoint. Original positive/negative CI evidence remains; R0.8 dispatch authorization and reference/nightly certification are still blocked and not exempted.
-- Safe to merge: no — R0.8 is open and fresh full/container verification is not green. M0 is not complete; next task remains R0.8. Scope-checker semantics and all original acceptance criteria except the explicitly approved M0 OpenAI live smoke remain unchanged.
+- 2026-11-10 R0.8/container follow-up on PR #22 (no code change): VM-reset container runtime restored (podman 5.6.1 + crun 1.26 + bwrap 0.12.0, fresh storage, nothing deleted). Probe exit 0; focused conformance 51/51, 0 skipped, all three backends; tsc exit 0 after `pnpm install --frozen-lockfile`.
+- Full engine suite ONCE: `HELIX_SANDBOX_BACKENDS=local-container,local-unshare,local-os node --disable-warning=ExperimentalWarning --test --test-concurrency=1 "test/**/*.test.ts"` → 166/166, 0 failed, 0 skipped (133206 ms), exit 0. Earlier 157/165 failure artifact is retained unchanged.
+- CI at current commit 2b55cfe is green: push 42840845440 and PR 42840864785, ci-linux with every step passing.
+- R0.8 dispatch 403 diagnosed: the v0 GitHub App token lacks `actions=write`. Nightly runs are blocked by no workflows on `main`, 0 `helix-reference` runners and an unverified GEMINI_API Actions secret. Owner action needed; nothing waived.
+- Safe to merge: no while R0.8 is open. M0 is otherwise evidenced; next task R0.8 (owner authorization), not M1.
