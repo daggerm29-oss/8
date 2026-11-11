@@ -46,6 +46,11 @@
       "violations": []
     },
     {
+      "panel": "ledger",
+      "theme": "default",
+      "violations": []
+    },
+    {
       "panel": "editor",
       "theme": "default",
       "violations": []
@@ -97,6 +102,11 @@
     },
     {
       "panel": "settings",
+      "theme": "high",
+      "violations": []
+    },
+    {
+      "panel": "ledger",
       "theme": "high",
       "violations": []
     },
