@@ -15,16 +15,16 @@
 
 > These are **checklist completion** numbers (ticked items with recorded evidence ÷ all items). They are not a measure of product quality or release readiness; human launch gates in `docs/roadmap.md` are not counted.
 
-**Overall checklist completion: 37%** (72/196 roadmap items)  
+**Overall checklist completion: 37%** (73/196 roadmap items)  
 **Current milestone:** M1 MVP, grounded single agent  
-**Next task:** R1.3 Agent Activity Monitor (F-UI-2, PERF-13) [§5.4]
+**Next task:** R1.4 Electron hardening and crash isolation (SEC-13, NFR-4, PERF-1) [§5.1]
 
 **Execution-order exception:** user-authorized M1 work; M0 remains unfinished (R0.8 CI pipeline (plan §15.1, §15.7) [§35.6]). No acceptance criterion or gate is waived.
 
 | Milestone | Progress | Items | Status |
 | --- | --- | --- | --- |
 | M0 Foundations | ██████████ 96% | 22/23 | Unfinished (execution postponed) |
-| M1 MVP, grounded single agent | ████░░░░░░ 35% | 28/79 | In progress |
+| M1 MVP, grounded single agent | ████░░░░░░ 37% | 29/79 | In progress |
 | M2 Precision and efficiency | █████░░░░░ 45% | 22/49 | Partly built early |
 | M3 Parallel and background | ░░░░░░░░░░ 0% | 0/20 | Not started |
 | M4 Team and ecosystem | ░░░░░░░░░░ 0% | 0/16 | Not started |
@@ -35,15 +35,15 @@
 ## Current task notes (overwrite when the task changes)
 
 - PR #22 merged at ad9dff8061cd1ceae796cbd7c34c06df22843e3b (starting main verified). Continue the existing M1 branch helix/session-2026-11-10-m1-workbench and PR #23: https://github.com/daggerm29-oss/8/pull/23. PR #19 remains untouched.
-- R1.1 COMPLETE: real packaged Linux Electron acceptance 1/1, eight smoke steps, exit 0; Monaco disk round-trip, actual container terminal/PTY/HTTP preview, SCM staging, Problems, Settings/MCP, task/monitor. Raw report: evals/results/r1-1-packaged-workbench-2026-11-10.json, implementation 7a31567.
-- R1.2 COMPLETE at 380e22f: exact acceptance 1/1; final expanded packaged layout + R1.1 regression 2/2 (45.8 s), including floating restoration, workspace/profile isolation, remapped keys, IME safety and all five palette categories. Raw report: evals/results/r1-2-packaged-layout-2026-11-11.json. Engine focused tests 9/9, 0 skipped; Engine/desktop TypeScript clean.
-- Next R1.3: read plan F-UI-2/PERF-13 and architecture §5.4, then extend packages/engine/src/agent/runtime.ts and packages/desktop/renderer/agent-panels.tsx; add e2e/monitor.spec.ts. Full agent/subagent/tool tree, budgets/leases/checkpoints, pause/resume/cancel/rollback and p95 event latency acceptance remain unfinished. F-UI-1 remains Partial for original all-FR-33 panel coverage (Intelligence Explorer is the approved FR-33 M2 part); do not start M2.
-- R0.8 remains postponed/open with acceptance unchanged, M0 unfinished. Original 26 completed M1 items retain their evidence; remaining M1 tasks and G1.1–G1.6/external gates are still required, no M2+ work.
+- R1.1 COMPLETE (7a31567) and R1.2 COMPLETE (380e22f): packaged Electron workbench, FlexLayout docking/floating/saved layouts, remapped shortcuts and fuzzy command palette verified.
+- R1.3 COMPLETE at 6cfeda8: exact acceptance `cd packages/desktop && npx playwright test e2e/monitor.spec.ts` → 1/1 passed (36.5 s overall, 6.7 s test), p95 engine→panel latency = 34 ms ≤ 50 ms across 128 samples; focused Engine monitor tests 5/5, desktop unit test 1/1, Engine/desktop TypeScript clean. Live `Task → Agent → Step → ToolCall` + nested subagent tree, budgets, write leases, checkpoints, step prompt context items, pause/resume/cancel, batch approve/deny, rollback, fork from checkpoint and change model all verified. Raw report: `evals/results/r1-3-packaged-monitor-2026-11-11.json`.
+- Next R1.4: Electron hardening and crash isolation (SEC-13, NFR-4, PERF-1) [§5.1] — strict CSP (`no frame-ancestors *`, no `unsafe-inline` scripts), validated IPC allowlist with real channels, sandboxed renderer, Engine survives UI crash and reattaches, packaged app launched in CI (`test/hardening.test.mjs` + `e2e/crash.spec.ts`).
+- R0.8 remains postponed/open with acceptance unchanged, M0 unfinished. Remaining M1 tasks and G1.1–G1.6/external gates are still required; do not start M2+.
 
 ## Ideas parking lot (one line each, max 15 — do not implement)
 
 - MCP resources/prompts, OAuth for remote MCP servers
-- Workbench: syntax highlighting, CRLF preservation, checkpoint user edits, pause/fork task
+- Workbench: syntax highlighting, CRLF preservation, checkpoint user edits
 - `--verify auto` emitting `{{tests}}` gates
 - Persist demoted model refs per workspace
 - PTY history indexing + live resize
@@ -71,8 +71,8 @@
 
 ## Last session (overwrite each session, max 5 lines)
 
-- 2026-11-11 M1 PR #23: R1.2 complete (380e22f), exact packaged layout acceptance 1/1; final expanded layout + existing R1.1 acceptance 2/2 (45.8 s). Engine focused tests 9/9, both TypeScript checks exit 0; progress/scope tests 17/17 and scope guard clean. Raw evidence evals/results/r1-2-packaged-layout-2026-11-11.json.
-- Full engine suite ONCE at session end: `HELIX_SANDBOX_BACKENDS=local-container,local-unshare,local-os node --disable-warning=ExperimentalWarning --test --test-concurrency=1 "test/**/*.test.ts"` → 175/175, 0 failed, 0 skipped (163796.36 ms), exit 0, all three sandbox backends. Full raw output evals/results/r1-2-engine-suite-2026-11-11.txt; summary evals/results/r1-2-session-verification-2026-11-11.json.
-- Final browser: restarted actual Engine service and verified dockable renderer at localhost:4100/desktop/index.html, dark 1216×587; fuzzy opn fil executes Open File, srccalc opens real Monaco, no page errors. Independent native browser drag and packaged HTML5 drag path verified; no CDP-native-drag claim. Preview/restore recipe saved; CI/PERF/live-model and G1.1–G1.6/external gates not claimed.
-- Generated checklist: M1 28/79 complete, 51 remaining; requirements Done 12/154. R1.3 Agent Activity Monitor is next, not started. FR-33/F-UI-1 remain Partial until original remaining panel acceptance passes. No requirement removed, narrowed or reassigned.
-- Safe to merge: no — M1 unfinished. Continue the existing branch/PR #23, open and unmerged; no new PR, readiness/merge request or M2 work. R0.8 remains postponed/open and M0 unfinished.
+- 2026-11-11 M1 PR #23: R1.3 complete (`6cfeda8`), exact packaged Electron monitor acceptance `cd packages/desktop && npx playwright test e2e/monitor.spec.ts` → 1/1 (36.5 s overall, 6.7 s test), p95 engine→panel latency = 34 ms ≤ 50 ms across 128 samples; focused Engine `test/monitor.test.ts` → 5/5, desktop unit `test/desktop.test.mjs` → 1/1, Engine/desktop TypeScript → 0 errors. Raw evidence `evals/results/r1-3-packaged-monitor-2026-11-11.json`.
+- Full engine suite ONCE at session end: `HELIX_SANDBOX_BACKENDS=local-container,local-unshare,local-os node --disable-warning=ExperimentalWarning --test --test-concurrency=1 "test/**/*.test.ts"` → 180/180, 0 failed, 0 skipped (153200.17 ms), exit 0, all three sandbox backends. Full raw output `evals/results/r1-3-engine-suite-2026-11-11.txt`; summary `evals/results/r1-3-session-verification-2026-11-11.json`.
+- Final browser: rebuilt desktop renderer, ran live `helix-workbench` on `:4100` (`/desktop/index.html`) and verified the Tasks/Activity Tree panel via `agent-browser` with zero page errors.
+- Generated checklist: M1 29/79 complete, 50 remaining; requirements Done 13/154 (`F-UI-2` → Done; `PERF-13` → Partial pending R1.38/G1.4 reference hardware). Next task: R1.4 Electron hardening and crash isolation. No requirement removed, narrowed or reassigned.
+- Safe to merge: no — M1 unfinished. Continue existing branch `helix/session-2026-11-10-m1-workbench` and PR #23; R0.8 remains postponed/open and M0 unfinished.
