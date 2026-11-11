@@ -1,3 +1,4 @@
+import { sandboxProcAvailable } from '../src/sandbox/sandbox.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
@@ -26,7 +27,7 @@ require('http').createServer((q, s) => { s.setHeader('content-type', 'text/html'
   'src/Unrelated.jsx': `export const tip = 'Returns are easy';\n`,
 };
 
-test('element→source: data-helix-loc, text fallback, and select-and-instruct task (§18.6)', { skip: findChrome() ? false : 'no Chrome/Chromium' }, async () => {
+test('element→source: data-helix-loc, text fallback, and select-and-instruct task (§18.6)', { skip: findChrome() && sandboxProcAvailable() ? false : 'no Chrome/Chromium, or the sandbox cannot give a contained browser a private /proc on this host' }, async () => {
   const root = mkdtempSync(join(tmpdir(), 'helix-e2s-'));
   mkdirSync(join(root, 'src'));
   for (const [name, body] of Object.entries(FILES)) writeFileSync(join(root, name), body);
