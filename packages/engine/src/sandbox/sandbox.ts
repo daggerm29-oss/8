@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
 import { chmodSync, constants, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { FORWARDER_SOURCE, SANDBOX_PROXY_PORT, type EgressProxy } from './egress.ts';
@@ -422,6 +422,47 @@ export class LocalSandbox {
       for (const k of WINDOWS_HOST_ENV) if (process.env[k]) env[k] = process.env[k]!;
     }
     return env;
+  }
+
+  /** Binary-safe protocol channel; stdin stays open and teardown kills the entire contained process tree. */
+  async openStdio(command: string, opts: Pick<ExecOptions, 'cwd' | 'env' | 'signal' | 'exposePorts'> = {}): Promise<{ process: ChildProcessWithoutNullStreams; kill(): void }> {
+    if (this.destroyed) throw new Error(`sandbox ${this.id} is destroyed`);
+    const cwd = this.resolvePath(opts.cwd ?? '.');
+    const egress = !!(await this.egressReady);
+    opts.signal?.throwIfAborted();
+    if (this.destroyed) throw new Error(`sandbox ${this.id} is destroyed`);
+    const ports = opts.exposePorts?.filter((p) => Number.isInteger(p) && p > 0 && p < 65536);
+    command = this.prelude(egress, ports) + command;
+    const env = this.env(opts.env);
+    const ctr = this.container ? this.containerSpawn(cwd, ['bash', '-c', command], env, false) : null;
+    const light = this.localOs ? this.localOsArgv(cwd, command, true) : null;
+    const [cmd, args] = this.wsl ? [this.wsl.exe, wslExecArgs(this.wsl, cwd, command)]
+      : ctr ? [this.container!.cli, ctr.args]
+      : light ? [light[0], light.slice(1)]
+      : ['unshare', ['--user', '--map-root-user', '--net', '--mount', '--pid', '--fork', '--kill-child=KILL', '--', 'bash', '-c', CONTAIN_SCRIPT, 'helix', this.newRoot!, this.root, this.scratch, cwd, command, ...this.roPaths]];
+    if (ctr) this.live.add(ctr.name);
+    const child = spawn(cmd, args, { cwd, env: ctr ? clientEnv() : env, detached: !IS_WINDOWS, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    const kill = () => {
+      killTree(child.pid);
+      if (ctr) this.stopContainer(ctr.name);
+    };
+    let closed!: () => void;
+    this.processes.set(kill, new Promise<void>((resolve) => { closed = resolve; }));
+    const cleanup = () => {
+      closed();
+      this.processes.delete(kill);
+      opts.signal?.removeEventListener('abort', kill);
+      if (ctr) this.finishContainer(ctr.name);
+    };
+    child.once('close', cleanup);
+    child.once('error', cleanup);
+    opts.signal?.addEventListener('abort', kill, { once: true });
+    if (opts.signal?.aborted) kill();
+    await new Promise<void>((resolve, reject) => {
+      child.once('spawn', resolve);
+      child.once('error', reject);
+    });
+    return { process: child, kill };
   }
 
   /** One `sandbox.exec` span per command (§26.1): backend, redacted command, exit status, and duration. */

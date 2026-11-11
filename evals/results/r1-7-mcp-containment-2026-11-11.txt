@@ -1,0 +1,22 @@
+✔ MCP stdio: separate real sandboxes, host canary/network denied, scoped credentials, no host process or surviving descendants (371.355829ms)
+✔ binary-safe stdio and destroy reap (local-container) (288.227934ms)
+✔ binary-safe stdio and destroy reap (local-unshare) (136.714501ms)
+✔ binary-safe stdio and destroy reap (local-os) (66.627582ms)
+✔ MCP without a full backend fails closed instead of falling back to a host spawn (1.344811ms)
+✔ glob, allow/deny lists, tool search ranking, activation parsing (2.545719ms)
+✔ streamable HTTP transport: session id, SSE responses, filters, alwaysAllow persisted to mcp.json (104.348432ms)
+✔ tool search: MCP tools hidden above the threshold, activated by tool_search for later turns (1573.063495ms)
+✔ wrapUntrusted neutralizes forged tags; stableJson is key-order independent; taint gate (3.050756ms)
+✔ read-only results are cached by stable args; errors and non-read tools are not; large results page out (1400.428456ms)
+✔ engine: after an untrusted MCP read, a preapproved network action is denied (taint) and the prompt carries the rule (438.732823ms)
+✔ sanitizeSchema + exposedName (2.061567ms)
+✔ McpManager: connect, paginated tools/list, call, errors, timeout, policy classes, env isolation (2020.635126ms)
+✔ engine: MCP tools reach the model; headless denies side-effecting MCP calls unless preapproved (453.198306ms)
+ℹ tests 14
+ℹ suites 0
+ℹ pass 14
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 9845.36145

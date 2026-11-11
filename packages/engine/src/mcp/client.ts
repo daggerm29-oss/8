@@ -1,5 +1,10 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { LocalSandbox, SandboxUnavailableError } from '../sandbox/sandbox.ts';
 
 /**
  * Minimal MCP client over stdio (F-MCP-1, Arch §14.1): newline-delimited JSON-RPC 2.0, `initialize` →
@@ -30,11 +35,11 @@ export interface McpStdioOptions {
   onStderr?: (line: string) => void;
 }
 
-/** Env passed to MCP servers: a minimal allowlist plus the server's own config — never the Engine's provider keys. */
-const INHERITED_ENV = ['PATH', 'HOME', 'USER', 'LANG', 'LC_ALL', 'TMPDIR', 'TEMP', 'SYSTEMROOT', 'NODE_OPTIONS'];
-
 export class McpStdioClient {
   private proc?: ChildProcess;
+  private sandbox?: LocalSandbox;
+  private ownedRoot?: string;
+  private stop?: () => void;
   private nextId = 1;
   private readonly pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>();
   private exited = false;
@@ -48,15 +53,21 @@ export class McpStdioClient {
   }
 
   async connect(): Promise<void> {
-    const env: Record<string, string> = {};
-    for (const k of INHERITED_ENV) if (process.env[k] !== undefined) env[k] = process.env[k]!;
-    Object.assign(env, this.o.env ?? {});
-    const proc = spawn(this.o.command, this.o.args ?? [], { cwd: this.o.cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
+    try { await this.connectContained(); }
+    catch (error) { await this.close(); throw error; }
+  }
+
+  private async connectContained(): Promise<void> {
+    if (this.sandbox) throw new Error('MCP client is already connected');
+    const root = this.o.cwd ?? (this.ownedRoot = mkdtempSync(join(tmpdir(), 'helix-mcp-root-')));
+    this.sandbox = new LocalSandbox(`mcp-${randomUUID()}`, root);
+    if (this.sandbox.isolation !== 'full') throw new SandboxUnavailableError('MCP stdio requires full per-server filesystem and network isolation');
+    const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
+    const command = 'exec ' + [this.o.command, ...(this.o.args ?? [])].map(quote).join(' ');
+    const session = await this.sandbox.openStdio(command, { env: this.o.env });
+    const proc = session.process;
     this.proc = proc;
-    const spawned = new Promise<void>((resolve, reject) => {
-      proc.once('spawn', () => resolve());
-      proc.once('error', (e) => { this.exited = true; reject(new Error(`failed to start MCP server '${this.o.command}': ${e.message}`)); });
-    });
+    this.stop = session.kill;
     proc.on('exit', (code, signal) => {
       this.exited = true;
       for (const [, p] of this.pending) { clearTimeout(p.timer); p.reject(new Error(`MCP server exited (${signal ?? code})`)); }
@@ -64,7 +75,6 @@ export class McpStdioClient {
     });
     createInterface({ input: proc.stdout! }).on('line', (line) => this.onLine(line));
     createInterface({ input: proc.stderr! }).on('line', (line) => this.o.onStderr?.(line));
-    await spawned;
     const init = await this.request<{ protocolVersion: string; capabilities?: Record<string, unknown>; serverInfo?: { name?: string; version?: string } }>('initialize', {
       protocolVersion: MCP_PROTOCOL_VERSION,
       capabilities: {},
@@ -144,14 +154,18 @@ export class McpStdioClient {
   }
 
   async close(): Promise<void> {
-    if (!this.proc || this.exited || this.proc.exitCode !== null || this.proc.pid === undefined) return;
-    const proc = this.proc;
-    const gone = new Promise<void>((r) => { proc.once('exit', () => r()); proc.once('error', () => r()); });
-    proc.stdin?.end();
-    const kill = setTimeout(() => proc.kill('SIGTERM'), 1000);
-    const hard = setTimeout(() => proc.kill('SIGKILL'), 3000);
-    await gone;
-    clearTimeout(kill);
-    clearTimeout(hard);
+    this.exited = true;
+    for (const p of this.pending.values()) { clearTimeout(p.timer); p.reject(new Error('MCP client closed')); }
+    this.pending.clear();
+    this.proc?.stdin?.end();
+    this.stop?.();
+    try { await this.sandbox?.stopProcesses(); }
+    finally {
+      this.sandbox?.destroy();
+      this.proc = undefined;
+      this.sandbox = undefined;
+      this.stop = undefined;
+      if (this.ownedRoot) { rmSync(this.ownedRoot, { recursive: true, force: true }); this.ownedRoot = undefined; }
+    }
   }
 }

@@ -141,7 +141,7 @@ test('tool search: MCP tools hidden above the threshold, activated by tool_searc
   writeFileSync(join(repo, 'src/a.js'), 'export const a = 1;\n');
   const engine = new Engine({
     home, env: { GEMINI_API_KEY: fake.apiKey, HELIX_GEMINI_BASE_URL: fake.url }, indexing: false, retry: { baseDelayMs: 1, maxDelayMs: 2 },
-    mcpServers: { fake: { command: process.execPath, args: [SERVER], trust: 'trusted' } }, mcpToolSearchThreshold: 2,
+    mcpServers: { fake: { command: process.execPath, args: ['--input-type=module', '-e', readFileSync(SERVER, 'utf8')], trust: 'trusted' } }, mcpToolSearchThreshold: 2,
   });
   try {
     await engine.mcpReady;
