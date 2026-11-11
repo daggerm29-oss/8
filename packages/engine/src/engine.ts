@@ -156,7 +156,7 @@ export class Engine {
       onReady: (root, info) => this.bus.publish({ topic: 'preview.ready', ws: this.runtime.workspaceFor(root).id, data: { ...info, workspacePath: root } }),
       onExit: (root, info, code) => this.bus.publish({ topic: 'preview.exited', ws: this.runtime.workspaceFor(root).id, data: { ...info, workspacePath: root, exitCode: code } }),
     });
-    this.browser = new PreviewBrowser({ outDir: join(this.home, 'screenshots') });
+    this.browser = new PreviewBrowser({ outDir: join(this.home, 'screenshots'), allowTarget: (_host, port) => this.devServers.hostPorts().includes(port) });
     const tools = builtinTools();
     this.mcp = new McpManager({ home: this.home, registry: tools, logger: this.logger, config: opts.mcpServers, toolSearchThreshold: opts.mcpToolSearchThreshold, audit: (topic, data) => this.bus.publish({ topic, ws: 'engine', data, persist: 'audit' }) });
     this.mcpReady = opts.mcp === false ? Promise.resolve([]) : this.mcp.start();

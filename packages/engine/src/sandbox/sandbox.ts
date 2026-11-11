@@ -5,7 +5,8 @@ import { FORWARDER_SOURCE, SANDBOX_PROXY_PORT, type EgressProxy } from './egress
 
 const SYSTEM_CA_BUNDLES = ['/etc/ssl/certs/ca-certificates.crt', '/etc/pki/tls/certs/ca-bundle.crt', '/etc/ssl/cert.pem'];
 import { tmpdir } from 'node:os';
-import { connect, type Socket } from 'node:net';
+import { connect, createServer, type Server, type Socket } from 'node:net';
+import { FILE_HELPER_SOURCE, FileOpError, hostFileOp, type FileRequest, type FileStat } from './files.ts';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isDeniedHostPath, Vault } from '../vault/vault.ts';
 import { globalRedactor } from '../util/redact.ts';
@@ -120,6 +121,12 @@ export interface ExecOptions {
   onOutput?: (stream: 'stdout' | 'stderr', text: string) => void;
   /** In-sandbox TCP ports reachable from the host via `connectPort` while this command runs. */
   exposePorts?: number[];
+  /** `openStdio` only: in-sandbox TCP ports whose connections are handed to a host handler (browser dev-server proxy, R1.7). */
+  inbound?: Array<{ port: number; handler: (client: Socket) => void }>;
+  /** `openStdio` only: mount a private /proc (own PID namespace). Refused with `SandboxUnavailableError` where the host cannot. */
+  proc?: boolean;
+  /** `openStdio` only: false skips the egress forwarder (internal helpers that never use the network). */
+  egress?: boolean;
 }
 
 export interface ExecResult {
@@ -176,13 +183,14 @@ const DEV_NODES = ['null', 'zero', 'full', 'random', 'urandom', 'tty'];
 
 /**
  * Builds a fresh root on tmpfs and chroots into it (F-SBX-2, §16.3). Runs as mapped root inside the
- * user+mount namespace. Args: $1 newroot, $2 workspace, $3 scratch, $4 cwd, $5 command, $6.. ro paths.
+ * user+mount namespace. Args: $1 newroot, $2 workspace, $3 scratch, $4 cwd, $5 command, $6 proc (1|0), $7.. ro paths.
  * Nothing from the host is visible except the listed read-only paths, the workspace (rw) and a private
- * /tmp. /proc is deliberately not mounted: a bind of the host /proc would expose /proc/<pid>/environ of
- * same-uid processes (including the Engine and its provider keys).
+ * /tmp. The host /proc is never bound: it would expose /proc/<pid>/environ of same-uid processes (including
+ * the Engine and its provider keys). With proc=1 (only under --pid) a fresh procfs of the sandbox's own PID
+ * namespace is mounted, which lists sandbox processes only; Chrome needs it (R1.7).
  */
 const CONTAIN_SCRIPT = `set -e
-NR="$1"; WS="$2"; SC="$3"; CWD="$4"; CMD="$5"; shift 5
+NR="$1"; WS="$2"; SC="$3"; CWD="$4"; CMD="$5"; PROC="$6"; shift 6
 mount -t tmpfs -o mode=755 helix-root "$NR"
 for p in "$@"; do
   [ -d "$p" ] || continue
@@ -194,6 +202,7 @@ done
 mkdir -p "$NR/dev" "$NR/tmp"
 for d in ${DEV_NODES.join(' ')}; do [ -e "/dev/$d" ] && touch "$NR/dev/$d" && mount --bind "/dev/$d" "$NR/dev/$d"; done
 ln -s /proc/self/fd "$NR/dev/fd"; ln -s /proc/self/fd/0 "$NR/dev/stdin"; ln -s /proc/self/fd/1 "$NR/dev/stdout"; ln -s /proc/self/fd/2 "$NR/dev/stderr"
+if [ "$PROC" = 1 ]; then mkdir -p "$NR/proc"; mount -t proc -o nosuid,nodev,noexec helix-proc "$NR/proc"; fi
 mount --bind "$SC" "$NR/tmp"
 mkdir -p "$NR$WS"; mount --rbind "$WS" "$NR$WS"
 mount -o remount,ro,bind "$NR" 2>/dev/null || true
@@ -211,7 +220,7 @@ export function mountNsAvailable(): boolean {
     const nr = mkdtempSync(join(tmpdir(), 'helix-probe-root-'));
     const sc = mkdtempSync(join(tmpdir(), 'helix-probe-tmp-'));
     try {
-      const r = spawnSync('unshare', ['--user', '--map-root-user', '--net', '--mount', '--pid', '--fork', '--kill-child=KILL', '--', 'bash', '-c', CONTAIN_SCRIPT, 'helix', nr, sc, sc, sc, 'test -d /usr/bin && ! test -e /home/.helix-probe', ...DEFAULT_RO_PATHS], { stdio: 'ignore', timeout: 10_000 });
+      const r = spawnSync('unshare', ['--user', '--map-root-user', '--net', '--mount', '--pid', '--fork', '--kill-child=KILL', '--', 'bash', '-c', CONTAIN_SCRIPT, 'helix', nr, sc, sc, sc, 'test -d /usr/bin && ! test -e /home/.helix-probe', '0', ...DEFAULT_RO_PATHS], { stdio: 'ignore', timeout: 10_000 });
       ok = r.status === 0;
     } finally {
       rmSync(nr, { recursive: true, force: true });
@@ -220,6 +229,43 @@ export function mountNsAvailable(): boolean {
   }
   mountProbes.set(key, ok);
   return ok;
+}
+
+const procProbes = new Map<string, boolean>();
+
+/**
+ * True when the contained root can mount a private procfs for its own PID namespace (needed by Chrome, R1.7).
+ * Hosts whose /proc has locked overmounts (e.g. nested VMs with /proc/kcore masked) refuse procfs from a user
+ * namespace; callers that need /proc then fail closed instead of binding the host /proc.
+ */
+export function unshareProcAvailable(): boolean {
+  const key = process.env.PATH ?? '';
+  const cached = procProbes.get(key);
+  if (cached !== undefined) return cached;
+  let ok = false;
+  if (mountNsAvailable()) {
+    const nr = mkdtempSync(join(tmpdir(), 'helix-probe-root-'));
+    const sc = mkdtempSync(join(tmpdir(), 'helix-probe-tmp-'));
+    try {
+      const check = 'test -r /proc/self/status && test "$(ls /proc | grep -c "^[0-9]")" -lt 8';
+      const r = spawnSync('unshare', ['--user', '--map-root-user', '--net', '--mount', '--pid', '--fork', '--kill-child=KILL', '--', 'bash', '-c', CONTAIN_SCRIPT, 'helix', nr, sc, sc, sc, check, '1', ...DEFAULT_RO_PATHS], { stdio: 'ignore', timeout: 10_000 });
+      ok = r.status === 0;
+    } finally {
+      rmSync(nr, { recursive: true, force: true });
+      rmSync(sc, { recursive: true, force: true });
+    }
+  }
+  procProbes.set(key, ok);
+  return ok;
+}
+
+/** True when the default full-isolation backend can give a command a private /proc (container with real /proc, or unshare procfs). */
+export function sandboxProcAvailable(): boolean {
+  if (wslFromEnv()) return false;
+  const backend = defaultBackend();
+  if (backend === 'local-container') return containerRuntime()?.proc === 'proc';
+  if (backend === 'local-unshare') return unshareProcAvailable();
+  return false;
 }
 
 const PASSTHROUGH_ENV = ['PATH', 'LANG', 'LC_ALL', 'TZ', 'NODE_OPTIONS_SAFE'];
@@ -366,16 +412,89 @@ export class LocalSandbox {
    * Shell prelude: bring up loopback, start the TCP→Unix forwarder to the Engine egress proxy (F-SBX-3) and
    * Unix→TCP forwarders for exposed in-sandbox ports (dev server, F-PRV-1), waiting until each listens.
    */
-  private prelude(egress: boolean, expose: number[] = []): string {
+  private prelude(egress: boolean, expose: number[] = [], inbound: Array<{ sock: string; port: number }> = []): string {
     const d = this.bridgeDir;
-    if (!d || (!egress && !expose.length)) return '';
+    if (!d || (!egress && !expose.length && !inbound.length)) return '';
     const fwd = (mode: string, sock: string, port: number, tag: string) =>
       `${this.bridgeNode} ${d}/fwd.cjs ${mode} ${sock} ${port} ${d}/ready.${tag}.$$ </dev/null >/dev/null 2>&1 & ` +
       `for _helix_i in $(seq 150); do [ -e ${d}/ready.${tag}.$$ ] && break; sleep 0.02; done; rm -f ${d}/ready.${tag}.$$; `;
     let out = `PATH="$PATH:/usr/sbin:/sbin" ip link set lo up 2>/dev/null; `;
     if (egress) out += fwd('tcp', `${d}/egress.sock`, this.proxyPort, 'egress');
     for (const p of expose) out += fwd('unix', `${d}/port-${p}.sock`, p, `p${p}`);
+    for (const i of inbound) out += fwd('tcp', i.sock, i.port, `i${i.port}`);
     return `${out}unset _helix_i\n`;
+  }
+
+  /** True when commands can get a private /proc on this backend (container with real /proc, bwrap --proc, unshare procfs). */
+  procCapable(): boolean {
+    if (this.wsl) return false;
+    if (this.container) return this.container.proc === 'proc';
+    if (this.localOs) return this.localOs.kind === 'seatbelt' || this.localOs.proc;
+    return unshareProcAvailable();
+  }
+
+  /** Host Unix listeners for `inbound` ports; the in-sandbox side is a TCP→Unix forwarder started by the prelude. */
+  private async openInbound(list: NonNullable<ExecOptions['inbound']>): Promise<Array<{ port: number; sock: string; server: Server }>> {
+    if (!list.length) return [];
+    if (!this.hostBridgeDir || !this.bridgeDir) throw new SandboxUnavailableError('inbound ports need a namespaced sandbox bridge');
+    const out: Array<{ port: number; sock: string; server: Server }> = [];
+    for (const { port, handler } of list) {
+      if (!Number.isInteger(port) || port <= 0 || port >= 65536) throw new Error(`invalid inbound port ${port}`);
+      const name = `in-${port}-${++this.seq}.sock`;
+      const server = createServer(handler);
+      await new Promise<void>((res, rej) => { server.once('error', rej); server.listen(join(this.hostBridgeDir!, name), () => res()); });
+      out.push({ port, sock: `${this.bridgeDir}/${name}`, server });
+    }
+    return out;
+  }
+
+  /**
+   * One file-tool operation executed inside the sandbox (§16.3): a short-lived Node helper with no network sees only
+   * the sandbox's mounts, so a workspace symlink to a host file cannot be followed. The helper source travels in the
+   * environment, not through the (agent-writable) sandbox /tmp. WSL keeps the in-Engine path (partial isolation, R2.15).
+   */
+  async fileOp<T>(req: FileRequest, opts: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<T> {
+    if (this.wsl || !this.bridgeDir) return hostFileOp(req) as T;
+    const { process: child, kill } = await this.openStdio(`exec '${this.bridgeNode}' -e "eval(Buffer.from(process.env.HELIX_FILES_SCRIPT, 'base64').toString('utf8'))"`, {
+      env: { HELIX_FILES_SCRIPT: Buffer.from(FILE_HELPER_SOURCE).toString('base64') }, signal: opts.signal, egress: false,
+    });
+    const chunks: Buffer[] = [];
+    let size = 0;
+    child.stdout.on('data', (c: Buffer) => { size += c.length; if (size <= 64 * 1024 * 1024) chunks.push(c); else kill(); });
+    child.stderr.resume();
+    child.stdin.on('error', () => { /* helper exited early */ });
+    child.stdin.end(JSON.stringify(req));
+    const timer = setTimeout(kill, opts.timeoutMs ?? 30_000);
+    const code = await new Promise<number | null>((res) => child.once('close', res));
+    clearTimeout(timer);
+    let reply: { ok: boolean; value?: unknown; code?: string; message?: string };
+    try {
+      reply = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    } catch {
+      throw new FileOpError('EIO', `sandbox file helper failed (exit ${code})`);
+    }
+    if (!reply.ok) throw new FileOpError(reply.code ?? 'EIO', reply.message ?? 'file operation failed');
+    return reply.value as T;
+  }
+
+  statFile(abs: string, signal?: AbortSignal): Promise<FileStat> {
+    return this.fileOp<FileStat>({ op: 'stat', root: this.root, path: abs }, { signal });
+  }
+
+  readText(abs: string, signal?: AbortSignal): Promise<string> {
+    return this.fileOp<string>({ op: 'read', root: this.root, path: abs }, { signal });
+  }
+
+  async writeText(abs: string, content: string, signal?: AbortSignal): Promise<void> {
+    await this.fileOp<boolean>({ op: 'write', root: this.root, path: abs, content }, { signal });
+  }
+
+  listDir(abs: string, depth: number, signal?: AbortSignal): Promise<string[]> {
+    return this.fileOp<string[]>({ op: 'list', root: this.root, path: abs, depth }, { signal });
+  }
+
+  searchText(abs: string, pattern: string, glob?: string, signal?: AbortSignal): Promise<string> {
+    return this.fileOp<string>({ op: 'search', root: this.root, path: abs, pattern, glob }, { signal });
   }
 
   /** Connect to a port inside the sandbox from the host (through the exposed-port bridge when namespaced). */
@@ -425,21 +544,24 @@ export class LocalSandbox {
   }
 
   /** Binary-safe protocol channel; stdin stays open and teardown kills the entire contained process tree. */
-  async openStdio(command: string, opts: Pick<ExecOptions, 'cwd' | 'env' | 'signal' | 'exposePorts'> = {}): Promise<{ process: ChildProcessWithoutNullStreams; kill(): void }> {
+  async openStdio(command: string, opts: Pick<ExecOptions, 'cwd' | 'env' | 'signal' | 'exposePorts' | 'inbound' | 'proc' | 'egress'> = {}): Promise<{ process: ChildProcessWithoutNullStreams; kill(): void }> {
     if (this.destroyed) throw new Error(`sandbox ${this.id} is destroyed`);
     const cwd = this.resolvePath(opts.cwd ?? '.');
-    const egress = !!(await this.egressReady);
+    if (opts.proc && !this.procCapable()) throw new SandboxUnavailableError(`${this.provider} cannot mount a private /proc on this host (locked /proc overmounts or masked container /proc); refusing rather than exposing the host /proc`);
+    const egress = opts.egress !== false && !!(await this.egressReady);
     opts.signal?.throwIfAborted();
     if (this.destroyed) throw new Error(`sandbox ${this.id} is destroyed`);
     const ports = opts.exposePorts?.filter((p) => Number.isInteger(p) && p > 0 && p < 65536);
-    command = this.prelude(egress, ports) + command;
+    const inbound = await this.openInbound(opts.inbound ?? []);
+    const closeInbound = () => { for (const i of inbound) i.server.close(); };
+    command = this.prelude(egress, ports, inbound) + command;
     const env = this.env(opts.env);
     const ctr = this.container ? this.containerSpawn(cwd, ['bash', '-c', command], env, false) : null;
     const light = this.localOs ? this.localOsArgv(cwd, command, true) : null;
     const [cmd, args] = this.wsl ? [this.wsl.exe, wslExecArgs(this.wsl, cwd, command)]
       : ctr ? [this.container!.cli, ctr.args]
       : light ? [light[0], light.slice(1)]
-      : ['unshare', ['--user', '--map-root-user', '--net', '--mount', '--pid', '--fork', '--kill-child=KILL', '--', 'bash', '-c', CONTAIN_SCRIPT, 'helix', this.newRoot!, this.root, this.scratch, cwd, command, ...this.roPaths]];
+      : ['unshare', ['--user', '--map-root-user', '--net', '--mount', '--pid', '--fork', '--kill-child=KILL', '--', 'bash', '-c', CONTAIN_SCRIPT, 'helix', this.newRoot!, this.root, this.scratch, cwd, command, opts.proc ? '1' : '0', ...this.roPaths]];
     if (ctr) this.live.add(ctr.name);
     const child = spawn(cmd, args, { cwd, env: ctr ? clientEnv() : env, detached: !IS_WINDOWS, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
     const kill = () => {
@@ -450,6 +572,7 @@ export class LocalSandbox {
     this.processes.set(kill, new Promise<void>((resolve) => { closed = resolve; }));
     const cleanup = () => {
       closed();
+      closeInbound();
       this.processes.delete(kill);
       opts.signal?.removeEventListener('abort', kill);
       if (ctr) this.finishContainer(ctr.name);
@@ -493,7 +616,7 @@ export class LocalSandbox {
       ? [this.container!.cli, ctr.args]
       : lightArgv
       ? [lightArgv[0], lightArgv.slice(1)]
-      : ['unshare', ['--user', '--map-root-user', '--net', '--mount', '--pid', '--fork', '--kill-child=KILL', '--', 'bash', '-c', CONTAIN_SCRIPT, 'helix', this.newRoot!, this.root, this.scratch, cwd, command, ...this.roPaths]];
+      : ['unshare', ['--user', '--map-root-user', '--net', '--mount', '--pid', '--fork', '--kill-child=KILL', '--', 'bash', '-c', CONTAIN_SCRIPT, 'helix', this.newRoot!, this.root, this.scratch, cwd, command, '0', ...this.roPaths]];
     const started = performance.now();
     return new Promise((resolveExec) => {
       if (ctr) this.live.add(ctr.name);
@@ -575,7 +698,7 @@ export class LocalSandbox {
       ? [this.container!.cli, ...ctr.args]
       : this.localOs
       ? this.localOsArgv(cwd, shell, false)
-      : ['unshare', '--user', '--map-root-user', '--net', '--mount', '--', 'bash', '-c', CONTAIN_SCRIPT, 'helix', this.newRoot!, this.root, this.scratch, cwd, shell, ...this.roPaths];
+      : ['unshare', '--user', '--map-root-user', '--net', '--mount', '--', 'bash', '-c', CONTAIN_SCRIPT, 'helix', this.newRoot!, this.root, this.scratch, cwd, shell, '0', ...this.roPaths];
     const quoted = this.wsl ? '' : argv.map((a) => `'${a.replace(/'/g, `'\\''`)}'`).join(' ');
     const env = ctr ? { ...clientEnv(), TERM: 'xterm-256color' } : ptyEnv;
     if (ctr) this.live.add(ctr.name);

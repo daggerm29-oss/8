@@ -83,6 +83,11 @@ export class DevServers {
     this.o = opts;
   }
 
+  /** Host loopback ports of running dev servers: the only targets the contained browser may load (R1.7). */
+  hostPorts(): number[] {
+    return [...this.running.values()].map((r) => r.info.hostPort);
+  }
+
   get(root: string): DevServerInfo | null {
     return this.running.get(root)?.info ?? null;
   }

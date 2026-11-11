@@ -1,10 +1,43 @@
-import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer as createHttpServer, request as httpRequest, get as httpGet, type IncomingMessage, type ServerResponse } from 'node:http';
+import { connect as netConnect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { WebSocket } from 'ws';
 import { prefixedId } from '../util/ids.ts';
+import { DEFAULT_RO_PATHS, LocalSandbox, SandboxUnavailableError, sandboxProcAvailable } from '../sandbox/sandbox.ts';
+
+/** In-sandbox ports of the contained browser: DevTools (exposed to the Engine) and the dev-server proxy (inbound). */
+const CDP_PORT = 9222;
+const PROXY_PORT = 9333;
+const LOOPBACK = new Set(['127.0.0.1', 'localhost', '[::1]', '::1']);
+
+/**
+ * Host side of the contained browser's only network route (§16.3, §18.5): an HTTP proxy that forwards plain
+ * requests and CONNECT tunnels to host-loopback ports the caller allows (the running dev servers) and answers 403
+ * to everything else, so page scripts cannot reach the Engine RPC port, other host services, or the internet.
+ */
+export function browserProxy(allow: (host: string, port: number) => boolean): (client: Socket) => void {
+  const target = (host: string, port: number) => LOOPBACK.has(host) && Number.isInteger(port) && allow(host, port);
+  const server = createHttpServer((req: IncomingMessage, res: ServerResponse) => {
+    let url: URL;
+    try { url = new URL(req.url ?? ''); } catch { res.writeHead(400).end(); return; }
+    const port = Number(url.port || (url.protocol === 'https:' ? 443 : 80));
+    if (url.protocol !== 'http:' || !target(url.hostname, port)) { res.writeHead(403, { 'content-type': 'text/plain' }).end('blocked by Helix browser policy'); return; }
+    const up = httpRequest({ host: '127.0.0.1', port, method: req.method, path: url.pathname + url.search, headers: req.headers }, (r) => { res.writeHead(r.statusCode ?? 502, r.headers); r.pipe(res); });
+    up.on('error', () => { if (!res.headersSent) res.writeHead(502); res.end(); });
+    req.pipe(up);
+  });
+  server.on('connect', (req: IncomingMessage, client: Socket, head: Buffer) => {
+    const m = /^(\[[^\]]+\]|[^:]+):(\d+)$/.exec(req.url ?? '');
+    if (!m || !target(m[1], Number(m[2]))) { client.end('HTTP/1.1 403 Forbidden\r\n\r\n'); return; }
+    const up = netConnect(Number(m[2]), '127.0.0.1', () => { client.write('HTTP/1.1 200 Connection Established\r\n\r\n'); if (head.length) up.write(head); up.pipe(client); client.pipe(up); });
+    const end = () => { client.destroy(); up.destroy(); };
+    up.on('error', end); client.on('error', end);
+  });
+  return (client) => server.emit('connection', client);
+}
 
 const CHROME_CANDIDATES = ['/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium', '/usr/bin/chromium-browser', '/opt/google/chrome/chrome', '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'];
 
@@ -232,46 +265,83 @@ class Cdp {
   }
 }
 
+/** GET a DevTools JSON endpoint of the contained Chrome through the sandbox's exposed-port bridge. */
+function cdpJson<T>(sandbox: LocalSandbox, path: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const req = httpGet({ host: '127.0.0.1', port: CDP_PORT, path, createConnection: () => sandbox.connectPort(CDP_PORT), timeout: 2000 }, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (c: string) => { body += c; });
+      res.on('end', () => { try { resolve(JSON.parse(body) as T); } catch (e) { reject(e); } });
+    });
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+    req.on('error', reject);
+  });
+}
+
 /**
  * Headless Chrome driven over CDP for agent browser tools (F-PRV-5 minimal, §18.5). One browser per Engine,
  * launched lazily with a throwaway profile; it only ever navigates to the workspace dev-server URL.
  */
 export class PreviewBrowser {
-  private proc?: ChildProcess;
+  private sandbox?: LocalSandbox;
+  private stopChrome?: () => void;
   private profile?: string;
   private cdp?: Promise<Cdp>;
   private queue: Promise<unknown> = Promise.resolve();
   private readonly chrome: string | null;
   private readonly outDir: string;
+  private readonly allowTarget: (host: string, port: number) => boolean;
+  private readonly createSandbox: (dir: string, roPaths: string[]) => LocalSandbox;
   private readonly lastSnapshot = new Map<string, EnvironmentSnapshot>();
   private seq = 0;
 
-  constructor(opts: { outDir: string; chrome?: string | null }) {
+  /**
+   * `allowTarget` decides which host-loopback ports pages may load (the Engine passes its running dev servers;
+   * the default allows any loopback port). Chrome always runs inside a sandbox (F-SBX-2, SEC-1).
+   */
+  constructor(opts: { outDir: string; chrome?: string | null; allowTarget?: (host: string, port: number) => boolean; createSandbox?: (dir: string, roPaths: string[]) => LocalSandbox }) {
     this.outDir = opts.outDir;
     this.chrome = opts.chrome === undefined ? findChrome() : opts.chrome;
+    this.allowTarget = opts.allowTarget ?? (() => true);
+    this.createSandbox = opts.createSandbox ?? ((dir, roPaths) => new LocalSandbox(prefixedId('browser'), dir, { roPaths }));
   }
 
+  /** Chrome is installed and the sandbox can give it the private /proc it needs; otherwise browser tools are refused. */
   available(): boolean {
-    return this.chrome !== null;
+    return this.chrome !== null && sandboxProcAvailable();
   }
 
   private connect(): Promise<Cdp> {
     if (this.cdp) return this.cdp;
     this.cdp = (async () => {
       if (!this.chrome) throw new Error('no Chrome/Chromium found (set HELIX_CHROME)');
-      this.profile = mkdtempSync(join(tmpdir(), 'helix-chrome-'));
-      this.proc = spawn(this.chrome, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--disable-extensions', '--disable-background-networking', '--disable-dev-shm-usage', '--no-sandbox', `--user-data-dir=${this.profile}`, '--remote-debugging-port=0', '--window-size=1280,800', 'about:blank'], { stdio: 'ignore' });
-      const portFile = join(this.profile, 'DevToolsActivePort');
+      const chrome = realpathSync(this.chrome);
+      const installDir = dirname(chrome);
+      const roPaths = DEFAULT_RO_PATHS.some((p) => installDir.startsWith(p + '/')) ? [] : [installDir];
+      this.profile = realpathSync(mkdtempSync(join(tmpdir(), 'helix-chrome-')));
+      const sandbox = (this.sandbox = this.createSandbox(this.profile, roPaths));
+      if (!sandbox.procCapable()) throw new SandboxUnavailableError('the contained browser needs a private /proc, which this sandbox cannot mount; Chrome is not started on the host');
+      const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+      const args = ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--disable-extensions', '--disable-background-networking', '--disable-dev-shm-usage', '--no-sandbox', '--no-zygote',
+        `--user-data-dir=${this.profile}/data`, `--remote-debugging-address=127.0.0.1`, `--remote-debugging-port=${CDP_PORT}`, `--proxy-server=http://127.0.0.1:${PROXY_PORT}`, '--proxy-bypass-list=<-loopback>', '--window-size=1280,800', 'about:blank'];
+      const session = await sandbox.openStdio(`exec ${q(chrome)} ${args.map(q).join(' ')}`, { proc: true, exposePorts: [CDP_PORT], inbound: [{ port: PROXY_PORT, handler: browserProxy(this.allowTarget) }] });
+      session.process.stdout.resume();
+      session.process.stderr.resume();
+      session.process.stdin.end();
+      let exited = false;
+      session.process.once('close', () => { exited = true; });
+      this.stopChrome = session.kill;
       const deadline = Date.now() + 20_000;
-      while (!existsSync(portFile) || !readFileSync(portFile, 'utf8').includes('\n')) {
-        if (Date.now() > deadline || this.proc.exitCode !== null) throw new Error('Chrome did not start');
-        await new Promise((r) => setTimeout(r, 100));
+      let pages: Array<{ type: string; webSocketDebuggerUrl: string }> | null = null;
+      while (!pages) {
+        if (Date.now() > deadline || exited) throw new Error('Chrome did not start in the sandbox');
+        pages = await cdpJson<Array<{ type: string; webSocketDebuggerUrl: string }>>(sandbox, '/json/list').catch(() => null);
+        if (!pages) await new Promise((r) => setTimeout(r, 100));
       }
-      const port = Number(readFileSync(portFile, 'utf8').split('\n')[0]);
-      const pages = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json() as Array<{ type: string; webSocketDebuggerUrl: string }>;
       const page = pages.find((p) => p.type === 'page');
       if (!page) throw new Error('Chrome has no page target');
-      const ws = new WebSocket(page.webSocketDebuggerUrl, { perMessageDeflate: false });
+      const ws = new WebSocket(page.webSocketDebuggerUrl, { perMessageDeflate: false, createConnection: () => sandbox.connectPort(CDP_PORT) });
       await new Promise<void>((res, rej) => { ws.once('open', () => res()); ws.once('error', rej); });
       const cdp = new Cdp(ws);
       await Promise.all([cdp.send('Page.enable'), cdp.send('Runtime.enable'), cdp.send('Log.enable'), cdp.send('Network.enable'), cdp.send('Accessibility.enable')]);
@@ -400,8 +470,10 @@ export class PreviewBrowser {
   }
 
   private kill(): void {
-    try { this.proc?.kill('SIGKILL'); } catch { /* gone */ }
-    this.proc = undefined;
+    this.stopChrome?.();
+    this.stopChrome = undefined;
+    this.sandbox?.destroy();
+    this.sandbox = undefined;
     if (this.profile) rmSync(this.profile, { recursive: true, force: true });
     this.profile = undefined;
   }
