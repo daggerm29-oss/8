@@ -26,17 +26,35 @@
     ]
   },
   "crash": {
-    "rendererPid": 5056,
-    "enginePid": 5029,
+    "rendererPid": 17582,
+    "enginePid": 17562,
     "engineAliveAfterKill": true,
     "taskStatusDuringCrash": "running",
-    "reopenedWindowReattachedMs": 820,
+    "reopenedWindowReattachedMs": 849,
     "finalTaskStatus": "done",
-    "providerRequests": 3,
     "rendererCrashes": 1
   },
+  "engineCrash": {
+    "killedEnginePid": 17562,
+    "restartedEnginePid": 18110,
+    "supervisorRestarts": 1,
+    "checkpointsBefore": [
+      "ckpt_01m74feexjyn9j5vfdck4rjyz4",
+      "ckpt_01m74feezjkb35jk38nhph1b4v"
+    ],
+    "checkpointsAfter": [
+      "ckpt_01m74feexjyn9j5vfdck4rjyz4",
+      "ckpt_01m74feezjkb35jk38nhph1b4v"
+    ],
+    "editFileCalls": 1,
+    "runShellCalls": [
+      "ok"
+    ],
+    "finalTaskStatus": "done"
+  },
+  "providerRequests": 6,
   "coldStartToConnectedMs": {
-    "value": 2519,
+    "value": 2496,
     "note": "local packaged Electron under Xvfb in the build VM; not PERF-1 reference-hardware certification"
   },
   "events": [
@@ -46,7 +64,12 @@
     "renderer.gone",
     "window.reopened",
     "workbench.connected",
-    "ipc.rejected"
+    "ipc.rejected",
+    "engine.exit",
+    "engine.restarting",
+    "engine.spawned",
+    "engine.ready",
+    "workbench.connected"
   ],
   "pageErrors": []
 }

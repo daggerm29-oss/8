@@ -53,8 +53,16 @@ test.beforeAll(async () => {
   repo = join(root, 'workspace'); mkdirSync(repo);
   writeFileSync(join(repo, 'hello.txt'), 'before\n');
   execFileSync('git', ['init', '-b', 'fixture'], { cwd: repo });
-  fake = await startFakeProvider('gemini', ({ index }) => {
+  let engineCrashTurns = 0;
+  fake = await startFakeProvider('gemini', ({ index, request }) => {
     const usage = { input: 100 + index, output: 10 };
+    const body = JSON.stringify(request.body);
+    if (body.includes('Survive an engine crash.')) {
+      engineCrashTurns += 1;
+      if (body.includes('engine-crash-survived')) return { text: 'Engine crash task complete.', usage };
+      if (engineCrashTurns === 1) return { toolCalls: [{ name: 'edit_file', args: { path: 'hello.txt', old_string: 'after', new_string: 'engine' } }], delayMs: 50, usage };
+      return { toolCalls: [{ name: 'run_shell', args: { command: 'sleep 5 && echo engine-crash-survived' } }], delayMs: 50, usage };
+    }
     if (index === 0) return { toolCalls: [{ name: 'run_shell', args: { command: 'sleep 6 && echo survived' } }], delayMs: 50, usage };
     if (index === 1) return { toolCalls: [{ name: 'edit_file', args: { path: 'hello.txt', old_string: 'before', new_string: 'after' } }], delayMs: 50, usage };
     return { text: 'Crash isolation task complete.', usage };
@@ -161,11 +169,36 @@ test('R1.4 packaged hardening: strict CSP, sandboxed renderer, validated IPC all
   expect(fake.requests.length).toBe(3);
   const unlistedAfter = await next.evaluate(() => (window as any).helixDesktop.invoke('engine.kill').then(() => 'resolved', (e: Error) => e.message));
   expect(unlistedAfter).toBe('IPC channel not allowed: engine.kill');
+
+  // NFR-4 second clause: an Engine crash mid-task → supervised restart → the task resumes from its last checkpoint.
+  const resumedTask = await call<{ id: string }>('task.create', { workspacePath: repo, goal: 'Survive an engine crash.', provider: 'gemini', model: 'gemini-3.8-flash', policyProfile: 'headless' });
+  const tools = (a: TaskActivity) => a.agents.flatMap((agent) => agent.steps.flatMap((s) => s.tools));
+  await expect.poll(async () => tools(await call<TaskActivity>('task.activity', { task: resumedTask.id })).some((c) => c.tool === 'run_shell')).toBe(true);
+  const beforeEngineCrash = await call<TaskActivity>('task.activity', { task: resumedTask.id });
+  expect(readFileSync(join(repo, 'hello.txt'), 'utf8')).toBe('engine\n');
+  const checkpointsBefore = beforeEngineCrash.checkpoints.map((c) => c.id);
+  expect(checkpointsBefore.length).toBeGreaterThanOrEqual(2);
+  process.kill(enginePid, 'SIGKILL');
+  await expect.poll(() => events.some((e) => e.event === 'engine.exit' && e.pid === enginePid)).toBe(true);
+  await expect.poll(() => events.some((e) => e.event === 'engine.ready' && e.pid !== enginePid), { timeout: 30_000 }).toBe(true);
+  const restartedPid = engineInfo().pid;
+  expect(restartedPid).not.toBe(enginePid);
+  await expect(next.locator('#engine-status')).toHaveText('Engine connected', { timeout: 30_000 });
+  await expect.poll(async () => (await call<TaskActivity>('task.activity', { task: resumedTask.id })).status, { timeout: 30_000 }).toBe('done');
+  const resumed = await call<TaskActivity>('task.activity', { task: resumedTask.id });
+  const resumedCheckpoints = resumed.checkpoints.map((c) => c.id);
+  for (const id of checkpointsBefore) expect(resumedCheckpoints).toContain(id);
+  expect(tools(resumed).filter((c) => c.tool === 'edit_file')).toHaveLength(1);
+  expect(readFileSync(join(repo, 'hello.txt'), 'utf8')).toBe('engine\n');
+  const restartedStatus = await bridge(next, (d) => d.engineStatus());
+  expect(restartedStatus).toMatchObject({ pid: restartedPid, alive: true, restarts: 1 });
   expect(errors).toEqual([]);
 
   const evidence = {
     task: 'R1.4', packagedElectron: true, chromiumOsSandbox: 'enabled (launched without --no-sandbox)', webPreferences: prefs, csp, inlineScript: inline, ipc: { unlisted, badPayload, unlistedAfterReopen: unlistedAfter, allowlist: ['app.info', 'engine.connection', 'engine.status', 'shell.openExternal'] },
-    crash: { rendererPid, enginePid, engineAliveAfterKill: true, taskStatusDuringCrash: during.status, reopenedWindowReattachedMs: reattachMs, finalTaskStatus: final.status, providerRequests: fake.requests.length, rendererCrashes: after.rendererCrashes },
+    crash: { rendererPid, enginePid, engineAliveAfterKill: true, taskStatusDuringCrash: during.status, reopenedWindowReattachedMs: reattachMs, finalTaskStatus: final.status, rendererCrashes: after.rendererCrashes },
+    engineCrash: { killedEnginePid: enginePid, restartedEnginePid: restartedPid, supervisorRestarts: restartedStatus.restarts, checkpointsBefore, checkpointsAfter: resumedCheckpoints, editFileCalls: tools(resumed).filter((c) => c.tool === 'edit_file').length, runShellCalls: tools(resumed).filter((c) => c.tool === 'run_shell').map((c) => c.status), finalTaskStatus: resumed.status },
+    providerRequests: fake.requests.length,
     coldStartToConnectedMs: { value: coldStartMs, note: 'local packaged Electron under Xvfb in the build VM; not PERF-1 reference-hardware certification' },
     events: events.map((e) => e.event), pageErrors: errors,
   };

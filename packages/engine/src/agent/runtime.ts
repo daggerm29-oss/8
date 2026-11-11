@@ -669,7 +669,9 @@ export class TaskRuntime {
         this.publish(r.id, this.row(r.id).ws, 'approval.decided', { approvalId: a.id, tool: a.tool, actionClass: a.action_class, approved: false, by: 'system', reason: 'expired on restart' }, 'audit');
       }
       this.o.db.run(`UPDATE approvals SET status = 'expired' WHERE task = ? AND status = 'pending'`, r.id);
-      this.publish(r.id, this.row(r.id).ws, 'task.resumed', { previousOwner: r.owner_engine }, 'audit');
+      // The previous owner is dead, so its write leases can never be released; without this the resumed tool call waits for lease expiry (NFR-4).
+      const staleLeases = this.o.db.run(`UPDATE activity_leases SET state = 'expired', released_at = ? WHERE task = ? AND state = 'held'`, new Date().toISOString(), r.id);
+      this.publish(r.id, this.row(r.id).ws, 'task.resumed', { previousOwner: r.owner_engine, expiredLeases: Number(staleLeases.changes) }, 'audit');
       this.start(r.id);
       resumed.push(r.id);
     }
