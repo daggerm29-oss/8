@@ -3,6 +3,7 @@ export * from './models.ts';
 export * from './sse.ts';
 export * from './capabilities.ts';
 export * from './retry.ts';
+export * from './workbench.ts';
 
 export const PROTOCOL_VERSION = '0.1.0';
 
@@ -114,6 +115,9 @@ export const Methods = {
   /* SEC-1 trusted-repo light mode + permanent isolation indicator (R0.2) */
   workspaceTrust: 'workspace.trust',
   workbenchStatus: 'workbench.status',
+  workbenchSettingsGet: 'workbench.settings.get',
+  workbenchSettingsSet: 'workbench.settings.set',
+  workbenchSearch: 'workbench.search',
   eventsReplay: 'events.replay',
   /* M1 */
   indexUpdate: 'index.update',

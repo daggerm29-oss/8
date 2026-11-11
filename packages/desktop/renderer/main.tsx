@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClientProvider } from "@tanstack/react-query";
 import {
@@ -16,17 +16,9 @@ import {
 } from "lucide-react";
 import { rpc, queryClient, useRpc } from "./rpc";
 import { confirmDiscard, useWorkbench, type Panel } from "./state";
-import { Explorer } from "./explorer";
-import { AgentPanel, MonitorPanel } from "./agent-panels";
-import { PreviewPanel, ProblemsPanel, ScmPanel } from "./environment-panels";
-import { SettingsPanel, McpPanel } from "./settings";
+import { DockWorkbench } from "./dock-workbench";
+import { useLayout } from "./layout-state";
 import "./workbench.css";
-const Editor = lazy(() =>
-  import("./editor").then((module) => ({ default: module.Editor })),
-);
-const TerminalPanel = lazy(() =>
-  import("./terminal").then((module) => ({ default: module.TerminalPanel })),
-);
 const panels = [
   { id: "agent", name: "Agent", icon: Bot },
   { id: "terminal", name: "Terminal", icon: TerminalSquare },
@@ -112,11 +104,7 @@ function Workbench() {
           <button
             aria-label="Explorer"
             title="Explorer"
-            onClick={() =>
-              document
-                .querySelector<HTMLInputElement>('[aria-label="Filter files"]')
-                ?.focus()
-            }
+            onClick={() => useLayout.getState().show("explorer")}
           >
             <Files size={20} />
           </button>
@@ -126,57 +114,13 @@ function Workbench() {
               aria-label={name}
               title={name}
               aria-pressed={panel === id}
-              onClick={() => useWorkbench.getState().setPanel(id)}
+              onClick={() => useLayout.getState().show(id)}
             >
               <Icon size={20} />
             </button>
           ))}
         </nav>
-        <Explorer />
-        <main className="editor-column">
-          <Suspense
-            fallback={<div className="empty-state">Loading editor…</div>}
-          >
-            <Editor />
-          </Suspense>
-          {panel !== "agent" && (
-            <section className="bottom-panel" aria-label="Workbench tool area">
-              <div className="tool-tabs">
-                {panels
-                  .filter((entry) => entry.id !== "agent")
-                  .map(({ id, name }) => (
-                    <button
-                      key={id}
-                      aria-pressed={panel === id}
-                      onClick={() => useWorkbench.getState().setPanel(id)}
-                    >
-                      {name}
-                    </button>
-                  ))}
-              </div>
-              <div className="panel-content">
-                <Suspense fallback={<p>Loading panel…</p>}>
-                  {panel === "terminal" ? (
-                    <TerminalPanel key={workspace} />
-                  ) : panel === "preview" ? (
-                    <PreviewPanel key={workspace} />
-                  ) : panel === "problems" ? (
-                    <ProblemsPanel />
-                  ) : panel === "monitor" ? (
-                    <MonitorPanel />
-                  ) : panel === "scm" ? (
-                    <ScmPanel key={workspace} />
-                  ) : panel === "settings" ? (
-                    <SettingsPanel />
-                  ) : (
-                    <McpPanel />
-                  )}
-                </Suspense>
-              </div>
-            </section>
-          )}
-        </main>
-        <AgentPanel />
+        <DockWorkbench />
       </div>
       <footer className="statusbar">
         <span>

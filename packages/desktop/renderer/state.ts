@@ -44,6 +44,7 @@ export type Task = {
 type UiState = {
   workspace: string;
   selectedTask: string;
+  selectedCheckpoint: string;
   panel: Panel;
   document: FileDocument | null;
   draft: string;
@@ -61,6 +62,7 @@ type UiState = {
 export const useWorkbench = create<UiState>((set) => ({
   workspace: "",
   selectedTask: "",
+  selectedCheckpoint: "",
   panel: "agent",
   document: null,
   draft: "",
@@ -71,12 +73,13 @@ export const useWorkbench = create<UiState>((set) => ({
     set({
       workspace,
       selectedTask: "",
+      selectedCheckpoint: "",
       document: null,
       draft: "",
       dirty: false,
       notice: "",
     }),
-  setTask: (selectedTask) => set({ selectedTask }),
+  setTask: (selectedTask) => set({ selectedTask, selectedCheckpoint: "" }),
   setPanel: (panel) => set({ panel }),
   openDocument: (document, line = 1) =>
     set({

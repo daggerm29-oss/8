@@ -2,6 +2,7 @@ import { useState } from "react";
 import { FileCode2, FolderOpen, Search, RefreshCw } from "lucide-react";
 import { rpc, useRpc } from "./rpc";
 import { confirmDiscard, useWorkbench, type FileDocument } from "./state";
+import { useLayout } from "./layout-state";
 
 export async function openFile(path: string, line = 1) {
   const state = useWorkbench.getState();
@@ -11,8 +12,10 @@ export async function openFile(path: string, line = 1) {
       workspacePath: state.workspace,
       path,
     });
-    if (useWorkbench.getState().workspace === state.workspace)
+    if (useWorkbench.getState().workspace === state.workspace) {
       state.openDocument(document, line);
+      useLayout.getState().show("editor");
+    }
   } catch (error) {
     state.message((error as Error).message);
   }

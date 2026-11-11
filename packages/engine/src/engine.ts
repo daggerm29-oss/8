@@ -40,6 +40,7 @@ import { parseDiagnostics } from './diagnostics/parsers.ts';
 import { DepGate } from './policy/depgate.ts';
 import { listProblems, recordTerminalProblems } from './workspace/problems.ts';
 import { desktopAsset } from './workspace/desktop-assets.ts';
+import { getWorkbenchSettings, setWorkbenchSettings, searchWorkbench } from './workspace/workbench.ts';
 
 export const ENGINE_VERSION = '0.1.0';
 
@@ -246,6 +247,20 @@ export class Engine {
       return { unshare: unshareAvailable(), mountNs: mountNsAvailable(), container: containerRuntime(), localOs: lo ? { tool: lo.kind, proc: lo.proc } : null, available: availableBackends(), default: s.backend, isolation: s.isolation, reason: s.reason };
     }));
     peer.handle(Methods.workbenchStatus, guard<{ workspacePath?: string }>((p) => this.workbenchStatus(p.workspacePath)));
+    peer.handle(Methods.workbenchSettingsGet, guard<{ workspacePath: string }>((p) => {
+      const root = this.knownWorkspace(p.workspacePath);
+      return getWorkbenchSettings(this.db, this.runtime.workspaceFor(root).id);
+    }));
+    peer.handle(Methods.workbenchSettingsSet, guard<{ workspacePath: string; profile?: unknown; layout?: unknown; keymap?: unknown }>((p) => {
+      const root = this.knownWorkspace(p.workspacePath);
+      return setWorkbenchSettings(this.db, this.runtime.workspaceFor(root).id, p);
+    }));
+    peer.handle(Methods.workbenchSearch, guard<{ workspacePath: string; query: string }>((p) => {
+      const root = this.knownWorkspace(p.workspacePath);
+      if (typeof p.query !== 'string' || p.query.length > 100) throw new Error('Invalid palette query');
+      this.index(root).update();
+      return searchWorkbench(this.db, root, this.runtime.workspaceFor(root).id, p.query);
+    }));
     peer.handle(Methods.workspaceTrust, guard<{ workspacePath: string; trusted: boolean; lightMode?: boolean }>((p) => {
       if (typeof p.workspacePath !== 'string' || !p.workspacePath) throw new Error('workspacePath is required');
       let root: string;

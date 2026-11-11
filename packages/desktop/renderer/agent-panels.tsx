@@ -2,6 +2,7 @@ import { useState } from "react";
 import { ArrowUp, Bot, Check, X } from "lucide-react";
 import { rpc, useRpc, queryClient } from "./rpc";
 import { useWorkbench, type Task } from "./state";
+import { CheckpointInspector } from "./checkpoint-inspector";
 
 type Message = {
   role: string;
@@ -236,6 +237,7 @@ export function MonitorPanel() {
       ) : (
         <div className="empty-state">No tasks in this workspace.</div>
       )}
+      <CheckpointInspector />
       <ol className="step-list">
         {steps.data?.map((step) => (
           <li key={step.id}>

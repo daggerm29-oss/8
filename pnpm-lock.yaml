@@ -82,6 +82,9 @@ importers:
 
   packages/desktop:
     dependencies:
+      '@helix/protocol':
+        specifier: workspace:*
+        version: link:../protocol
       '@tanstack/react-query':
         specifier: ^5.107.1
         version: 5.107.1(@types/react@19.2.14)(react@19.2.4)
@@ -91,6 +94,9 @@ importers:
       '@xterm/xterm':
         specifier: ^6.0.0
         version: 6.0.0
+      flexlayout-react:
+        specifier: ^0.11.1
+        version: 0.11.1(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       lucide-react:
         specifier: ^1.70.0
         version: 1.70.0(@types/react@19.2.14)(react@19.2.4)
@@ -1687,6 +1693,13 @@ packages:
   finalhandler@2.1.1:
     resolution: {integrity: sha512-S8KoZgRZN+a5rNwqTxlZZePjT/4cnm0ROV70LedRHZ0p8u9fRID0hJUZQpkKLzro8LfmC8sx23bY6tVNxv8pQA==}
     engines: {node: '>= 18.0.0'}
+
+  flexlayout-react@0.11.1:
+    resolution: {integrity: sha512-/pQnd5bWQVZ/HQnV1AQhS/QPROwYYspnjV7XVlw/BIsVg44CZoUOxeFLv8KqgYWo41/mSTwQOqBo+S2RoPLfcQ==}
+    engines: {node: '>=20'}
+    peerDependencies:
+      react: ^18.0.0 || ^19.0.0
+      react-dom: ^18.0.0 || ^19.0.0
 
   form-data@4.0.6:
     resolution: {integrity: sha512-vKatAh4SlVfgbv+YtmhiRjhEMJsYpsG1Y2rMQtR+SVSbytsSD1YGzDIcrAJmdFec88u/+VoGmxnl+80gL1tRCQ==}
@@ -4590,6 +4603,11 @@ snapshots:
       statuses: 2.0.2
     transitivePeerDependencies:
       - supports-color
+
+  flexlayout-react@0.11.1(react-dom@19.2.4(react@19.2.4))(react@19.2.4):
+    dependencies:
+      react: 19.2.4
+      react-dom: 19.2.4(react@19.2.4)
 
   form-data@4.0.6:
     dependencies:
