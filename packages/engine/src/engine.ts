@@ -38,9 +38,6 @@ import { gitCommit, gitDiff, gitStageAll, gitStatus } from './workspace/git.ts';
 import { WorkspaceIndex } from './index/index.ts';
 import { parseDiagnostics } from './diagnostics/parsers.ts';
 import { DepGate } from './policy/depgate.ts';
-import { listProblems, recordTerminalProblems } from './workspace/problems.ts';
-import { desktopAsset } from './workspace/desktop-assets.ts';
-import { getWorkbenchSettings, setWorkbenchSettings, searchWorkbench } from './workspace/workbench.ts';
 
 export const ENGINE_VERSION = '0.1.0';
 
@@ -89,7 +86,7 @@ function compactionFrom(env: NodeJS.ProcessEnv, opts?: CompactionOptions): Compa
   };
 }
 
-const TOPICS = ['task.*', 'agent.**', 'tool.*', 'model.*', 'verify.*', 'approval.*', 'ledger.*', 'budget.*', 'context.*', 'artifact.*', 'checkpoint.*', 'workspace.*', 'egress.*', 'preview.*', 'secret.*', 'sandbox.*', 'policy.*', 'git.*', 'deploy.*', 'mcp.*'];
+const TOPICS = ['task.*', 'agent.*', 'tool.*', 'model.*', 'verify.*', 'approval.*', 'ledger.*', 'budget.*', 'context.*', 'artifact.*', 'checkpoint.*', 'workspace.*', 'egress.*', 'preview.*', 'secret.*', 'sandbox.*', 'policy.*', 'git.*', 'deploy.*', 'mcp.*'];
 
 /** Helix Engine (§6.2): composition root for storage, bus, gateway, tools, sandbox, and the task runtime. */
 export class Engine {
@@ -214,12 +211,7 @@ export class Engine {
     }));
     peer.handle(Methods.taskCreate, guard<TaskCreateParams>((p) => this.runtime.create(p)));
     peer.handle(Methods.taskStart, guard<{ id: string }>((p) => (this.runtime.start(p.id), this.runtime.summary(p.id))));
-    peer.handle(Methods.taskResume, guard<{ id: string }>((p) => this.runtime.resume(p.id)));
-    peer.handle(Methods.taskPause, guard<{ id: string }>((p) => this.runtime.pause(p.id)));
-    peer.handle(Methods.taskActivity, guard<{ task: string }>((p) => this.runtime.activity(p.task)));
-    peer.handle(Methods.taskRollback, guard<{ task: string; checkpoint: string }>((p) => this.runtime.rollback(p.task, p.checkpoint)));
-    peer.handle(Methods.taskFork, guard<{ task: string; checkpoint: string; goal?: string; title?: string; provider?: string; model?: string; start?: boolean }>((p) => this.runtime.fork(p.task, p.checkpoint, p)));
-    peer.handle(Methods.taskSetModel, guard<{ id: string; provider: string; model: string }>((p) => this.runtime.setModel(p.id, p)));
+    peer.handle(Methods.taskResume, guard<{ id: string }>((p) => (this.runtime.start(p.id), this.runtime.summary(p.id))));
     peer.handle(Methods.taskCancel, guard<{ id: string }>((p) => this.runtime.cancel(p.id)));
     peer.handle(Methods.taskGet, guard<{ id: string }>((p) => this.runtime.summary(p.id)));
     peer.handle(Methods.taskList, guard<{ limit?: number }>((p) => this.runtime.list(p.limit)));
@@ -252,20 +244,6 @@ export class Engine {
       return { unshare: unshareAvailable(), mountNs: mountNsAvailable(), container: containerRuntime(), localOs: lo ? { tool: lo.kind, proc: lo.proc } : null, available: availableBackends(), default: s.backend, isolation: s.isolation, reason: s.reason };
     }));
     peer.handle(Methods.workbenchStatus, guard<{ workspacePath?: string }>((p) => this.workbenchStatus(p.workspacePath)));
-    peer.handle(Methods.workbenchSettingsGet, guard<{ workspacePath: string }>((p) => {
-      const root = this.knownWorkspace(p.workspacePath);
-      return getWorkbenchSettings(this.db, this.runtime.workspaceFor(root).id);
-    }));
-    peer.handle(Methods.workbenchSettingsSet, guard<{ workspacePath: string; profile?: unknown; layout?: unknown; keymap?: unknown }>((p) => {
-      const root = this.knownWorkspace(p.workspacePath);
-      return setWorkbenchSettings(this.db, this.runtime.workspaceFor(root).id, p);
-    }));
-    peer.handle(Methods.workbenchSearch, guard<{ workspacePath: string; query: string }>((p) => {
-      const root = this.knownWorkspace(p.workspacePath);
-      if (typeof p.query !== 'string' || p.query.length > 100) throw new Error('Invalid palette query');
-      this.index(root).update();
-      return searchWorkbench(this.db, root, this.runtime.workspaceFor(root).id, p.query);
-    }));
     peer.handle(Methods.workspaceTrust, guard<{ workspacePath: string; trusted: boolean; lightMode?: boolean }>((p) => {
       if (typeof p.workspacePath !== 'string' || !p.workspacePath) throw new Error('workspacePath is required');
       let root: string;
@@ -311,17 +289,6 @@ export class Engine {
     peer.handle(Methods.checkpointDiff, guard<{ task: string; checkpoint?: string }>((p) => this.runtime.diff(p.task, p.checkpoint)));
     peer.handle(Methods.approvalList, guard<{ task?: string }>((p) => this.runtime.approvalList(p.task)));
     peer.handle(Methods.workspaceList, guard(() => this.runtime.workspaces()));
-    peer.handle(Methods.workspaceOpen, guard<{ workspacePath: string }>((p) => {
-      if (typeof p.workspacePath !== 'string' || !p.workspacePath) throw new Error('workspacePath is required');
-      const root = realpathSync(resolve(p.workspacePath));
-      if (!statSync(root).isDirectory()) throw new Error('workspacePath must be a directory');
-      return this.runtime.workspaceFor(root);
-    }));
-    peer.handle(Methods.problemsList, guard<{ workspacePath: string }>((p) => {
-      const root = this.knownWorkspace(p.workspacePath);
-      this.bus.flush();
-      return listProblems(this.db, this.runtime.workspaceFor(root).id);
-    }));
     peer.handle(Methods.taskMonitor, guard<{ limit?: number }>((p) => this.runtime.monitor(Math.min(Math.max(Number(p?.limit) || 50, 1), 200))));
     peer.handle(Methods.taskSteps, guard<{ task: string }>((p) => {
       if (typeof p.task !== 'string' || !p.task) throw new Error('task is required');
@@ -393,9 +360,6 @@ export class Engine {
           cwd: p.cwd, timeoutMs: Math.min(Math.max(Number(p.timeoutMs) || 120_000, 1000), 600_000), maxOutputBytes: 1024 * 1024, signal: ctrl.signal,
           onOutput: (stream, text) => peer.notify(Notifications.terminalOutput, { runId, stream, text }),
         });
-        const ws = this.runtime.workspaceFor(sbx.root);
-        const diagnostics = recordTerminalProblems(this.db, ws.id, p.command, `${r.stdout}\n${r.stderr}`);
-        this.bus.publish({ topic: 'workspace.problems_updated', ws: ws.id, data: { diagnostics }, persist: 'log' });
         return { runId, exitCode: r.exitCode, signal: r.signal, timedOut: r.timedOut, truncated: r.truncated, durationMs: r.durationMs, killed: ctrl.signal.aborted, sandbox: sbx.info() };
       } finally { runs.delete(runId); }
     }));
@@ -571,7 +535,7 @@ export class Engine {
    * the server, so serving the page does not leak it. Host and Origin headers must be loopback (or listed in
    * `allowedHosts`) to defeat DNS rebinding. `noAuth` exists only for remote dev previews and is loud about it.
    */
-  async serve(opts: { port?: number; host?: string; ui?: boolean; noAuth?: boolean; allowedHosts?: string[]; desktopUiDir?: string } = {}): Promise<{ port: number; token: string; url: string }> {
+  async serve(opts: { port?: number; host?: string; ui?: boolean; noAuth?: boolean; allowedHosts?: string[] } = {}): Promise<{ port: number; token: string; url: string }> {
     const token = randomToken();
     const host = opts.host ?? '127.0.0.1';
     const allowed = new Set(['127.0.0.1', 'localhost', '[::1]', ...(opts.allowedHosts ?? [])]);
@@ -595,14 +559,11 @@ export class Engine {
         return;
       }
       if (!opts.ui) { res.writeHead(404).end('not found'); return; }
-      if (path === '/' && opts.desktopUiDir) { res.writeHead(302, { location: '/desktop/index.html', 'cache-control': 'no-store' }).end(); return; }
-      const file = path.startsWith('/desktop/') && opts.desktopUiDir ? desktopAsset(opts.desktopUiDir, path) : UI_FILES[path === '/' ? '/index.html' : path];
+      const file = UI_FILES[path === '/' ? '/index.html' : path];
       if (!file) { res.writeHead(404).end('not found'); return; }
       res.writeHead(200, {
         'content-type': file.type, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer',
-        'content-security-policy': path.startsWith('/desktop/')
-          ? "default-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; worker-src 'self'; font-src 'self' data:; img-src 'self' data:; frame-src http://127.0.0.1:* http://localhost:*; frame-ancestors 'self'; base-uri 'none'; object-src 'none'; form-action 'none'"
-          : "default-src 'self'; connect-src 'self' ws: wss:; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; frame-src http://127.0.0.1:* http://localhost:*; frame-ancestors 'self'; base-uri 'none'; object-src 'none'; form-action 'none'",
+        'content-security-policy': "default-src 'self'; connect-src 'self' ws: wss:; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; frame-src http://127.0.0.1:* http://localhost:*; frame-ancestors *",
       }).end(readFileSync(file.name));
     });
     this.wss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024 });
@@ -614,7 +575,7 @@ export class Engine {
     const actual = (this.http.address() as { port: number }).port;
     writeFileSync(join(this.home, 'engine.json'), JSON.stringify({ engineId: this.id, pid: process.pid, port: actual, token }), { mode: 0o600 });
     const shown = host === '0.0.0.0' || host === '::' ? '127.0.0.1' : host;
-    return { port: actual, token, url: `http://${shown}:${actual}/${opts.desktopUiDir ? 'desktop/index.html' : ''}${opts.noAuth ? '' : `#token=${token}`}` };
+    return { port: actual, token, url: `http://${shown}:${actual}/${opts.noAuth ? '' : `#token=${token}`}` };
   }
 
   async close(): Promise<void> {

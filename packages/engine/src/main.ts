@@ -17,7 +17,7 @@ if (flag('--ws') || flag('--ui')) {
   const raw = value('--ws') ?? value('--port');
   const allowedHosts = args.flatMap((a, i) => (a === '--allow-host' && args[i + 1] ? [args[i + 1]] : []));
   const noAuth = flag('--no-auth');
-  const { port, url } = await engine.serve({ port: raw && /^\d+$/.test(raw) ? Number(raw) : 0, host: value('--host'), ui: flag('--ui'), noAuth, allowedHosts, desktopUiDir: value('--desktop-ui') });
+  const { port, url } = await engine.serve({ port: raw && /^\d+$/.test(raw) ? Number(raw) : 0, host: value('--host'), ui: flag('--ui'), noAuth, allowedHosts });
   process.stderr.write(`helix-engine ${engine.id} listening on ws://${value('--host') ?? '127.0.0.1'}:${port} (token in ${engine.home}/engine.json)\n`);
   if (flag('--ui')) process.stderr.write(`workbench: ${url}\n`);
   if (noAuth) process.stderr.write('WARNING: --no-auth disables the Engine token. Use only inside an isolated dev sandbox.\n');

@@ -59,13 +59,6 @@ jobs:
         run: |
           node -e "const fs=require('fs');const e=require('./packages/desktop/node_modules/electron');if(!fs.existsSync(e))process.exit(1)"
           pnpm --filter @helix/desktop test
-      - name: Packaged desktop hardening and crash isolation (R1.4, SEC-13, NFR-4)
-        timeout-minutes: 10
-        working-directory: packages/desktop
-        run: |
-          sudo apt-get install -y xvfb
-          node --test test/hardening.test.mjs
-          npx playwright test e2e/crash.spec.ts
       - name: Red-team regression suites (existing M0-M2 coverage)
         working-directory: packages/engine
         run: node --test --test-concurrency=1 test/sandbox.test.ts test/sandbox-conformance.test.ts test/fail-closed.test.ts test/egress.test.ts test/mcp-safety.test.ts test/masking.test.ts test/git.test.ts
