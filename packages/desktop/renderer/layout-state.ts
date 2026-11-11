@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import { create } from "zustand";
 import {
   Actions,
@@ -16,17 +17,18 @@ import { rpc, queryClient } from "./rpc";
 import { useWorkbench } from "./state";
 
 export const panelNames: Record<WorkbenchPanel, string> = {
-  explorer: "Explorer",
-  editor: "Editor",
-  agent: "Agent",
-  terminal: "Terminal",
-  preview: "Preview",
-  problems: "Problems",
-  monitor: "Task monitor",
-  scm: "Source control",
-  settings: "Settings",
-  mcp: "MCP manager",
+  explorer: t("explorer_c39d64"),
+  editor: t("editor_936a16"),
+  agent: t("agent_11b39c"),
+  terminal: t("terminal_e0926f"),
+  preview: t("preview_324b13"),
+  problems: t("problems_a7b182"),
+  monitor: t("task_monitor_ac382a"),
+  scm: t("source_control_9bd7ea"),
+  settings: t("settings_74a883"),
+  mcp: t("mcp_manager_b3563d"),
 };
+export const profileLabels = { Build: t('build_bdd254'), Debug: t('debug_1a03bd'), Review: t('review_aff076'), Explore: t('explore_3b7390') };
 const tab = (id: WorkbenchPanel) => ({
   type: "tab" as const,
   id,
@@ -186,7 +188,7 @@ export const useLayout = create<LayoutState>((set, get) => ({
       );
       if (get().workspace === state.workspace) {
         set({ profiles: result.profiles });
-        useWorkbench.getState().message(`${state.profile} layout saved`);
+        useWorkbench.getState().message(t("_0_layout_saved_ba0814", [state.profile]));
       }
     } catch (error) {
       useWorkbench.getState().message((error as Error).message);
@@ -212,6 +214,10 @@ export const useLayout = create<LayoutState>((set, get) => ({
     if (!["explorer", "editor"].includes(panel))
       useWorkbench.getState().setPanel(panel as import("./state").Panel);
     get().changed();
+    requestAnimationFrame(() => {
+      const region = document.querySelector<HTMLElement>(`[data-panel="${panel}"]`);
+      (region?.querySelector<HTMLElement>('button:not(:disabled), input:not(:disabled), textarea, select:not(:disabled), summary') ?? region)?.focus();
+    });
   },
   openPalette: (scope = "all") => set({ palette: true, scope }),
 }));

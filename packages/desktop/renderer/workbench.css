@@ -19,6 +19,31 @@
 * {
   box-sizing: border-box;
 }
+:root[data-contrast="high"] {
+  --bg: #000000;
+  --surface: #090909;
+  --elevated: #141414;
+  --border: #aaaaaa;
+  --fg: #ffffff;
+  --muted: #e0e0e0;
+  --accent: #b8d2ff;
+  --danger: #ffb6ac;
+}
+:root[data-contrast="high"] .editor-welcome > span {
+  color: var(--muted);
+}
+:root[data-contrast="high"] button,
+:root[data-contrast="high"] input,
+:root[data-contrast="high"] select,
+:root[data-contrast="high"] textarea {
+  border-color: var(--border);
+}
+@media (forced-colors: active) {
+  :focus-visible { outline: 2px solid Highlight; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; animation: none !important; transition: none !important; }
+}
 body {
   margin: 0;
 }
@@ -51,7 +76,10 @@ button:disabled {
 button:focus-visible,
 input:focus-visible,
 textarea:focus-visible,
-select:focus-visible {
+select:focus-visible,
+summary:focus-visible,
+a:focus-visible,
+[tabindex]:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
@@ -385,7 +413,7 @@ h3 {
 .editor-welcome > span {
   font-size: 10px;
   margin-top: 24px;
-  color: #737c8b;
+  color: var(--muted);
 }
 .agent-panel {
   display: flex;
@@ -768,10 +796,6 @@ td:first-child button {
     min-width: 220px;
   }
   .workspace-form button {
-    font-size: 0;
-  }
-  .workspace-form button:after {
-    content: "Open";
     font-size: 11px;
   }
   .engine {

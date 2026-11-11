@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import { QueryClient, useQuery } from "@tanstack/react-query";
 
 export type EngineEvent = {
@@ -50,14 +51,14 @@ class EngineRpc {
     };
     await new Promise<void>((resolve, reject) => {
       socket.onopen = () => resolve();
-      socket.onerror = () => reject(new Error("Engine connection failed"));
+      socket.onerror = () => reject(new Error(t("engine_connection_failed_f5e8cc")));
       socket.onclose = () => {
         for (const pending of this.pending.values()) {
           clearTimeout(pending.timer);
-          pending.reject(new Error("Engine disconnected"));
+          pending.reject(new Error(t("engine_disconnected_6eb565")));
         }
         this.pending.clear();
-        reject(new Error("Engine disconnected"));
+        reject(new Error(t("engine_disconnected_6eb565")));
         for (const listener of this.listeners)
           listener({ method: "disconnected", params: {} });
       };
@@ -83,12 +84,12 @@ class EngineRpc {
   }
   call<T = unknown>(method: string, params: object = {}): Promise<T> {
     if (this.socket?.readyState !== WebSocket.OPEN)
-      return Promise.reject(new Error("Engine is not connected"));
+      return Promise.reject(new Error(t("engine_is_not_connected_e96948")));
     const id = ++this.id;
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`${method} timed out`));
+        reject(new Error(t("_0_timed_out_3f797f", [method])));
       }, 120_000);
       this.pending.set(id, {
         resolve: (value) => resolve(value as T),

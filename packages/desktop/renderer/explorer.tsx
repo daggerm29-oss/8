@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import { useState } from "react";
 import { FileCode2, FolderOpen, Search, RefreshCw } from "lucide-react";
 import { rpc, useRpc } from "./rpc";
@@ -33,12 +34,12 @@ export function Explorer() {
     .filter((file) => file.toLowerCase().includes(filter.toLowerCase()))
     .slice(0, 600);
   return (
-    <aside className="explorer" aria-label="File explorer">
+    <aside className="explorer" aria-label={t("file_explorer_bfd3c6")}>
       <div className="panel-heading">
-        <span>Explorer</span>
+        <span>{t("explorer_c39d64")}</span>
         <button
-          title="Refresh files"
-          aria-label="Refresh files"
+          title={t("refresh_files_e2b488")}
+          aria-label={t("refresh_files_e2b488")}
           onClick={() => void files.refetch()}
           disabled={!workspace}
         >
@@ -48,20 +49,20 @@ export function Explorer() {
       <div className="workspace-name">
         <FolderOpen size={15} />
         <span>
-          {workspace.split("/").filter(Boolean).at(-1) || "No workspace"}
+          {workspace.split("/").filter(Boolean).at(-1) || t("no_workspace_fce263")}
         </span>
       </div>
       <label className="filter">
         <Search size={13} />
         <input
-          aria-label="Filter files"
-          placeholder="Filter files"
+          aria-label={t("filter_files_56fc0c")}
+          placeholder={t("filter_files_56fc0c")}
           value={filter}
           onChange={(event) => setFilter(event.target.value)}
         />
       </label>
       {files.error && <p role="alert">{files.error.message}</p>}
-      <nav className="file-list" aria-label="Workspace files">
+      <nav className="file-list" aria-label={t("workspace_files_bb2e2d")}>
         {shown.map((file) => (
           <button
             key={file}
@@ -76,8 +77,8 @@ export function Explorer() {
       </nav>
       <p className="list-caption">
         {workspace
-          ? `${files.data?.files.length ?? 0} files${files.data?.truncated ? " · truncated" : ""}`
-          : "Open a workspace to begin"}
+          ? t("_0_files_1_01b22b", [files.data?.files.length ?? 0, files.data?.truncated ? t("_truncated_533b27") : ""])
+          : t("open_a_workspace_to_begin_590286")}
       </p>
     </aside>
   );

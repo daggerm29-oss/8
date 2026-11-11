@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   fuzzyScore,
@@ -63,6 +64,7 @@ function PaletteDialog() {
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
     dialog.current?.showModal();
+    dialog.current?.querySelector<HTMLInputElement>('#palette-query')?.focus();
     return () => {
       previous?.isConnected && previous.focus();
     };
@@ -76,35 +78,35 @@ function PaletteDialog() {
       {
         id: "open-file",
         kind: "command",
-        label: "Open File",
+        label: t("open_file_1e8d18"),
         detail: layout.keymap.files,
         run: () => layout.openPalette("file"),
       },
       {
         id: "symbols",
         kind: "command",
-        label: "Go to Symbol",
-        detail: "Workspace index",
+        label: t("go_to_symbol_c23239"),
+        detail: t("workspace_index_e8d1fb"),
         run: () => layout.openPalette("symbol"),
       },
       {
         id: "agents",
         kind: "command",
-        label: "Go to Agent",
-        detail: "Workspace agents",
+        label: t("go_to_agent_1de24d"),
+        detail: t("workspace_agents_15c5cb"),
         run: () => layout.openPalette("agent"),
       },
       {
         id: "checkpoints",
         kind: "command",
-        label: "Go to Checkpoint",
-        detail: "Inspect checkpoint diff",
+        label: t("go_to_checkpoint_6ee63c"),
+        detail: t("inspect_checkpoint_diff_ddd483"),
         run: () => layout.openPalette("checkpoint"),
       },
       {
         id: "save-layout",
         kind: "command",
-        label: "Save Layout",
+        label: t("save_layout_5cf8c5"),
         detail: layout.profile,
         run: () => void layout.save(),
       },
@@ -112,8 +114,8 @@ function PaletteDialog() {
         (panel): Command => ({
           id: `panel:${panel}`,
           kind: "command",
-          label: `Show ${panelNames[panel]}`,
-          detail: "Workbench panel",
+          label: t("show_0_ce2647", [panelNames[panel]]),
+          detail: t("workbench_panel_b767c3"),
           run: () => layout.show(panel),
         }),
       ),
@@ -166,7 +168,7 @@ function PaletteDialog() {
       useWorkbench
         .getState()
         .message(
-          `${entry.kind === "agent" ? "Agent" : "Checkpoint"} selected: ${entry.id}`,
+          t("_0_selected_1_aa6863", [entry.kind === "agent" ? t("agent_11b39c") : t("checkpoint_ee325a"), entry.id]),
         );
     }
   };
@@ -174,7 +176,7 @@ function PaletteDialog() {
     <dialog
       ref={dialog}
       className="command-palette"
-      aria-label="Command palette"
+      aria-label={t("command_palette_0347f7")}
       onCancel={(event) => {
         event.preventDefault();
         close();
@@ -186,16 +188,14 @@ function PaletteDialog() {
       <header>
         <strong>
           {layout.scope === "all"
-            ? "Commands, files, symbols, agents & checkpoints"
-            : `Search ${layout.scope}s`}
+            ? t("commands_files_symbols_agents_checkpoints_d12d14")
+            : t("search_0_s_631d1a", [layout.scope])}
         </strong>
-        <button onClick={close} aria-label="Close command palette">
-          Esc
-        </button>
+        <button onClick={close} aria-label={t("close_command_palette_5d3b18")}>
+          {t("esc_a75126")}</button>
       </header>
       <label className="sr-only" htmlFor="palette-query">
-        Palette search
-      </label>
+        {t("palette_search_cbded1")}</label>
       <input
         id="palette-query"
         autoFocus
@@ -208,8 +208,8 @@ function PaletteDialog() {
         }
         placeholder={
           layout.scope === "file"
-            ? "Search workspace files…"
-            : "Type a command or search…"
+            ? t("search_workspace_files_cefcc3")
+            : t("type_a_command_or_search_ff478e")
         }
         value={query}
         maxLength={100}
@@ -235,7 +235,7 @@ function PaletteDialog() {
         className="palette-results"
         id="palette-results"
         role="listbox"
-        aria-label="Palette results"
+        aria-label={t("palette_results_517d74")}
       >
         {matches.map((entry, at) => (
           <div
@@ -258,10 +258,10 @@ function PaletteDialog() {
       {search.error && <p role="alert">{search.error.message}</p>}
       {!matches.length && (
         <p role="status">
-          {search.isFetching ? "Searching workspace…" : "No matches"}
+          {search.isFetching ? t("searching_workspace_eecdf8") : t("no_matches_2df01a")}
         </p>
       )}
-      <footer>↑↓ Navigate · Enter Run · Esc Dismiss</footer>
+      <footer>{t("_navigate_enter_run_esc_dismiss_1c3f4c")}</footer>
     </dialog>
   );
 }

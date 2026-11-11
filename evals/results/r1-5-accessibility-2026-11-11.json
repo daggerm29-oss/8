@@ -1,0 +1,117 @@
+{
+  "scans": [
+    {
+      "panel": "explorer",
+      "theme": "default",
+      "violations": []
+    },
+    {
+      "panel": "agent",
+      "theme": "default",
+      "violations": []
+    },
+    {
+      "panel": "terminal",
+      "theme": "default",
+      "violations": []
+    },
+    {
+      "panel": "preview",
+      "theme": "default",
+      "violations": []
+    },
+    {
+      "panel": "problems",
+      "theme": "default",
+      "violations": []
+    },
+    {
+      "panel": "monitor",
+      "theme": "default",
+      "violations": []
+    },
+    {
+      "panel": "scm",
+      "theme": "default",
+      "violations": []
+    },
+    {
+      "panel": "mcp",
+      "theme": "default",
+      "violations": []
+    },
+    {
+      "panel": "settings",
+      "theme": "default",
+      "violations": []
+    },
+    {
+      "panel": "editor",
+      "theme": "default",
+      "violations": []
+    },
+    {
+      "panel": "palette",
+      "theme": "default",
+      "violations": []
+    },
+    {
+      "panel": "explorer",
+      "theme": "high",
+      "violations": []
+    },
+    {
+      "panel": "agent",
+      "theme": "high",
+      "violations": []
+    },
+    {
+      "panel": "terminal",
+      "theme": "high",
+      "violations": []
+    },
+    {
+      "panel": "preview",
+      "theme": "high",
+      "violations": []
+    },
+    {
+      "panel": "problems",
+      "theme": "high",
+      "violations": []
+    },
+    {
+      "panel": "monitor",
+      "theme": "high",
+      "violations": []
+    },
+    {
+      "panel": "scm",
+      "theme": "high",
+      "violations": []
+    },
+    {
+      "panel": "mcp",
+      "theme": "high",
+      "violations": []
+    },
+    {
+      "panel": "settings",
+      "theme": "high",
+      "violations": []
+    },
+    {
+      "panel": "editor",
+      "theme": "high",
+      "violations": []
+    },
+    {
+      "panel": "palette",
+      "theme": "high",
+      "violations": []
+    }
+  ],
+  "errors": [],
+  "keyboard": "All 10 panels, editor save, palette open/navigate/dismiss; default and high contrast",
+  "packaged": true
+}

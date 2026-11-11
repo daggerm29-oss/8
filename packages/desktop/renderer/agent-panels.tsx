@@ -1,3 +1,4 @@
+import { t, formatMoney } from "./i18n";
 import { useState } from "react";
 import { ArrowUp, Bot, Check, X } from "lucide-react";
 import { rpc, useRpc, queryClient } from "./rpc";
@@ -53,24 +54,21 @@ export function AgentPanel() {
     }
   };
   return (
-    <section className="agent-panel" aria-label="Agent panel">
+    <section className="agent-panel" aria-label={t("agent_panel_1cd35a")}>
       <div className="panel-heading">
-        <span>Agent</span>
-        <span className="subtle">Grounded single agent</span>
+        <span>{t("agent_11b39c")}</span>
+        <span className="subtle">{t("grounded_single_agent_c24c77")}</span>
       </div>
-      <div className="conversation" aria-label="Agent conversation">
+      <div className="conversation" aria-label={t("agent_conversation_d4bf6d")}>
         {!selected && (
           <div className="agent-empty">
             <Bot size={24} />
-            <h2>What are we building?</h2>
+            <h2>{t("what_are_we_building_707442")}</h2>
             <p>
-              Plan, act, and verify with your code and running environment in
-              context.
-            </p>
+              {t("plan_act_and_verify_with_your_code_and_runnin_2d276e")}</p>
             <div className="agent-note">
               <Check size={13} />
-              Engine policies guard every action
-            </div>
+              {t("engine_policies_guard_every_action_c4f95c")}</div>
           </div>
         )}
         {transcript.data
@@ -90,16 +88,14 @@ export function AgentPanel() {
           ?.filter((approval) => approval.status === "pending")
           .map((approval) => (
             <article key={approval.id} className="approval">
-              <strong>Approve {approval.tool}?</strong>
+              <strong>{t("approve_cb4b25")}{approval.tool}{t("_8a8de8")}</strong>
               <pre>{JSON.stringify(approval.args, null, 2)}</pre>
               <button onClick={() => void approve(approval.id, true)}>
                 <Check size={14} />
-                Approve
-              </button>
+                {t("approve_cb4b25")}</button>
               <button onClick={() => void approve(approval.id, false)}>
                 <X size={14} />
-                Deny
-              </button>
+                {t("deny_5982f6")}</button>
             </article>
           ))}
       </div>
@@ -111,11 +107,10 @@ export function AgentPanel() {
         }}
       >
         <label className="sr-only" htmlFor="agent-goal">
-          Task goal
-        </label>
+          {t("task_goal_9cf5b7")}</label>
         <textarea
           id="agent-goal"
-          placeholder="Describe a task for Helix…"
+          placeholder={t("describe_a_task_for_helix_289b5f")}
           value={goal}
           onChange={(event) => setGoal(event.target.value)}
           onKeyDown={(event) => {
@@ -128,17 +123,17 @@ export function AgentPanel() {
         />
         <div className="composer-actions">
           <select
-            aria-label="Agent policy"
+            aria-label={t("agent_policy_703d88")}
             value={mode}
             onChange={(event) => setMode(event.target.value)}
           >
-            <option value="interactive">Interactive</option>
-            <option value="plan">Plan mode</option>
-            <option value="headless">Headless</option>
+            <option value="interactive">{t("interactive_39a4a7")}</option>
+            <option value="plan">{t("plan_mode_3ca7d8")}</option>
+            <option value="headless">{t("headless_af9bfb")}</option>
           </select>
           <button
             className="primary"
-            aria-label="Start task"
+            aria-label={t("start_task_643f02")}
             disabled={!workspace || !goal.trim() || busy}
           >
             <ArrowUp size={16} />
@@ -147,8 +142,7 @@ export function AgentPanel() {
         {error && <p role="alert">{error}</p>}
       </form>
       <p className="hint">
-        Uses your configured Engine provider and role bindings.
-      </p>
+        {t("uses_your_configured_engine_provider_and_role_72379d")}</p>
     </section>
   );
 }
@@ -169,24 +163,24 @@ export function MonitorPanel() {
     }
   };
   return (
-    <section className="tool-panel" aria-label="Task monitor panel">
+    <section className="tool-panel" aria-label={t("task_monitor_panel_a43f66")}>
       <div className="toolbar">
-        <h2>Task monitor</h2>
-        <span>{tasks.length} tasks</span>
-        <button onClick={() => void monitor.refetch()}>Refresh tasks</button>
+        <h2>{t("task_monitor_ac382a")}</h2>
+        <span>{tasks.length} {t("_tasks_21f860")}</span>
+        <button onClick={() => void monitor.refetch()}>{t("refresh_tasks_2a1149")}</button>
       </div>
       {error && <p role="alert">{error}</p>}
       {tasks.length ? (
         <table>
           <thead>
             <tr>
-              <th>Task</th>
-              <th>Status</th>
-              <th>Steps</th>
-              <th>Tokens in / out</th>
-              <th>Cost</th>
-              <th>Checkpoints</th>
-              <th>Actions</th>
+              <th>{t("task_4bc74b")}</th>
+              <th>{t("status_920e41")}</th>
+              <th>{t("steps_1de3df")}</th>
+              <th>{t("tokens_in_out_56826c")}</th>
+              <th>{t("cost_204a5e")}</th>
+              <th>{t("checkpoints_d76c24")}</th>
+              <th>{t("actions_ff8059")}</th>
             </tr>
           </thead>
           <tbody>
@@ -202,13 +196,13 @@ export function MonitorPanel() {
                 <td>{task.status}</td>
                 <td>{task.stepCount}</td>
                 <td>
-                  {task.ledger?.inputTokens ?? 0} /{" "}
+                  {task.ledger?.inputTokens ?? 0} {t("_3be065")}{" "}
                   {task.ledger?.outputTokens ?? 0}
                 </td>
                 <td>
                   {task.ledger?.costUsd == null
-                    ? "Unknown"
-                    : `$${task.ledger.costUsd.toFixed(4)}`}
+                    ? t("unknown_b764cd")
+                    : formatMoney(task.ledger.costUsd)}
                 </td>
                 <td>{task.checkpointCount ?? 0}</td>
                 <td>
@@ -218,15 +212,14 @@ export function MonitorPanel() {
                     )}
                     onClick={() => void cancel(task.id)}
                   >
-                    Cancel task
-                  </button>
+                    {t("cancel_task_0f0c65")}</button>
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
       ) : (
-        <div className="empty-state">No tasks in this workspace.</div>
+        <div className="empty-state">{t("no_tasks_in_this_workspace_8627d9")}</div>
       )}
       {selected && <ActivityTree key={selected} task={selected} />}
       <CheckpointInspector />

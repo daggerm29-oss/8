@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
@@ -10,7 +11,7 @@ export function TerminalPanel() {
   const host = useRef<HTMLDivElement>(null);
   const terminal = useRef<Terminal | null>(null);
   const pty = useRef<string | null>(null);
-  const [status, setStatus] = useState("No shell open");
+  const [status, setStatus] = useState<string>(t("no_shell_open_121854"));
   const [busy, setBusy] = useState(false);
   const [command, setCommand] = useState("");
   const [output, setOutput] = useState("");
@@ -22,10 +23,18 @@ export function TerminalPanel() {
       cursorBlink: true,
       screenReaderMode: true,
     });
+    term.attachCustomKeyEventHandler((event) => event.key !== 'Tab' && event.key !== 'F6');
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host.current);
     terminal.current = term;
+    const updateTheme = () => {
+      const style = getComputedStyle(document.documentElement);
+      term.options.theme = { background: style.getPropertyValue('--bg').trim(), foreground: style.getPropertyValue('--fg').trim() };
+    };
+    updateTheme();
+    const contrast = new MutationObserver(updateTheme);
+    contrast.observe(document.documentElement, { attributes: true, attributeFilter: ['data-contrast'] });
     const observer = new ResizeObserver(() => {
       if (host.current?.clientWidth) fit.fit();
     });
@@ -41,7 +50,7 @@ export function TerminalPanel() {
       if (method === "pty.output") term.write(String(params.data));
       if (method === "pty.exit") {
         pty.current = null;
-        setStatus(`Shell exited (${params.exitCode})`);
+        setStatus(t("shell_exited_0_f77cee", [params.exitCode]));
       }
     });
     return () => {
@@ -51,6 +60,7 @@ export function TerminalPanel() {
       unsubscribe();
       input.dispose();
       observer.disconnect();
+      contrast.disconnect();
       term.dispose();
       terminal.current = null;
     };
@@ -67,7 +77,7 @@ export function TerminalPanel() {
         rows: terminal.current?.rows,
       });
       pty.current = result.ptyId;
-      setStatus(`Sandbox shell · ${result.sandbox.isolation}`);
+      setStatus(t("sandbox_shell_0_010bb6", [result.sandbox.isolation]));
       terminal.current?.focus();
     } catch (error) {
       setStatus((error as Error).message);
@@ -89,7 +99,7 @@ export function TerminalPanel() {
         "terminal.run",
         { workspacePath: workspace, command, runId },
       );
-      setStatus(`Command exited ${result.exitCode}`);
+      setStatus(t("command_exited_0_8795b2", [result.exitCode]));
       void queryClient.invalidateQueries({ queryKey: ["problems.list"] });
     } catch (error) {
       setStatus((error as Error).message);
@@ -99,24 +109,22 @@ export function TerminalPanel() {
     }
   };
   return (
-    <section className="tool-panel" aria-label="Terminal panel">
+    <section className="tool-panel" aria-label={t("terminal_panel_bcdd89")}>
       <div className="toolbar">
-        <h2>Terminal</h2>
+        <h2>{t("terminal_e0926f")}</h2>
         <span role="status">{status}</span>
         <button
           disabled={!workspace || busy || !!pty.current}
           onClick={() => void open()}
         >
-          Open shell
-        </button>
+          {t("open_shell_2b9978")}</button>
         <button
           disabled={!pty.current}
           onClick={() => {
             if (pty.current) void rpc.call("pty.kill", { ptyId: pty.current });
           }}
         >
-          Close shell
-        </button>
+          {t("close_shell_478208")}</button>
       </div>
       <div ref={host} className="xterm-host" data-testid="terminal-host" />
       <form
@@ -126,13 +134,13 @@ export function TerminalPanel() {
           void run();
         }}
       >
-        <label htmlFor="command">$</label>
+        <label htmlFor="command">{t("_09fc96")}</label>
         <input
           id="command"
-          aria-label="Command"
+          aria-label={t("command_713166")}
           value={command}
           onChange={(event) => setCommand(event.target.value)}
-          placeholder="Run a sandboxed command"
+          placeholder={t("run_a_sandboxed_command_76b861")}
           onKeyDown={(event) => {
             if (
               event.key === "Enter" &&
@@ -142,16 +150,13 @@ export function TerminalPanel() {
           }}
         />
         <button disabled={!workspace || busy || !command.trim()}>
-          Run command
-        </button>
+          {t("run_command_940a94")}</button>
       </form>
-      <pre className="command-output" aria-label="Command output">
+      <pre className="command-output" role="region" tabIndex={0} aria-label={t("command_output_ff7a52")}>
         {output}
       </pre>
       <p className="hint">
-        User PTY is separate from agent execution. All commands run inside the
-        workspace sandbox.
-      </p>
+        {t("user_pty_is_separate_from_agent_execution_all_2e9332")}</p>
     </section>
   );
 }

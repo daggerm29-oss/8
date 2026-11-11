@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import { useState } from "react";
 import { rpc, queryClient, useRpc } from "./rpc";
 import { useWorkbench, type Diagnostic } from "./state";
@@ -6,11 +7,11 @@ import { openFile } from "./explorer";
 export function PreviewPanel() {
   const workspace = useWorkbench((state) => state.workspace);
   const [url, setUrl] = useState("");
-  const [message, setMessage] = useState("No development server running");
+  const [message, setMessage] = useState<string>(t("no_development_server_running_c05797"));
   const [busy, setBusy] = useState(false);
   const start = async () => {
     setBusy(true);
-    setMessage("Starting sandboxed development server…");
+    setMessage(t("starting_sandboxed_development_server_ba8f59"));
     try {
       const result = await rpc.call<{ url: string }>("preview.start", {
         workspacePath: workspace,
@@ -26,13 +27,12 @@ export function PreviewPanel() {
   return (
     <section
       className="tool-panel preview-panel"
-      aria-label="Application preview"
+      aria-label={t("application_preview_05908c")}
     >
       <div className="toolbar">
-        <h2>Preview</h2>
+        <h2>{t("preview_324b13")}</h2>
         <button disabled={!workspace || busy} onClick={() => void start()}>
-          Start preview
-        </button>
+          {t("start_preview_a27536")}</button>
         {url && (
           <button
             onClick={() => {
@@ -42,8 +42,7 @@ export function PreviewPanel() {
               if (frame) frame.src = url;
             }}
           >
-            Reload preview
-          </button>
+            {t("reload_preview_677c4e")}</button>
         )}
       </div>
       <p className="hint" role="status">
@@ -52,14 +51,13 @@ export function PreviewPanel() {
       {url ? (
         <iframe
           id="application-preview"
-          title="Application preview"
+          title={t("application_preview_05908c")}
           src={url}
           sandbox="allow-scripts allow-forms allow-same-origin"
         />
       ) : (
         <div className="empty-state">
-          Start the workspace application in its sandbox.
-        </div>
+          {t("start_the_workspace_application_in_its_sandbo_80a8c4")}</div>
       )}
     </section>
   );
@@ -91,7 +89,7 @@ export function ScmPanel() {
         workspacePath: workspace,
         message,
       });
-      setResult(response.sha ? `Committed ${response.sha}` : "Changes staged");
+      setResult(response.sha ? t("committed_0_5d7d69", [response.sha]) : t("changes_staged_5759a5"));
       void queryClient.invalidateQueries({ queryKey: ["git.status"] });
       void queryClient.invalidateQueries({ queryKey: ["git.diff"] });
     } catch (error) {
@@ -101,16 +99,15 @@ export function ScmPanel() {
     }
   };
   return (
-    <section className="tool-panel" aria-label="Source control panel">
+    <section className="tool-panel" aria-label={t("source_control_panel_990ac7")}>
       <div className="toolbar">
-        <h2>Source control</h2>
-        <span>{status.data?.branch || "No repository"}</span>
+        <h2>{t("source_control_9bd7ea")}</h2>
+        <span>{status.data?.branch || t("no_repository_446597")}</span>
         <button
           disabled={busy || !status.data?.isRepo}
           onClick={() => void act("git.stageAll")}
         >
-          Stage all
-        </button>
+          {t("stage_all_6840c6")}</button>
         <button
           onClick={() => {
             void status.refetch();
@@ -118,8 +115,7 @@ export function ScmPanel() {
           }}
           disabled={!workspace}
         >
-          Refresh source control
-        </button>
+          {t("refresh_source_control_9b280e")}</button>
       </div>
       {status.error && <p role="alert">{status.error.message}</p>}
       <ul className="changed-files">
@@ -143,17 +139,16 @@ export function ScmPanel() {
         }}
       >
         <input
-          aria-label="Commit message"
-          placeholder="Describe the change"
+          aria-label={t("commit_message_26306d")}
+          placeholder={t("describe_the_change_beaee3")}
           value={message}
           onChange={(event) => setMessage(event.target.value)}
         />
         <button disabled={!status.data?.isRepo || !message.trim() || busy}>
-          Commit staged
-        </button>
+          {t("commit_staged_1fa9cc")}</button>
       </form>
       <p role="status">{result}</p>
-      <pre className="diff-output" aria-label="Source control diff">
+      <pre className="diff-output" role="region" tabIndex={0} aria-label={t("source_control_diff_eecf19")}>
         {diff.data?.staged}
         {diff.data?.unstaged}
       </pre>
@@ -168,13 +163,12 @@ export function ProblemsPanel() {
     !!workspace,
   );
   return (
-    <section className="tool-panel" aria-label="Problems panel">
+    <section className="tool-panel" aria-label={t("problems_panel_061eeb")}>
       <div className="toolbar">
-        <h2>Problems</h2>
-        <span>{problems.data?.length ?? 0} diagnostics</span>
+        <h2>{t("problems_a7b182")}</h2>
+        <span>{problems.data?.length ?? 0} {t("_diagnostics_e0336f")}</span>
         <button disabled={!workspace} onClick={() => void problems.refetch()}>
-          Refresh problems
-        </button>
+          {t("refresh_problems_cda754")}</button>
       </div>
       {problems.error && <p role="alert">{problems.error.message}</p>}
       {problems.data?.length ? (
@@ -188,7 +182,7 @@ export function ProblemsPanel() {
                   problem.file && void openFile(problem.file, problem.line)
                 }
               >
-                {problem.file || problem.source}:{problem.line || 1}
+                {problem.file || problem.source}{t("_e7ac07")}{problem.line || 1}
               </button>
               <span>
                 {problem.code} {problem.message}
@@ -198,9 +192,7 @@ export function ProblemsPanel() {
         </ul>
       ) : (
         <div className="empty-state">
-          No reported problems. Run verification or a command to collect
-          diagnostics.
-        </div>
+          {t("no_reported_problems_run_verification_or_a_co_623cfa")}</div>
       )}
     </section>
   );

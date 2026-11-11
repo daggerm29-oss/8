@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import { useEffect, useRef, useState } from "react";
 import * as monaco from "monaco-editor/editor/editor.api.js";
 import "monaco-editor/languages/definitions/typescript/register.js";
@@ -90,9 +91,10 @@ export function Editor() {
         `helix://workspace/${encodeURIComponent(workspace)}/${document.path}`,
       ),
     );
+    monaco.editor.defineTheme('helix-dark', { base: 'vs-dark', inherit: true, rules: [{ token: 'comment', foreground: '8CB879' }], colors: {} });
     const instance = monaco.editor.create(host.current, {
       model,
-      theme: "vs-dark",
+      theme: globalThis.document.documentElement.dataset.contrast === 'high' ? 'hc-black' : 'helix-dark',
       automaticLayout: true,
       fontSize: 13,
       fontFamily: '"SFMono-Regular", Consolas, "Liberation Mono", monospace',
@@ -100,10 +102,13 @@ export function Editor() {
       padding: { top: 20 },
       readOnly: document.truncated || document.hash === null,
       scrollBeyondLastLine: false,
-      ariaLabel: "Code editor",
+      ariaLabel: t("code_editor_571137"),
       accessibilitySupport: "on",
+      tabFocusMode: true,
     });
     editor.current = instance;
+    const contrast = new MutationObserver(() => monaco.editor.setTheme(globalThis.document.documentElement.dataset.contrast === 'high' ? 'hc-black' : 'helix-dark'));
+    contrast.observe(globalThis.document.documentElement, { attributes: true, attributeFilter: ['data-contrast'] });
     const changes = model.onDidChangeContent(() =>
       useWorkbench.getState().edit(model.getValue()),
     );
@@ -115,6 +120,7 @@ export function Editor() {
     return () => {
       delete host.current?.dataset.ready;
       changes.dispose();
+      contrast.disconnect();
       instance.dispose();
       model.dispose();
       editor.current = null;
@@ -125,17 +131,17 @@ export function Editor() {
     editor.current?.setPosition({ lineNumber: line, column: 1 });
   }, [line, document?.path]);
   return (
-    <section className="editor-panel" aria-label="Editor">
+    <section className="editor-panel" aria-label={t("editor_936a16")}>
       <div className="editor-tabs">
         <div className="file-tab">
           <FileCode2 size={14} />
-          {document?.path || "Workbench"}
-          {dirty && <span aria-label="Unsaved changes" className="dirty-dot" />}
+          {document?.path || t("workbench_a4e733")}
+          {dirty && <span aria-label={t("unsaved_changes_a710c2")} className="dirty-dot" />}
         </div>
         <div className="editor-actions">
           <button
-            aria-label="Reload file from disk"
-            title="Reload file from disk"
+            aria-label={t("reload_file_from_disk_afd2c9")}
+            title={t("reload_file_from_disk_afd2c9")}
             disabled={!document || saving}
             onClick={() => {
               if (confirmDiscard() && document) {
@@ -149,33 +155,30 @@ export function Editor() {
           <button
             onClick={() => void save()}
             disabled={!dirty || saving || document?.truncated}
-            aria-label="Save file"
+            aria-label={t("save_file_2a6f7e")}
           >
             <Save size={14} />
-            {saving ? "Saving…" : "Save"}
+            {saving ? t("saving_23e392") : t("save_1509f5")}
           </button>
         </div>
       </div>
       {document?.binary ? (
-        <div className="empty-state">Binary files cannot be edited.</div>
+        <div className="empty-state">{t("binary_files_cannot_be_edited_7045b4")}</div>
       ) : document ? (
         <div ref={host} className="monaco-host" data-testid="monaco-host" />
       ) : (
         <div className="editor-welcome">
-          <div className="welcome-glyph">H</div>
-          <h1>Your workspace, grounded.</h1>
+          <div className="welcome-glyph">{t("h_44bd7a")}</div>
+          <h1>{t("your_workspace_grounded_a71a3e")}</h1>
           <p>
-            Open a file to start editing.
-            <br />
-            Every agent action stays observable.
-          </p>
-          <span>Monaco editor · isolated Engine · sandboxed execution</span>
+            {t("open_a_file_to_start_editing_a5b2a0")}<br />
+            {t("every_agent_action_stays_observable_954049")}</p>
+          <span>{t("monaco_editor_isolated_engine_sandboxed_execu_727446")}</span>
         </div>
       )}
       {document?.truncated && (
         <p role="status">
-          File exceeds the editor size limit; this view is read-only.
-        </p>
+          {t("file_exceeds_the_editor_size_limit_this_view_4d5d51")}</p>
       )}
     </section>
   );

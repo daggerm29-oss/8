@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import { create } from "zustand";
 export type Panel =
   | "agent"
@@ -97,13 +98,13 @@ export const useWorkbench = create<UiState>((set) => ({
         ? { ...state.document, content, hash, size }
         : null,
       dirty: state.draft !== content,
-      notice: "Saved to disk",
+      notice: t("saved_to_disk_101e5e"),
     })),
   message: (notice) => set({ notice }),
 }));
 export function confirmDiscard() {
   return (
     !useWorkbench.getState().dirty ||
-    window.confirm("Discard unsaved file changes?")
+    window.confirm(t("discard_unsaved_file_changes_1f0a34"))
   );
 }

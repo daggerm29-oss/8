@@ -1,3 +1,4 @@
+import { t, dockLabel } from "./i18n";
 import { lazy, Suspense, useEffect, useState } from "react";
 import {
   Actions,
@@ -18,7 +19,7 @@ import { PreviewPanel, ProblemsPanel, ScmPanel } from "./environment-panels";
 import { SettingsPanel, McpPanel } from "./settings";
 import { useWorkbench } from "./state";
 import { useRpc } from "./rpc";
-import { defaultLayout, panelNames, useLayout } from "./layout-state";
+import { defaultLayout, panelNames, profileLabels, useLayout } from "./layout-state";
 import { CommandPalette } from "./palette";
 import "flexlayout-react/style/dark.css";
 import "./layout.css";
@@ -34,11 +35,14 @@ function PanelContent({ node }: { node: TabNode }) {
   return (
     <div
       className="dock-panel"
+      role="region"
+      aria-label={panelNames[id as WorkbenchPanel]}
+      tabIndex={-1}
       data-panel={id}
       data-group={node.getParent()?.getId()}
       data-layout={node.getLayoutId()}
     >
-      <Suspense fallback={<p>Loading panel…</p>}>
+      <Suspense fallback={<p>{t("loading_panel_747d3e")}</p>}>
         {id === "editor" ? (
           <Editor />
         ) : id === "explorer" ? (
@@ -93,11 +97,11 @@ export function DockWorkbench() {
   };
   return (
     <div className="dock-workbench">
-      <div className="layout-toolbar" aria-label="Layout controls">
+      <div className="layout-toolbar" aria-label={t("layout_controls_494f24")}>
         <label>
-          Layout{" "}
+          {t("layout_a51190")}{" "}
           <select
-            aria-label="Task layout profile"
+            aria-label={t("task_layout_profile_5bf135")}
             value={layout.profile}
             disabled={!workspace || layout.saving}
             onChange={(event) =>
@@ -105,7 +109,7 @@ export function DockWorkbench() {
             }
           >
             {WORKBENCH_PROFILES.map((profile) => (
-              <option key={profile}>{profile}</option>
+              <option key={profile} value={profile}>{profileLabels[profile]}</option>
             ))}
           </select>
         </label>
@@ -115,8 +119,7 @@ export function DockWorkbench() {
           }
           onClick={() => void layout.save()}
         >
-          Save layout
-        </button>
+          {t("save_layout_9508b4")}</button>
         <button
           disabled={!workspace}
           onClick={() => {
@@ -126,15 +129,14 @@ export function DockWorkbench() {
             layout.changed();
           }}
         >
-          Reset layout
-        </button>
+          {t("reset_layout_e6d48b")}</button>
         <details className="arrange-menu">
-          <summary>Arrange panels</summary>
+          <summary>{t("arrange_panels_bfb58e")}</summary>
           <div className="arrange-options">
             <label>
-              Panel{" "}
+              {t("panel_d0d911")}{" "}
               <select
-                aria-label="Panel to arrange"
+                aria-label={t("panel_to_arrange_886fe2")}
                 value={arrange}
                 onChange={(event) =>
                   setArrange(event.target.value as WorkbenchPanel)
@@ -147,19 +149,17 @@ export function DockWorkbench() {
                 ))}
               </select>
             </label>
-            <button onClick={() => act()}>Undock panel</button>
-            <button onClick={() => act(DockLocation.LEFT)}>Dock left</button>
-            <button onClick={() => act(DockLocation.RIGHT)}>Dock right</button>
-            <button onClick={() => act(DockLocation.TOP)}>Dock above</button>
-            <button onClick={() => act(DockLocation.BOTTOM)}>Dock below</button>
+            <button onClick={() => act()}>{t("undock_panel_2600e8")}</button>
+            <button onClick={() => act(DockLocation.LEFT)}>{t("dock_left_489100")}</button>
+            <button onClick={() => act(DockLocation.RIGHT)}>{t("dock_right_547472")}</button>
+            <button onClick={() => act(DockLocation.TOP)}>{t("dock_above_d74b4a")}</button>
+            <button onClick={() => act(DockLocation.BOTTOM)}>{t("dock_below_de948f")}</button>
             <button onClick={() => act(DockLocation.CENTER)}>
-              Group with editor
-            </button>
+              {t("group_with_editor_d924ae")}</button>
           </div>
         </details>
         <button onClick={() => setKeys(!keys)} aria-expanded={keys}>
-          Key bindings
-        </button>
+          {t("key_bindings_d55242")}</button>
         <button
           className="palette-launcher"
           aria-keyshortcuts={layout.keymap.palette.replace(
@@ -168,17 +168,17 @@ export function DockWorkbench() {
           )}
           onClick={() => layout.openPalette()}
         >
-          Command palette <kbd>{layout.keymap.palette}</kbd>
+          {t("command_palette_c5b15d")}<kbd>{layout.keymap.palette}</kbd>
         </button>
       </div>
       {keys && (
-        <div className="keymap-controls" aria-label="Key bindings">
+        <div className="keymap-controls" aria-label={t("key_bindings_a55c1a")}>
           {(Object.keys(layout.keymap) as (keyof typeof layout.keymap)[]).map(
             (key) => (
               <label key={key}>
                 {key}
                 <input
-                  aria-label={`${key} shortcut`}
+                  aria-label={t("_0_shortcut_1b91c4", [key])}
                   value={layout.keymap[key]}
                   onChange={(event) =>
                     useLayout.setState({
@@ -190,22 +190,22 @@ export function DockWorkbench() {
             ),
           )}
           <span>
-            Use Mod/Ctrl/Meta/Alt/Shift + key. Save layout to persist.
-          </span>
+            {t("use_mod_ctrl_meta_alt_shift_key_save_layout_t_65ceb1")}</span>
         </div>
       )}
       {settings.error ? (
         <p role="alert">{settings.error.message}</p>
       ) : workspace && layout.workspace !== workspace ? (
-        <p role="status">Loading workspace layout…</p>
+        <p role="status">{t("loading_workspace_layout_80fc47")}</p>
       ) : (
         <main
           className="dock-area"
-          aria-label="Dockable workbench"
+          aria-label={t("dockable_workbench_34591b")}
           data-profile={layout.profile}
         >
           <Layout
             model={layout.model}
+            i18nTranslator={dockLabel}
             factory={(node) => <PanelContent node={node} />}
             supportsPopout={false}
             constrainFloatPanels
