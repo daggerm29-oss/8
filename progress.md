@@ -15,16 +15,16 @@
 
 > These are **checklist completion** numbers (ticked items with recorded evidence ÷ all items). They are not a measure of product quality or release readiness; human launch gates in `docs/roadmap.md` are not counted.
 
-**Overall checklist completion: 37%** (73/196 roadmap items)  
+**Overall checklist completion: 38%** (74/196 roadmap items)  
 **Current milestone:** M1 MVP, grounded single agent  
-**Next task:** R1.4 Electron hardening and crash isolation (SEC-13, NFR-4, PERF-1) [§5.1]
+**Next task:** R1.5 Accessibility and i18n (NFR-9, NFR-12) [§5]
 
 **Execution-order exception:** user-authorized M1 work; M0 remains unfinished (R0.8 CI pipeline (plan §15.1, §15.7) [§35.6]). No acceptance criterion or gate is waived.
 
 | Milestone | Progress | Items | Status |
 | --- | --- | --- | --- |
 | M0 Foundations | ██████████ 96% | 22/23 | Unfinished (execution postponed) |
-| M1 MVP, grounded single agent | ████░░░░░░ 37% | 29/79 | In progress |
+| M1 MVP, grounded single agent | ████░░░░░░ 38% | 30/79 | In progress |
 | M2 Precision and efficiency | █████░░░░░ 45% | 22/49 | Partly built early |
 | M3 Parallel and background | ░░░░░░░░░░ 0% | 0/20 | Not started |
 | M4 Team and ecosystem | ░░░░░░░░░░ 0% | 0/16 | Not started |
@@ -36,8 +36,9 @@
 
 - PR #22 merged at ad9dff8061cd1ceae796cbd7c34c06df22843e3b (starting main verified). Continue the existing M1 branch helix/session-2026-11-10-m1-workbench and PR #23: https://github.com/daggerm29-oss/8/pull/23. PR #19 remains untouched.
 - R1.1 COMPLETE (7a31567) and R1.2 COMPLETE (380e22f): packaged Electron workbench, FlexLayout docking/floating/saved layouts, remapped shortcuts and fuzzy command palette verified.
-- R1.3 COMPLETE at 6cfeda8: exact acceptance `cd packages/desktop && npx playwright test e2e/monitor.spec.ts` → 1/1 passed (36.5 s overall, 6.7 s test), p95 engine→panel latency = 34 ms ≤ 50 ms across 128 samples; focused Engine monitor tests 5/5, desktop unit test 1/1, Engine/desktop TypeScript clean. Live `Task → Agent → Step → ToolCall` + nested subagent tree, budgets, write leases, checkpoints, step prompt context items, pause/resume/cancel, batch approve/deny, rollback, fork from checkpoint and change model all verified. Raw report: `evals/results/r1-3-packaged-monitor-2026-11-11.json`.
-- Next R1.4: Electron hardening and crash isolation (SEC-13, NFR-4, PERF-1) [§5.1] — strict CSP (`no frame-ancestors *`, no `unsafe-inline` scripts), validated IPC allowlist with real channels, sandboxed renderer, Engine survives UI crash and reattaches, packaged app launched in CI (`test/hardening.test.mjs` + `e2e/crash.spec.ts`).
+- R1.3 COMPLETE at 6cfeda8 (packaged monitor 1/1, p95 34 ms; `evals/results/r1-3-packaged-monitor-2026-11-11.json`).
+- R1.4 COMPLETE at c0a4942 + 2cb5096: `cd packages/desktop && node --test test/hardening.test.mjs && npx playwright test e2e/crash.spec.ts` → 4/4 + 1/1 (OS-sandboxed packaged Electron, strict script CSP, MessagePort IPC allowlist, renderer crash → same Engine + task alive → window reattached; Engine crash → supervised restart → task resumed from checkpoint; dead-owner lease recovery bug fixed). NFR-4 → Done; SEC-13 Partial (CI run via R0.8). Evidence `evals/results/r1-4-packaged-hardening-2026-11-11.json`.
+- Next R1.5: Accessibility and i18n (NFR-9, NFR-12) [§5] — `e2e/a11y.spec.ts` (axe-core WCAG 2.2 AA 0 violations every panel, keyboard reachability, high-contrast theme) + `scripts/check-i18n.mjs` (0 hard-coded UI strings outside catalog).
 - R0.8 remains postponed/open with acceptance unchanged, M0 unfinished. Remaining M1 tasks and G1.1–G1.6/external gates are still required; do not start M2+.
 
 ## Ideas parking lot (one line each, max 15 — do not implement)
