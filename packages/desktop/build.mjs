@@ -71,7 +71,7 @@ const node = join(
 copyFileSync(process.execPath, node);
 chmodSync(node, 0o755);
 mkdirSync(join(dist, "app"), { recursive: true });
-for (const name of ["main.cjs", "preload.cjs"])
+for (const name of ["main.cjs", "preload.cjs", "security.cjs"])
   cpSync(join(root, name), join(dist, "app", name));
 writeFileSync(
   join(dist, "app/package.json"),

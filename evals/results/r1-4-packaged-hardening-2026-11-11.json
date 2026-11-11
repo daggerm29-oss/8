@@ -1,0 +1,52 @@
+{
+  "task": "R1.4",
+  "packagedElectron": true,
+  "chromiumOsSandbox": "enabled (launched without --no-sandbox)",
+  "webPreferences": {
+    "sandbox": true,
+    "nodeIntegration": false,
+    "contextIsolation": true,
+    "webviewTag": false,
+    "nodeIntegrationInSubFrames": false
+  },
+  "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; worker-src 'self'; font-src 'self' data:; img-src 'self' data:; frame-src http://127.0.0.1:* http://localhost:*; frame-ancestors 'none'; base-uri 'none'; object-src 'none'; form-action 'none'",
+  "inlineScript": {
+    "ran": false,
+    "violated": "script-src-elem"
+  },
+  "ipc": {
+    "unlisted": "IPC channel not allowed: fs.readFile",
+    "badPayload": "invalid shell.openExternal payload: invalid url scheme",
+    "unlistedAfterReopen": "IPC channel not allowed: engine.kill",
+    "allowlist": [
+      "app.info",
+      "engine.connection",
+      "engine.status",
+      "shell.openExternal"
+    ]
+  },
+  "crash": {
+    "rendererPid": 5056,
+    "enginePid": 5029,
+    "engineAliveAfterKill": true,
+    "taskStatusDuringCrash": "running",
+    "reopenedWindowReattachedMs": 820,
+    "finalTaskStatus": "done",
+    "providerRequests": 3,
+    "rendererCrashes": 1
+  },
+  "coldStartToConnectedMs": {
+    "value": 2519,
+    "note": "local packaged Electron under Xvfb in the build VM; not PERF-1 reference-hardware certification"
+  },
+  "events": [
+    "workbench.connected",
+    "ipc.rejected",
+    "ipc.rejected",
+    "renderer.gone",
+    "window.reopened",
+    "workbench.connected",
+    "ipc.rejected"
+  ],
+  "pageErrors": []
+}

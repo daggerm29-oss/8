@@ -22,7 +22,7 @@ await build({
     electronVersion: require("electron/package.json").version,
     electronDist: join(electronDir, "dist"),
     directories: { app: join(root, "dist/app"), output: join(root, "release") },
-    files: ["main.cjs", "preload.cjs", "package.json"],
+    files: ["main.cjs", "preload.cjs", "security.cjs", "package.json"],
     npmRebuild: false,
     extraResources: ["engine", "renderer", "runtime"].map((name) => ({
       from: join(root, "dist", name),

@@ -601,8 +601,8 @@ export class Engine {
       res.writeHead(200, {
         'content-type': file.type, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer',
         'content-security-policy': path.startsWith('/desktop/')
-          ? "default-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; worker-src 'self'; font-src 'self' data:; img-src 'self' data:; frame-src http://127.0.0.1:* http://localhost:*; frame-ancestors 'self'; base-uri 'none'; object-src 'none'"
-          : "default-src 'self'; connect-src 'self' ws: wss:; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; frame-src http://127.0.0.1:* http://localhost:*; frame-ancestors *",
+          ? "default-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; worker-src 'self'; font-src 'self' data:; img-src 'self' data:; frame-src http://127.0.0.1:* http://localhost:*; frame-ancestors 'self'; base-uri 'none'; object-src 'none'; form-action 'none'"
+          : "default-src 'self'; connect-src 'self' ws: wss:; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; frame-src http://127.0.0.1:* http://localhost:*; frame-ancestors 'self'; base-uri 'none'; object-src 'none'; form-action 'none'",
       }).end(readFileSync(file.name));
     });
     this.wss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024 });

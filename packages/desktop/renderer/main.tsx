@@ -152,6 +152,19 @@ function Connection() {
     new URLSearchParams(location.hash.slice(1)).get("token") || "",
   );
   const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (token || !window.helixDesktop) return;
+    let current = true;
+    window.helixDesktop
+      .engineConnection()
+      .then((connection) => {
+        if (current && connection.token) setToken(connection.token);
+      })
+      .catch((error: Error) => current && setError(error.message));
+    return () => {
+      current = false;
+    };
+  }, []);
   const connect = async (value: string) => {
     setBusy(true);
     setError("");
