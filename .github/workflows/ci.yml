@@ -73,6 +73,8 @@ jobs:
         run: |
           node --test scripts/check-scope.test.mjs
           node scripts/check-scope.mjs
+          node --test scripts/next-task.test.mjs
+          node scripts/next-task.mjs --stdout > /dev/null
       - name: Retain evaluation evidence
         if: always()
         uses: actions/upload-artifact@v4

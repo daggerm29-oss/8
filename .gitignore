@@ -26,6 +26,9 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
+# Generated per-session task packet (scripts/next-task.mjs)
+/CURRENT_TASK.md
+
 # Desktop build and acceptance artifacts
 /packages/desktop/dist/
 /packages/desktop/release/
