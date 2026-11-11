@@ -18,7 +18,7 @@ Each session runs on limited credits (about $5) and may stop at any moment. Spen
 ## 1. What to read (in this order, nothing else up front)
 
 1. This file.
-2. Run `node scripts/next-task.mjs` and read the generated `CURRENT_TASK.md` (gitignored, ~4k tokens). It copies verbatim: the progress.md resume notes, the next 3 open tasks of the current milestone with their Accept lines, the `plan.md` rows for every requirement ID they cite, their requirement status rows, the `architecture.md` sections in their brackets, the milestone's open exit gates, and any Stuck/Blocked tasks.
+2. Run `gh auth status >/dev/null 2>&1; node scripts/next-task.mjs` and read the generated `CURRENT_TASK.md` (gitignored, ~4k tokens). It copies verbatim: the latest branch CI result with filtered failure lines, the progress.md resume notes, the next 3 open tasks of the current milestone with their Accept lines, the `plan.md` rows for every requirement ID they cite, their requirement status rows, the `architecture.md` sections in their brackets, the milestone's open exit gates, and any Stuck/Blocked tasks.
 3. Only if the packet says a section was truncated or not found, or you need a detail it lacks, grep that one item in the source file and read just those lines.
 
 Do not read `plan.md`, `architecture.md`, `docs/roadmap.md` or `progress.md` in full — the packet replaces that reading, and the source files stay authoritative (§0). Do not read `docs/history/`. Read `docs/decisions.md` only for the component you are changing (grep it).

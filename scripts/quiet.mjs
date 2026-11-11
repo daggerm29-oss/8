@@ -44,7 +44,7 @@ child.on('close', (code, signal) => {
     const clip = (l) => (l.length > 300 ? `${l.slice(0, 300)} …[+${l.length - 300} chars]` : l)
     const lines = readFileSync(logPath, 'utf8').split('\n').map(clip)
     const failurePattern = /(^|\s)(not ok|fail(ed|ure)?|error|✖|✗|panic|timed? ?out)\b/i
-    const failures = [...new Set(lines.filter((l) => failurePattern.test(l) && !/\b0 (fail|error)|\b(fail(ed|ures?)?|errors?)\s*[:=]?\s*0\b/i.test(l)))].slice(0, 25)
+    const failures = [...new Set(lines.filter((l) => failurePattern.test(l) && !/^\s*(✔|ok \d)/.test(l) && !/\b0 (fail|error)|\b(fail(ed|ures?)?|errors?)\s*[:=]?\s*0\b/i.test(l)))].slice(0, 25)
     const tail = lines.slice(-Number(values.lines))
     const seconds = ((Date.now() - started) / 1000).toFixed(1)
     console.log(`[quiet] exit ${code ?? signal} in ${seconds}s — ${lines.length} lines — full log: ${logPath}`)

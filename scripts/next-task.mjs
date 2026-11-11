@@ -109,12 +109,34 @@ export function architectureSection(architecture, ref) {
   return text
 }
 
+export function expandIdRange(prefix, from, to) {
+  const start = Number(from)
+  const end = Number(to)
+  if (!(end >= start) || end - start > 50) return [`${prefix}${from}`]
+  return Array.from({ length: end - start + 1 }, (_, i) => `${prefix}${start + i}`)
+}
+
+export function expandSectionRange(from, to) {
+  const a = from.split('.')
+  const b = to.split('.')
+  if (b.length === 1 && a.length > 1) b.unshift(...a.slice(0, a.length - 1))
+  if (a.length !== b.length || a.slice(0, -1).join('.') !== b.slice(0, -1).join('.')) return [from, to]
+  const base = a.slice(0, -1)
+  return expandIdRange('', a.at(-1), b.at(-1)).map((n) => [...base, n].join('.'))
+}
+
 export function citations(item) {
   const head = item.lines[0]
-  const ids = [...new Set(head.match(requirementPattern) ?? [])]
+  const ids = new Set(head.match(requirementPattern) ?? [])
+  for (const [, prefix, from, to] of head.matchAll(/\b([OX])(\d+)(?:\s*[–-]\s*\1?(\d+))?\b/g)) {
+    for (const id of to ? expandIdRange(prefix, from, to) : [`${prefix}${from}`]) ids.add(id)
+  }
   const bracket = head.match(/\[([^\]]*§[^\]]*)\]/)?.[1] ?? ''
-  const sections = [...new Set(bracket.match(/\d+(?:\.\d+)*/g) ?? [])]
-  return { ids, sections }
+  const sections = new Set()
+  for (const [, from, to] of bracket.matchAll(/(\d+(?:\.\d+)*)(?:\s*[–-]\s*§?(\d+(?:\.\d+)*))?/g)) {
+    for (const ref of to ? expandSectionRange(from, to) : [from]) sections.add(ref)
+  }
+  return { ids: [...ids], sections: [...sections] }
 }
 
 function section(text, title) {
@@ -149,6 +171,9 @@ export function buildPacket({ roadmap, plan, architecture, progress, git = {}, c
   if (git.pr) out.push(`- Open session PRs:\n${git.pr.split('\n').map((l) => `  - ${l}`).join('\n')}`)
   if (git.log) out.push(`- Recent commits:\n${git.log.split('\n').map((l) => `  - ${l}`).join('\n')}`)
   out.push('')
+  if (git.ci !== undefined) {
+    out.push('## Latest CI on this branch', '', git.ci || 'Unavailable: `gh` CLI not authenticated or no runs found. Check with `node scripts/quiet.mjs "gh run list -L 3"` if the task depends on CI.', '')
+  }
 
   const notes = section(progress, 'Current task notes')
   if (notes) {
@@ -188,6 +213,33 @@ export function buildPacket({ roadmap, plan, architecture, progress, git = {}, c
   return `${out.join('\n').trimEnd()}\n`
 }
 
+export function summarizeFailedLog(log, maxLines = 25) {
+  const lines = log.split('\n').map((l) => l.replace(/^[^\t]*\t[^\t]*\t(?:\S+Z )?/, '').slice(0, 240))
+  const marked = lines.filter((l) => /(##\[error\]|not ok|✖|Error:|ERR!|FAIL|failed)/i.test(l))
+  return [...new Set(marked.length ? marked : lines.slice(-maxLines))].slice(0, maxLines)
+}
+
+function ciSummary(branch, root) {
+  if (!branch) return ''
+  const json = run('gh', ['run', 'list', '--branch', branch, '-L', '5', '--json', 'databaseId,workflowName,conclusion,status,headSha,url'], root)
+  if (!json) return ''
+  let runs
+  try {
+    runs = JSON.parse(json).filter((r) => r.conclusion !== 'skipped')
+  } catch {
+    return ''
+  }
+  if (!runs.length) return ''
+  const latest = runs[0]
+  const out = [`- ${latest.workflowName}: **${latest.conclusion || latest.status}** at \`${latest.headSha.slice(0, 7)}\` — ${latest.url}`]
+  if (latest.conclusion === 'failure') {
+    const log = run('gh', ['run', 'view', String(latest.databaseId), '--log-failed'], root)
+    if (log) out.push('', 'Failure lines (`gh run view --log-failed`, filtered):', '', '```text', ...summarizeFailedLog(log), '```')
+    else out.push('- Failure log unavailable; run `node scripts/quiet.mjs "gh run view ' + latest.databaseId + ' --log-failed"`.')
+  }
+  return out.join('\n')
+}
+
 function main() {
   const { values } = parseArgs({
     options: {
@@ -204,6 +256,7 @@ function main() {
     log: run('git', ['log', '--oneline', '-5'], root),
     pr: run('gh', ['pr', 'list', '--state', 'open', '--search', 'head:helix/session-', '--json', 'number,headRefName,baseRefName,url', '--template', '{{range .}}#{{.number}} {{.headRefName}} → {{.baseRefName}} {{.url}}{{"\\n"}}{{end}}'], root),
   }
+  git.ci = ciSummary(git.branch, root)
   const packet = buildPacket({
     roadmap: read('docs/roadmap.md'),
     plan: read('plan.md'),

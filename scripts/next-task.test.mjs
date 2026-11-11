@@ -1,6 +1,26 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { architectureSection, buildPacket, parseRoadmap, planRow, selectTasks } from './next-task.mjs'
+import { architectureSection, buildPacket, citations, parseRoadmap, planRow, selectTasks, summarizeFailedLog } from './next-task.mjs'
+
+test('citations include objective and rejected IDs, expanding ID ranges', () => {
+  const { ids } = citations({ lines: ['- [ ] **R1.9 Task** (FR-3, O2, X19–X21) [§1]'] })
+  assert.deepEqual(ids.sort(), ['FR-3', 'O2', 'X19', 'X20', 'X21'])
+})
+
+test('citations expand architecture section ranges', () => {
+  assert.deepEqual(citations({ lines: ['- [ ] **R1.9 Task** (FR-3) [§11.1–11.3, §14]'] }).sections, ['11.1', '11.2', '11.3', '14'])
+  assert.deepEqual(citations({ lines: ['- [ ] **R1.9 Task** (FR-3) [§15–16; §5.1-3]'] }).sections, ['15', '16', '5.1', '5.2', '5.3'])
+})
+
+test('plan rows are found in tables for objective IDs', () => {
+  const plan = '| ID | Objective |\n| --- | --- |\n| O1 | Ship |\n| O2 | Fast |\n'
+  assert.equal(planRow(plan, 'O2'), '| ID | Objective |\n| --- | --- |\n| O2 | Fast |')
+})
+
+test('failed CI logs are reduced to error lines', () => {
+  const log = 'job\tstep\t2026-11-11T00:00:00Z setup ok\njob\tstep\t2026-11-11T00:00:01Z ##[error]Process completed with exit code 100.\n'
+  assert.deepEqual(summarizeFailedLog(log), ['##[error]Process completed with exit code 100.'])
+})
 
 const roadmap = `# Roadmap
 ## M0 — Foundations
