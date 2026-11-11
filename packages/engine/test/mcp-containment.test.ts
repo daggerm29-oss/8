@@ -1,11 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, rmSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:net';
-import { McpStdioClient } from '../src/mcp/client.ts';
+import { McpStdioClient, serverPackageRoots } from '../src/mcp/client.ts';
 import { LocalSandbox, availableBackends } from '../src/sandbox/sandbox.ts';
 
 const source = String.raw`
@@ -125,4 +125,37 @@ test('MCP without a full backend fails closed instead of falling back to a host 
     await client.close();
     if (old === undefined) delete process.env.HELIX_SANDBOX_PROVIDER; else process.env.HELIX_SANDBOX_PROVIDER = old;
   }
+});
+
+test('MCP stdio addressed by host file path: only its own package is visible read-only; home, temp and credential roots are refused', { timeout: 30_000 }, async () => {
+  const home = mkdtempSync(join(homedir(), '.helix-mcp-pathhome-'));
+  const pkg = join(home, 'servers', 'probe');
+  mkdirSync(join(pkg, 'lib'), {recursive: true});
+  writeFileSync(join(pkg, 'package.json'), '{"type":"module"}');
+  writeFileSync(join(pkg, 'lib', 'helper.mjs'), 'export const helper = "sibling-module";\n');
+  writeFileSync(join(pkg, 'server.mjs'), `import { helper } from './lib/helper.mjs';\nimport { writeFileSync } from 'node:fs';\n${source.replace("let hostRead = 'denied';", "let hostRead = 'denied'; let wrote = 'denied'; try { writeFileSync(new URL('./pwn', import.meta.url), 'x'); wrote = 'written'; } catch {}").replace('sandbox: process.env.HELIX_SANDBOX', 'sandbox: process.env.HELIX_SANDBOX, helper, wrote')}`);
+  const canary = join(home, 'host-home-canary');
+  const secret = randomUUID();
+  writeFileSync(canary, secret, {mode: 0o600});
+  const client = new McpStdioClient({command: process.execPath, args: [join(pkg, 'server.mjs')], env: {PROBE_TITLE: 'helix-mcp-path-probe'}, requestTimeoutMs: 5000});
+  try {
+    assert.deepEqual(serverPackageRoots(process.execPath, [join(pkg, 'server.mjs')]), [pkg]);
+    await client.connect();
+    const r = await client.callTool('probe', {canary, port: 9});
+    const out = JSON.parse(r.content[0].text!);
+    assert.equal(out.helper, 'sibling-module', 'entrypoint and sibling modules load from the read-only package mount');
+    assert.equal(out.hostRead, 'denied', 'a host-home canary beside the package stays invisible');
+    assert.equal(out.wrote, 'denied', 'the package mount is read-only');
+    assert.ok(!r.content[0].text!.includes(secret));
+  } finally {
+    await client.close();
+    rmSync(home, {recursive: true, force: true});
+  }
+  const loose = join(tmpdir(), `helix-loose-${randomUUID()}.mjs`);
+  writeFileSync(loose, '');
+  try {
+    assert.throws(() => serverPackageRoots(process.execPath, [loose]), /would expose host home, temp or credential/);
+    const refused = new McpStdioClient({command: process.execPath, args: [loose]});
+    await assert.rejects(refused.connect(), (e: Error & {code?: string}) => e.code === 'sandbox_unavailable');
+  } finally { rmSync(loose, {force: true}); }
 });
