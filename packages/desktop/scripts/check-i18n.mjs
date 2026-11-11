@@ -23,7 +23,7 @@ function jsxText(text) {
   }).join(''));
 }
 function human(text) {
-  return /[A-Za-z]/.test(text) && !technical.has(text) && (/\s/.test(text) || /^[A-Z][a-z]/.test(text)) && !/^(https?:|helix:|\.|#|\[|Mod\+|Control\+|Meta\+)/.test(text);
+  return /[A-Za-z]/.test(text) && !technical.has(text) && (/\s/.test(text) || /^(?:[A-Z][a-z]|[A-Z]{2,}$)/.test(text)) && !/^(https?:|helix:|\.|#|\[|Mod\+|Control\+|Meta\+)/.test(text);
 }
 for (const name of readdirSync(root).filter((name) => /\.(tsx?|jsx?)$/.test(name) && !['messages.ts', 'i18n.ts'].includes(name))) {
   const path = join(root, name);
@@ -71,7 +71,7 @@ for (const name of readdirSync(root).filter((name) => /\.(tsx?|jsx?)$/.test(name
   if (extract && edits.length) {
     let result = source;
     for (const edit of edits.sort((a, b) => b.start - a.start)) result = result.slice(0, edit.start) + edit.text + result.slice(edit.end);
-    if (!source.includes('from "./i18n"') && !source.includes("from './i18n'")) result = 'import { t } from "./i18n";\n' + result;
+    if (!/import\s*\{[^}]*\bt\b[^}]*\}\s*from\s*["']\.\/i18n["']/.test(source)) result = 'import { t } from "./i18n";\n' + result;
     writeFileSync(path, result);
   }
 }

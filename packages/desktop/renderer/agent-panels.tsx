@@ -5,6 +5,7 @@ import { rpc, useRpc, queryClient } from "./rpc";
 import { useWorkbench, type Task } from "./state";
 import { CheckpointInspector } from "./checkpoint-inspector";
 import { ActivityTree } from './activity-tree';
+import { TraceViewer } from './trace-viewer';
 
 type Message = {
   role: string;
@@ -223,6 +224,7 @@ export function MonitorPanel() {
       )}
       {selected && <ActivityTree key={selected} task={selected} />}
       <CheckpointInspector />
+      {selected && <TraceViewer key={selected} task={selected} />}
     </section>
   );
 }

@@ -197,6 +197,23 @@
 .command-palette > p {
   padding: 12px;
 }
+.ledger-filters, .ledger-totals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin: 12px 0;
+}
+.ledger-filters label { display: flex; flex-direction: column; gap: 4px; min-width: 140px; }
+.ledger-filters select { max-width: 280px; }
+.ledger-totals dt { color: var(--muted); font-size: 11px; }
+.ledger-totals dd { margin: 0; font-variant-numeric: tabular-nums; }
+.ledger-table { overflow: auto; max-height: 300px; }
+.ledger-table caption { text-align: start; color: var(--muted); }
+.trace-viewer { margin-top: 20px; border-top: 1px solid var(--border); padding-top: 12px; }
+.trace-viewer ol { padding-inline-start: 20px; }
+.trace-viewer li { margin-block: 8px; }
+.trace-viewer summary { cursor: pointer; overflow-wrap: anywhere; min-height: 28px; padding-block: 4px; }
+.trace-viewer pre { overflow: auto; max-height: 260px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .checkpoint-inspector {
   border: 1px solid var(--border);
   padding: 12px;

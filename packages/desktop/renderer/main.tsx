@@ -14,6 +14,7 @@ import {
   Plug,
   FolderOpen,
   ShieldCheck,
+  ReceiptText,
 } from "lucide-react";
 import { rpc, queryClient, useRpc } from "./rpc";
 import { confirmDiscard, useWorkbench, type Panel } from "./state";
@@ -28,6 +29,7 @@ const panels = [
   { id: "monitor", name: t("task_monitor_ac382a"), icon: Activity },
   { id: "scm", name: t("source_control_9bd7ea"), icon: GitBranch },
   { id: "mcp", name: t("mcp_manager_b3563d"), icon: Plug },
+  { id: "ledger", name: t("ledger_traces_bee3c3"), icon: ReceiptText },
   { id: "settings", name: t("settings_74a883"), icon: Settings2 },
 ] satisfies { id: Panel; name: string; icon: typeof Bot }[];
 function Workbench() {
@@ -44,7 +46,7 @@ function Workbench() {
   const [error, setError] = useState("");
   useEffect(() => {
     const navigate = (event: KeyboardEvent) => {
-      if (event.key === 'F6' && !event.isComposing && event.keyCode !== 229) {
+      if (event.key === 'F6' && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
         event.preventDefault();
         document.querySelector<HTMLButtonElement>('.activity-bar button')?.focus();
       }

@@ -8,7 +8,8 @@ export type Panel =
   | "monitor"
   | "scm"
   | "settings"
-  | "mcp";
+  | "mcp"
+  | "ledger";
 export type FileDocument = {
   path: string;
   content: string;

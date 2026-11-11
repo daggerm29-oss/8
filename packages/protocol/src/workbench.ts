@@ -16,6 +16,7 @@ export const WORKBENCH_PANELS = [
   "scm",
   "settings",
   "mcp",
+  "ledger",
 ] as const;
 export type WorkbenchPanel = (typeof WORKBENCH_PANELS)[number];
 export const DEFAULT_WORKBENCH_KEYS = {

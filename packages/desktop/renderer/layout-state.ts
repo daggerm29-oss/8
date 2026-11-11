@@ -27,6 +27,7 @@ export const panelNames: Record<WorkbenchPanel, string> = {
   scm: t("source_control_9bd7ea"),
   settings: t("settings_74a883"),
   mcp: t("mcp_manager_b3563d"),
+  ledger: t("ledger_traces_bee3c3"),
 };
 export const profileLabels = { Build: t('build_bdd254'), Debug: t('debug_1a03bd'), Review: t('review_aff076'), Explore: t('explore_3b7390') };
 const tab = (id: WorkbenchPanel) => ({
@@ -69,6 +70,7 @@ export function defaultLayout(profile: WorkbenchProfile): IJsonModel {
               "mcp",
               "settings",
             ];
+  tools.push('ledger');
   return {
     global: {
       tabEnableRename: false,

@@ -62,7 +62,7 @@ async function keyboardPanel(name: string, id: string) {
 
 test('R1.5 every panel: WCAG 2.2 AA, keyboard operations, high contrast, Monaco, palette and layout controls', async ({}, info) => {
   const scans: { panel: string; theme: string; violations: unknown[] }[] = [];
-  const panels = [['Explorer', 'explorer'], ['Agent', 'agent'], ['Terminal', 'terminal'], ['Preview', 'preview'], ['Problems', 'problems'], ['Task monitor', 'monitor'], ['Source control', 'scm'], ['MCP manager', 'mcp'], ['Settings', 'settings']];
+  const panels = [['Explorer', 'explorer'], ['Agent', 'agent'], ['Terminal', 'terminal'], ['Preview', 'preview'], ['Problems', 'problems'], ['Task monitor', 'monitor'], ['Source control', 'scm'], ['MCP manager', 'mcp'], ['Settings', 'settings'], ['Ledger & traces', 'ledger']];
   for (const theme of ['default', 'high']) {
     if (theme === 'high') {
       await page.getByRole('button', { name: 'High contrast', exact: true }).focus();

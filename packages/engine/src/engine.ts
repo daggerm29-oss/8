@@ -21,6 +21,7 @@ import { globalRedactor } from './util/redact.ts';
 import { Vault } from './vault/vault.ts';
 import { detectKeychain, type Keychain } from './vault/keychain.ts';
 import { Ledger } from './models/ledger.ts';
+import { ledgerDashboard, exportLedger, ledgerRows, validateLedgerFilter, type LedgerFilter } from './models/ledger-dashboard.ts';
 import { ModelGateway } from './models/gateway.ts';
 import { ReplayAdapter, exportBundle, type SessionBundle } from './replay/bundle.ts';
 import { builtinTools } from './tools/builtin.ts';
@@ -237,7 +238,18 @@ export class Engine {
       return { ok: true, alwaysAllowed };
     }));
     peer.handle(Methods.ledgerReconcile, guard<{ task?: string; ws?: string; since?: string; tolerancePct?: number }>((p) => this.gateway.reconcile(p)));
-    peer.handle(Methods.ledgerQuery, guard<{ task?: string; ws?: string; entries?: boolean }>((p) => ({ totals: this.ledger.totals(p), entries: p.entries ? this.ledger.entries({ task: p.task }) : undefined })));
+    const ledgerFilter = (p: LedgerFilter & { workspacePath?: string }): LedgerFilter => {
+      const ws = p.workspacePath ? this.runtime.workspaceFor(this.knownWorkspace(p.workspacePath)).id : p.ws;
+      const filter = { task: p.task, ws, since: p.since };
+      validateLedgerFilter(filter);
+      return filter;
+    };
+    peer.handle(Methods.ledgerQuery, guard<LedgerFilter & { workspacePath?: string; entries?: boolean }>((p) => {
+      const filter = ledgerFilter(p);
+      return { totals: this.ledger.totals(filter), entries: p.entries ? ledgerRows(this.db, filter) : undefined };
+    }));
+    peer.handle(Methods.ledgerDashboard, guard<LedgerFilter & { workspacePath?: string }>((p) => ledgerDashboard(this.db, this.ledger, ledgerFilter(p))));
+    peer.handle(Methods.ledgerExport, guard<LedgerFilter & { workspacePath?: string; format: 'json' | 'csv' }>((p) => exportLedger(this.db, ledgerFilter(p), p.format)));
     peer.handle(Methods.budgetsSet, guard<Parameters<Ledger['setBudget']>[0]>((p) => {
       const previous = this.ledger.getBudget(p.scope, p.scopeId);
       const id = this.ledger.setBudget(p);

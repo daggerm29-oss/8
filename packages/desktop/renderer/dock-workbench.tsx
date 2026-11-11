@@ -21,6 +21,7 @@ import { useWorkbench } from "./state";
 import { useRpc } from "./rpc";
 import { defaultLayout, panelNames, profileLabels, useLayout } from "./layout-state";
 import { CommandPalette } from "./palette";
+import { LedgerPanel } from './ledger-panel';
 import "flexlayout-react/style/dark.css";
 import "./layout.css";
 const Editor = lazy(() =>
@@ -59,6 +60,8 @@ function PanelContent({ node }: { node: TabNode }) {
           <MonitorPanel />
         ) : id === "scm" ? (
           <ScmPanel key={workspace} />
+        ) : id === 'ledger' ? (
+          <LedgerPanel key={workspace} />
         ) : id === "settings" ? (
           <SettingsPanel />
         ) : (

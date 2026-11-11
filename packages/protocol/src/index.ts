@@ -5,6 +5,7 @@ export * from './capabilities.ts';
 export * from './retry.ts';
 export * from './workbench.ts';
 export * from './activity.ts';
+export * from './ledger.ts';
 
 export const PROTOCOL_VERSION = '0.1.0';
 
@@ -114,6 +115,8 @@ export const Methods = {
   taskTranscript: 'task.transcript',
   approvalRespond: 'agent.approve',
   ledgerQuery: 'ledger.query',
+  ledgerDashboard: 'ledger.dashboard',
+  ledgerExport: 'ledger.export',
   budgetsSet: 'ledger.budgets.set',
   /* R0.4 (FR-31): ledger vs provider-reported usage + attribution completeness */
   ledgerReconcile: 'ledger.reconcile',
