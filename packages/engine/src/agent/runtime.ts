@@ -169,7 +169,128 @@ export class TaskRuntime {
   }
 
   activity(task: string) {
-    return taskActivity(this.o.db, task);
+    const models = this.o.gateway.providers()
+      .filter((p) => p.configured)
+      .flatMap((p) => this.o.gateway.adapter(p.id).bundledModels().map((m) => `${p.id}/${m.id}`));
+    return taskActivity(this.o.db, task, models);
+  }
+
+  setModel(id: string, p: { provider: string; model: string }): TaskSummary {
+    const r = this.row(id);
+    if (TERMINAL.includes(r.status)) throw new Error(`task ${id} is ${r.status}`);
+    const provider = p.provider?.trim();
+    const model = p.model?.trim();
+    if (!provider || !model) throw new Error('provider and model are required');
+    this.o.gateway.adapter(provider);
+    const primaryRole = r.policy_profile === 'plan' ? 'planner' : 'coder';
+    const nextRef: ModelRef = { provider, model };
+    const updated = this.resolveTaskRoles(this.wsPath(r.ws), { provider, model, roles: { [primaryRole]: refString(nextRef) }, policyProfile: r.policy_profile });
+    this.demoted.get(id)?.delete(refString(nextRef));
+    this.saveArtifact(id, 'roles', 'Model roles', updated);
+    this.o.db.run('UPDATE tasks SET provider = ?, model = ?, updated_at = ? WHERE id = ?', provider, model, new Date().toISOString(), id);
+    this.publish(id, r.ws, 'policy.changed', { change: 'task_model', subject: `task:${id}`, role: primaryRole, from: `${r.provider}/${r.model}`, to: `${provider}/${model}`, by: 'user' }, 'audit');
+    return this.summary(id);
+  }
+
+  async fork(task: string, checkpoint: string, opts: { goal?: string; title?: string; provider?: string; model?: string; start?: boolean } = {}): Promise<TaskSummary> {
+    const source = this.row(task);
+    const allCkpts = this.o.db.all<{ rowid: number; id: string; step: string | null }>('SELECT rowid, id, step FROM checkpoints WHERE task = ? ORDER BY rowid', task);
+    const targetCkpt = allCkpts.find((c) => c.id === checkpoint);
+    if (!targetCkpt) throw new Error(`unknown checkpoint ${checkpoint}`);
+    if (!TERMINAL.includes(source.status)) {
+      await this.pause(task);
+      const run = this.running.get(task);
+      if (run) { run.controller.abort(); await run.done; }
+      this.o.db.run("UPDATE tool_calls SET status = 'cancelled' WHERE task = ? AND status = 'running'", task);
+      for (const call of this.pendingCalls(this.transcript(task))) this.addMessage(task, null, { role: 'tool', parts: [{ type: 'tool_result', callId: call.id, name: call.name, content: 'Paused at checkpoint fork. Re-observe the workspace before any further action.', isError: true, provenance: { source: 'builtin', trust: 'trusted', taint: false } }] });
+    }
+    const restored = this.restore(task, checkpoint);
+    const ckptRowById = new Map(allCkpts.map((c) => [c.id, c.rowid]));
+    const primarySteps = new Map(this.o.db.all<{ rowid: number; id: string }>("SELECT rowid, id FROM steps WHERE task = ? AND agent = 'primary' ORDER BY rowid", task).map((s) => [s.id, s.rowid]));
+    const targetStepRow = targetCkpt.step ? (primarySteps.get(targetCkpt.step) ?? Infinity) : Infinity;
+    const childStepsByParentCall = new Map<string, Set<string>>();
+    for (const a of this.o.db.all<{ id: string; parent_call: string | null }>('SELECT id, parent_call FROM agents WHERE task = ? AND parent_call IS NOT NULL', task)) {
+      const set = childStepsByParentCall.get(a.parent_call!) ?? new Set<string>();
+      for (const s of this.o.db.all<{ id: string }>('SELECT id FROM steps WHERE task = ? AND agent = ?', task, a.id)) set.add(s.id);
+      childStepsByParentCall.set(a.parent_call!, set);
+    }
+    const allCalls = this.o.db.all<{ id: string; step: string; call_id: string; checkpoint: string }>('SELECT id, step, call_id, checkpoint FROM tool_calls WHERE task = ? ORDER BY rowid', task);
+    const completedCallIds = new Set<string>();
+    for (const c of allCalls) {
+      if (!primarySteps.has(c.step)) continue;
+      if ((ckptRowById.get(c.checkpoint) ?? Infinity) >= targetCkpt.rowid) continue;
+      const childSteps = childStepsByParentCall.get(c.id);
+      const nestedAfter = childSteps && allCkpts.some((ck) => ck.step && childSteps.has(ck.step) && ck.rowid >= targetCkpt.rowid);
+      if (!nestedAfter) completedCallIds.add(c.call_id);
+    }
+    const rawMsgs = this.o.db.all<{ role: Message['role']; parts_json: string; step: string | null }>('SELECT role, parts_json, step FROM messages WHERE task = ? ORDER BY id', task);
+    const forkedMessages: Message[] = [];
+    let pendingSynthetic: Array<Extract<Part, { type: 'tool_call' }>> = [];
+    let cut = false;
+    for (let i = 0; i < rawMsgs.length && !cut; i++) {
+      const m = rawMsgs[i];
+      const parts = parseJson<Part[]>(m.parts_json, []);
+      if (i === 0 && m.role === 'user') { forkedMessages.push({ role: 'user', parts }); continue; }
+      if (m.role === 'assistant') {
+        const toolCalls = parts.filter((p): p is Extract<Part, { type: 'tool_call' }> => p.type === 'tool_call');
+        if (toolCalls.length) {
+          const done = toolCalls.filter((tc) => completedCallIds.has(tc.id));
+          if (!done.length) break;
+          forkedMessages.push({ role: 'assistant', parts });
+          pendingSynthetic = toolCalls.filter((tc) => !completedCallIds.has(tc.id));
+          if (pendingSynthetic.length) cut = true;
+        } else {
+          const stepRow = m.step ? (primarySteps.get(m.step) ?? Infinity) : Infinity;
+          if (stepRow >= targetStepRow) break;
+          forkedMessages.push({ role: 'assistant', parts });
+        }
+      } else if (m.role === 'tool') {
+        const kept = parts.filter((p) => p.type === 'tool_result' && completedCallIds.has(p.callId));
+        if (kept.length) forkedMessages.push({ role: 'tool', parts: kept });
+      } else if (m.role === 'user') {
+        const laterCompleted = rawMsgs.slice(i + 1).some((later) => later.role === 'assistant' && parseJson<Part[]>(later.parts_json, []).some((p) => p.type === 'tool_call' && completedCallIds.has(p.id)));
+        if (!laterCompleted) break;
+        forkedMessages.push({ role: 'user', parts });
+      }
+    }
+    for (const call of pendingSynthetic) {
+      forkedMessages.push({ role: 'tool', parts: [{ type: 'tool_result', callId: call.id, name: call.name, content: 'Skipped at checkpoint fork boundary; re-observe workspace state.', isError: true, provenance: { source: 'builtin', trust: 'trusted', taint: false } }] });
+    }
+    if (opts.goal?.trim()) forkedMessages.push({ role: 'user', parts: [{ type: 'text', text: opts.goal.trim() }] });
+    const wsPath = this.wsPath(source.ws);
+    const sbx = this.sandboxStatusFor(wsPath);
+    if (!sbx.backend) throw new SandboxUnavailableError(sbx.reason ?? 'no isolating sandbox backend is available');
+    const provider = opts.provider?.trim() || source.provider;
+    const model = opts.model?.trim() || source.model;
+    this.o.gateway.adapter(provider);
+    const baseRoles = this.roles(source);
+    const primaryRole = source.policy_profile === 'plan' ? 'planner' : 'coder';
+    const explicitModel = Boolean(opts.provider?.trim() || opts.model?.trim());
+    const roles: ResolvedRoles = explicitModel
+      ? this.resolveTaskRoles(wsPath, { provider, model, roles: { [primaryRole]: `${provider}/${model}` }, policyProfile: source.policy_profile })
+      : baseRoles;
+    assertUsable(roles, [primaryRole]);
+    const forkedId = prefixedId('task');
+    const now = new Date().toISOString();
+    const title = opts.title ?? `Fork of ${source.title}`;
+    const stepCount = forkedMessages.filter((m) => m.role === 'assistant').length;
+    this.o.db.run(
+      `INSERT INTO tasks (id, ws, title, goal, status, provider, model, policy_profile, preapprove_json, verify_command, max_steps, step_count, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'paused', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      forkedId, source.ws, title, opts.goal?.trim() || source.goal, provider, model, source.policy_profile, source.preapprove_json, source.verify_command, source.max_steps, stepCount, now, now,
+    );
+    const budget = this.o.db.get<{ soft_usd: number | null; hard_usd: number | null; soft_tokens: number | null; hard_tokens: number | null }>("SELECT * FROM budgets WHERE scope = 'task' AND scope_id = ?", task);
+    if (budget) this.o.ledger.setBudget({ scope: 'task', scopeId: forkedId, softUsd: budget.soft_usd ?? undefined, hardUsd: budget.hard_usd ?? undefined, softTokens: budget.soft_tokens ?? undefined, hardTokens: budget.hard_tokens ?? undefined });
+    this.saveArtifact(forkedId, 'roles', 'Model roles', roles);
+    const ctxArt = this.artifacts(task, 'context').at(-1);
+    if (ctxArt) this.saveArtifact(forkedId, 'context', ctxArt.title, ctxArt.data);
+    this.saveArtifact(forkedId, 'fork', `Forked from ${task} at ${checkpoint}`, { task, checkpoint, restored: restored.restored, deleted: restored.deleted });
+    for (const m of forkedMessages) this.addMessage(forkedId, null, m);
+    this.publish(forkedId, source.ws, 'task.created', { title, provider, model, roles: summarizeRoles(roles), forkedFrom: { task, checkpoint } });
+    this.publish(forkedId, source.ws, 'task.forked', { fromTask: task, checkpoint, restored: restored.restored, deleted: restored.deleted, by: 'user' }, 'audit');
+    this.emitActivity(task);
+    if (opts.start) return this.resume(forkedId);
+    return this.summary(forkedId);
   }
 
   private emitActivity(task: string): void {
@@ -718,7 +839,7 @@ export class TaskRuntime {
 
   artifacts(task: string, kind?: string): Array<{ id: string; kind: string; title: string; data: unknown; at: string }> {
     return this.o.db.all<{ id: string; kind: string; title: string; data_json: string; at: string }>(
-      `SELECT id, kind, title, data_json, at FROM artifacts WHERE task = ? ${kind ? 'AND kind = ?' : ''} ORDER BY at, id`, ...(kind ? [task, kind] : [task]),
+      `SELECT id, kind, title, data_json, at FROM artifacts WHERE task = ? ${kind ? 'AND kind = ?' : ''} ORDER BY rowid`, ...(kind ? [task, kind] : [task]),
     ).map((r) => ({ id: r.id, kind: r.kind, title: r.title, data: parseJson(r.data_json, null), at: r.at }));
   }
 
@@ -913,6 +1034,7 @@ export class TaskRuntime {
     const now = new Date().toISOString();
     this.o.db.run(`INSERT INTO steps (id, task, agent, idx, kind, status, started_at) VALUES (?, ?, 'primary', ?, 'model', 'running', ?)`, stepId, t.id, t.step_count, now);
     this.publish(t.id, t.ws, 'task.step', { stepId, index: t.step_count, kind: 'model' });
+    this.publish(t.id, t.ws, 'agent.step.started', { stepId, agent: 'primary', index: t.step_count, kind: 'model' });
     const activated = activatedTools(messages.flatMap((m) => m.parts.filter((p): p is Extract<Part, { type: 'tool_result' }> => p.type === 'tool_result' && p.name === TOOL_SEARCH).map((p) => p.content)));
     const tools = this.o.tools.specs((name) => (t.policy_profile === 'plan' ? PLAN_TOOLS.includes(name) : name !== 'submit_plan' && (!this.o.tools.isDeferred(name) || activated.has(name))));
     const system = systemPrompt(root, this.gateSummary(root, t.verify_command), t.policy_profile, context);
@@ -936,6 +1058,7 @@ export class TaskRuntime {
         // The gateway already retried quickly; a sustained overload backs off at task level instead of failing the task.
         if (!(error instanceof ProviderError) || !error.retryable || attempt >= TASK_RETRY_DELAYS_MS.length || signal.aborted) {
           this.o.db.run(`UPDATE steps SET status = 'error', ended_at = ? WHERE id = ?`, new Date().toISOString(), stepId);
+          this.publish(t.id, t.ws, 'agent.step.completed', { stepId, agent: 'primary', index: t.step_count, kind: 'model', status: 'error' });
           throw error;
         }
         this.publish(t.id, t.ws, 'task.backoff', { stepId, kind: error.kind, delayMs: TASK_RETRY_DELAYS_MS[attempt] });
@@ -954,6 +1077,7 @@ export class TaskRuntime {
       'usage.cost_usd': result.costUsd ?? undefined, latency_ms: Math.round(result.latencyMs * 10) / 10, model_attempts: result.attempts, 'model.ref': refString(result.ref), role: plan ? 'planner' : 'coder',
       'ledger.entry': result.ledgerEntryId, 'tool_calls.requested': requested.length, finish_reason: result.finishReason, outcome: 'ok',
     });
+    this.publish(t.id, t.ws, 'agent.step.completed', { stepId, agent: 'primary', index: t.step_count, kind: 'model', status: 'done', ledgerEntryId: result.ledgerEntryId });
     this.publish(t.id, t.ws, 'agent.message', { stepId, text, toolCalls: requested, costUsd: result.costUsd });
   }
 
@@ -975,7 +1099,7 @@ export class TaskRuntime {
         await this.safePoint(t.id, signal);
         const stepId = prefixedId('step');
         this.o.db.run("INSERT INTO steps (id, task, agent, idx, kind, status, started_at) VALUES (?, ?, ?, ?, 'explore', 'running', ?)", stepId, t.id, agent, step, new Date().toISOString());
-        this.emitActivity(t.id);
+        this.publish(t.id, t.ws, 'agent.step.started', { stepId, agent, index: step, kind: 'explore' });
         const res = await this.callRole(t, 'explorer', 'explore', {
           ws: t.ws, task: t.id, agent, step: stepId, signal,
           request: { system, messages, tools, toolChoice: step === EXPLORE_MAX_STEPS - 1 ? 'none' : 'auto', maxOutputTokens: 2048 },
@@ -983,7 +1107,7 @@ export class TaskRuntime {
         messages.push(res.message);
         const text = res.message.parts.flatMap((p) => p.type === 'text' ? [p.text] : []).join('').trim();
         this.o.db.run("UPDATE steps SET status = 'done', ended_at = ?, ledger_entry = ?, detail_json = ? WHERE id = ?", new Date().toISOString(), res.ledgerEntryId, json({ text: globalRedactor.redact(text) }), stepId);
-        this.emitActivity(t.id);
+        this.publish(t.id, t.ws, 'agent.step.completed', { stepId, agent, index: step, kind: 'explore', status: 'done', ledgerEntryId: res.ledgerEntryId });
         const calls = res.message.parts.filter((p): p is Extract<Part, { type: 'tool_call' }> => p.type === 'tool_call');
         if (!calls.length) return text.length > EXPLORE_MAX_CHARS ? `${text.slice(0, EXPLORE_MAX_CHARS)}\n[truncated]` : text || '(the explore subagent returned no summary)';
         const results: Part[] = [];
@@ -1173,6 +1297,7 @@ export class TaskRuntime {
     const ref = previous === null ? null : this.o.blobs ? this.o.blobs.put(previous, { kind: 'checkpoint', id: t.id }) : previous;
     files.push({ path, before: ref });
     this.o.db.run('UPDATE checkpoints SET files_json = ? WHERE id = ?', json(files), checkpointId);
+    this.emitActivity(t.id);
   }
 
   private ask(t: TaskRow, call: Extract<Part, { type: 'tool_call' }>, actionClass: string, signal: AbortSignal): Promise<boolean> {

@@ -114,3 +114,46 @@ test('R1.3 real write lease is held during execution, serializes tasks, releases
   assert.equal((await engine.runtime.cancel(other)).status, 'cancelled');
   assert.equal(engine.db.get<{ n: number }>("SELECT COUNT(*) AS n FROM activity_leases WHERE state = 'held'")!.n, 0);
 });
+
+test('R1.3 streams agent.step.* events, exposes prompt contextItems, and supports fork + change model without ledger duplication', { timeout: 30_000 }, async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'helix-monitor-fork-'));
+  const repo = join(root, 'repo'); mkdirSync(repo);
+  writeFileSync(join(repo, 'HELIX.md'), 'Always preserve greeting clarity.\n');
+  writeFileSync(join(repo, 'hello.txt'), 'before\n');
+  const fake = await startFakeProvider('gemini', ({ index, request }) => {
+    if (request.path.includes('gemini-3.5-flash-lite')) return { text: 'Completed on forked flash-lite model.' };
+    if (index === 0) return { toolCalls: [{ name: 'read_file', args: { path: 'hello.txt' } }] };
+    if (index === 1) return { toolCalls: [{ name: 'edit_file', args: { path: 'hello.txt', old_string: 'before', new_string: 'after' } }] };
+    return { text: 'Original finished.' };
+  });
+  const engine = new Engine({ home: join(root, 'home'), env: { GEMINI_API_KEY: fake.apiKey, HELIX_GEMINI_BASE_URL: fake.url }, indexing: true, mcp: false, recover: false });
+  t.after(async () => { await engine.close(); await fake.close(); rmSync(root, { recursive: true, force: true }); });
+  const stepTopics: string[] = [];
+  const unsub = engine.bus.subscribe('agent.step.**', (ev) => { stepTopics.push(ev.topic); });
+  const original = engine.runtime.create({ workspacePath: repo, goal: 'Read then edit hello.txt', provider: 'gemini', model: 'gemini-3.8-flash', budgetUsd: 1.5 });
+  assert.equal((await engine.runtime.wait(original.id, 15_000)).status, 'done');
+  unsub();
+  assert.ok(stepTopics.includes('agent.step.started'));
+  assert.ok(stepTopics.includes('agent.step.completed'));
+  assert.ok(stepTopics.includes('agent.step.activity'));
+  assert.equal(readFileSync(join(repo, 'hello.txt'), 'utf8'), 'after\n');
+  const origActivity = engine.runtime.activity(original.id);
+  assert.ok(origActivity.agents[0].steps[0].contextItems.some((item) => item.kind === 'instructions' && item.tokens > 0));
+  assert.ok(origActivity.agents[0].steps[1].contextItems.some((item) => item.kind === 'tool_result' && item.label === 'read_file'));
+  const editCkpt = origActivity.agents[0].steps.flatMap((s) => s.tools).find((c) => c.tool === 'edit_file')!.checkpoint;
+  const ledgerBeforeFork = engine.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM ledger_entries')!.n;
+  const forked = await engine.runtime.fork(original.id, editCkpt);
+  assert.equal(forked.status, 'paused');
+  assert.equal(readFileSync(join(repo, 'hello.txt'), 'utf8'), 'before\n');
+  assert.equal(engine.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM ledger_entries')!.n, ledgerBeforeFork, 'fork must not duplicate ledger rows');
+  const updated = engine.runtime.setModel(forked.id, { provider: 'gemini', model: 'gemini-3.5-flash-lite' });
+  assert.equal(updated.model, 'gemini-3.5-flash-lite');
+  engine.runtime.resume(forked.id);
+  assert.equal((await engine.runtime.wait(forked.id, 15_000)).status, 'done');
+  const forkActivity = engine.runtime.activity(forked.id);
+  assert.deepEqual(forkActivity.forkedFrom, { task: original.id, checkpoint: editCkpt });
+  assert.equal(forkActivity.budget?.hardUsd, 1.5);
+  assert.equal(forkActivity.agents[0].steps[0].model, 'gemini/gemini-3.5-flash-lite');
+  assert.equal(readFileSync(join(repo, 'hello.txt'), 'utf8'), 'before\n');
+  assert.equal(engine.bus.verifyAuditChain(), null);
+});

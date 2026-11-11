@@ -19,10 +19,12 @@
 .activity-tree summary { cursor: pointer; padding: 6px 0; }
 .activity-tree summary::before { content: '▸'; color: var(--muted); }
 .activity-tree details[open] > summary::before { content: '▾'; }
-.activity-agent > summary strong { color: var(--accent); }
+.activity-agent > summary strong, .activity-task > summary strong { color: var(--accent); }
 .activity-context { color: var(--muted); font-size: 11px; }
 .activity-context dl > div { display: flex; gap: 12px; }
 .activity-context dt { min-width: 100px; }
+.activity-context-items { list-style: none; padding: 6px 0 0; margin: 6px 0 0; border-top: 1px dashed var(--border); }
+.activity-context-items li { display: flex; justify-content: space-between; gap: 12px; padding: 2px 0; }
 .activity-output { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 160px; overflow: auto; }
 .activity-tool { font-size: 12px; }
 .activity-checkpoint { font-size: 10px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; margin-top: 4px; }

@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import type { ActivityAgent, ActivityUsage, TaskActivity } from '@helix/protocol';
+import type { ActivityAgent, ActivityUsage, TaskActivity, TaskSummary } from '@helix/protocol';
 import { rpc, queryClient } from './rpc';
 import { useWorkbench } from './state';
 import './activity-tree.css';
@@ -23,7 +23,10 @@ function AgentBranch({ agent, activity }: { agent: ActivityAgent; activity: Task
             {step.model && <span className="hint">{step.model}</span>}
             {step.text && <p className="activity-output">{step.text}</p>}
             <details className="activity-context"><summary>Prompt composition (estimated tokens)</summary>
-              {Object.keys(step.context).length ? <dl>{Object.entries(step.context).map(([kind, tokens]) => <div key={kind}><dt>{kind}</dt><dd>{tokens}</dd></div>)}</dl> : <p className="hint">No recorded model context for this step.</p>}
+              {Object.keys(step.context).length ? <>
+                <dl>{Object.entries(step.context).map(([kind, tokens]) => <div key={kind}><dt>{kind}</dt><dd>{tokens}</dd></div>)}</dl>
+                {!!step.contextItems?.length && <ul className="activity-context-items" aria-label="Prompt context items">{step.contextItems.map((item, idx) => <li key={`${item.kind}:${item.label}:${idx}`}><span>{item.kind}: {item.label}</span><span>{item.tokens} tok</span></li>)}</ul>}
+              </> : <p className="hint">No recorded model context for this step.</p>}
             </details>
             <ol aria-label="Tool calls">
               {step.tools.map((tool) => <li key={tool.id} data-tool-call={tool.id}>
@@ -53,6 +56,7 @@ export function ActivityTree({ task }: { task: string }) {
   const [failure, setFailure] = useState('');
   const [notice, setNotice] = useState('');
   const [checkpoint, setCheckpoint] = useState('');
+  const [modelRef, setModelRef] = useState('');
   const root = useRef<HTMLElement>(null);
   useLayoutEffect(() => {
     if (data && root.current) root.current.dataset.committedAt = String(Date.now());
@@ -60,13 +64,21 @@ export function ActivityTree({ task }: { task: string }) {
   const control = async (method: string, params: object = { id: task }) => {
     setBusy(method); setFailure(''); setNotice('');
     try {
-      await rpc.call(method, params);
+      const result = await rpc.call(method, params);
+      if (method === 'task.fork') {
+        const forked = result as TaskSummary;
+        await queryClient.invalidateQueries({ queryKey: ['task.monitor'] });
+        useWorkbench.getState().setTask(forked.id);
+        return;
+      }
       const snapshot = await rpc.call<TaskActivity>('task.activity', { task });
       queryClient.setQueryData(key, snapshot);
       void queryClient.invalidateQueries({ queryKey: ['task.monitor'] });
       if (method === 'task.rollback') {
         setNotice('Checkpoint restored. Reopen changed files to refresh the editor.');
         void queryClient.invalidateQueries({ queryKey: ['checkpoint.diff'] });
+      } else if (method === 'task.setModel') {
+        setNotice(`Model updated to ${snapshot.provider}/${snapshot.model}.`);
       }
     } catch (error) { setFailure((error as Error).message); }
     finally { setBusy(''); }
@@ -75,15 +87,23 @@ export function ActivityTree({ task }: { task: string }) {
   const terminal = ['done', 'failed', 'cancelled'].includes(data.status);
   const paused = ['paused', 'pausing'].includes(data.status);
   const target = checkpoint || data.checkpoints.at(-1)?.id || '';
+  const currentModel = `${data.provider}/${data.model}`;
+  const selectedModel = modelRef || currentModel;
   const pending = data.approvals.filter((a) => a.status === 'pending');
+  const heldLeases = data.leases.filter((l) => l.state === 'held').length;
   const approve = async (approved: boolean) => {
     setBusy('approvals'); setFailure('');
     try { for (const a of pending) await rpc.call('agent.approve', { approvalId: a.id, approved }); }
     catch (error) { setFailure((error as Error).message); }
     finally { setBusy(''); }
   };
+  const changeModel = () => {
+    const slash = selectedModel.indexOf('/');
+    if (slash <= 0) return;
+    void control('task.setModel', { id: task, provider: selectedModel.slice(0, slash), model: selectedModel.slice(slash + 1) });
+  };
   return <section ref={root} className="activity-tree" aria-label="Live agent activity" data-event-at={data.emittedAt} data-task={task}>
-    <div className="activity-heading"><h2>Agent activity</h2><span className="activity-status" role="status">{data.status}</span><Usage usage={data.usage} /></div>
+    <div className="activity-heading"><h2>Agent activity</h2><span className="activity-status" role="status">{data.status}</span><span>{elapsed(data.startedAt, data.endedAt)}</span><Usage usage={data.usage} /></div>
     <div className="activity-controls">
       <button disabled={!!busy || terminal || paused} onClick={() => void control('task.pause')}>{busy === 'task.pause' ? 'Pausing safely…' : 'Pause'}</button>
       <button disabled={!!busy || terminal || data.status !== 'paused'} onClick={() => void control('task.resume')}>Resume</button>
@@ -92,6 +112,9 @@ export function ActivityTree({ task }: { task: string }) {
       <button disabled={!!busy || !target} onClick={() => {
         if (window.confirm('Pause this task and restore file contents to before the selected tool call? Later file changes will be undone.')) void control('task.rollback', { task, checkpoint: target });
       }}>Roll back</button>
+      <button disabled={!!busy || !target} onClick={() => void control('task.fork', { task, checkpoint: target })}>Fork checkpoint</button>
+      <label>Task model<select aria-label="Task model" value={selectedModel} onChange={(event) => setModelRef(event.target.value)}>{data.availableModels.map((m) => <option key={m} value={m}>{m}</option>)}</select></label>
+      <button disabled={!!busy || terminal || selectedModel === currentModel} onClick={changeModel}>Change model</button>
     </div>
     {(failure || error) && <p role="alert">{failure || error?.message}</p>}
     {notice && <p role="status">{notice}</p>}
@@ -101,6 +124,14 @@ export function ActivityTree({ task }: { task: string }) {
       <div><h3>Last checkpoint</h3><p>{data.checkpoints.at(-1)?.id ?? 'None yet'}</p><span className="hint">{data.checkpoints.length} durable tool boundaries</span></div>
     </div>
     {!!pending.length && <div className="approval"><strong>{pending.length} pending approval(s)</strong><p>{pending.map((a) => a.tool).join(', ')}</p><button disabled={!!busy} onClick={() => void approve(true)}>Approve all</button><button disabled={!!busy} onClick={() => void approve(false)}>Deny all</button></div>}
-    <ol className="activity-branches" aria-label="Task agent activity tree">{data.agents.filter((a) => !a.parent).map((agent) => <AgentBranch key={agent.id} agent={agent} activity={data} />)}</ol>
+    <ol className="activity-branches" aria-label="Task agent activity tree">
+      <li data-task-node={data.task}>
+        <details open className="activity-task">
+          <summary><strong>Task · {data.title}</strong><span className="activity-status">{data.status}</span><span>{elapsed(data.startedAt, data.endedAt)}</span><Usage usage={data.usage} /></summary>
+          <p className="hint">{currentModel} · {heldLeases} held lease(s) · last checkpoint {data.checkpoints.at(-1)?.id ?? 'none'}{data.forkedFrom ? ` · forked from ${data.forkedFrom.task}@${data.forkedFrom.checkpoint}` : ''}</p>
+          <ol aria-label="Agents">{data.agents.filter((a) => !a.parent).map((agent) => <AgentBranch key={agent.id} agent={agent} activity={data} />)}</ol>
+        </details>
+      </li>
+    </ol>
   </section>;
 }

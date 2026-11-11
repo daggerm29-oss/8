@@ -105,6 +105,8 @@ export const Methods = {
   taskPause: 'task.pause',
   taskActivity: 'task.activity',
   taskRollback: 'task.rollback',
+  taskFork: 'task.fork',
+  taskSetModel: 'task.setModel',
   taskCancel: 'task.cancel',
   taskGet: 'task.get',
   taskList: 'task.list',

@@ -218,6 +218,8 @@ export class Engine {
     peer.handle(Methods.taskPause, guard<{ id: string }>((p) => this.runtime.pause(p.id)));
     peer.handle(Methods.taskActivity, guard<{ task: string }>((p) => this.runtime.activity(p.task)));
     peer.handle(Methods.taskRollback, guard<{ task: string; checkpoint: string }>((p) => this.runtime.rollback(p.task, p.checkpoint)));
+    peer.handle(Methods.taskFork, guard<{ task: string; checkpoint: string; goal?: string; title?: string; provider?: string; model?: string; start?: boolean }>((p) => this.runtime.fork(p.task, p.checkpoint, p)));
+    peer.handle(Methods.taskSetModel, guard<{ id: string; provider: string; model: string }>((p) => this.runtime.setModel(p.id, p)));
     peer.handle(Methods.taskCancel, guard<{ id: string }>((p) => this.runtime.cancel(p.id)));
     peer.handle(Methods.taskGet, guard<{ id: string }>((p) => this.runtime.summary(p.id)));
     peer.handle(Methods.taskList, guard<{ limit?: number }>((p) => this.runtime.list(p.limit)));
