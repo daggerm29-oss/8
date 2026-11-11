@@ -15,16 +15,16 @@
 
 > These are **checklist completion** numbers (ticked items with recorded evidence ÷ all items). They are not a measure of product quality or release readiness; human launch gates in `docs/roadmap.md` are not counted.
 
-**Overall checklist completion: 36%** (71/196 roadmap items)  
+**Overall checklist completion: 37%** (72/196 roadmap items)  
 **Current milestone:** M1 MVP, grounded single agent  
-**Next task:** R1.2 Dockable layout and command palette (F-UI-1) [§5.2]
+**Next task:** R1.3 Agent Activity Monitor (F-UI-2, PERF-13) [§5.4]
 
 **Execution-order exception:** user-authorized M1 work; M0 remains unfinished (R0.8 CI pipeline (plan §15.1, §15.7) [§35.6]). No acceptance criterion or gate is waived.
 
 | Milestone | Progress | Items | Status |
 | --- | --- | --- | --- |
 | M0 Foundations | ██████████ 96% | 22/23 | Unfinished (execution postponed) |
-| M1 MVP, grounded single agent | ███░░░░░░░ 34% | 27/79 | In progress |
+| M1 MVP, grounded single agent | ████░░░░░░ 35% | 28/79 | In progress |
 | M2 Precision and efficiency | █████░░░░░ 45% | 22/49 | Partly built early |
 | M3 Parallel and background | ░░░░░░░░░░ 0% | 0/20 | Not started |
 | M4 Team and ecosystem | ░░░░░░░░░░ 0% | 0/16 | Not started |
@@ -36,8 +36,8 @@
 
 - PR #22 merged at ad9dff8061cd1ceae796cbd7c34c06df22843e3b (starting main verified). Continue the existing M1 branch helix/session-2026-11-10-m1-workbench and PR #23: https://github.com/daggerm29-oss/8/pull/23. PR #19 remains untouched.
 - R1.1 COMPLETE: real packaged Linux Electron acceptance 1/1, eight smoke steps, exit 0; Monaco disk round-trip, actual container terminal/PTY/HTTP preview, SCM staging, Problems, Settings/MCP, task/monitor. Raw report: evals/results/r1-1-packaged-workbench-2026-11-10.json, implementation 7a31567.
-- Next R1.2: inspect architecture §5.2 and F-UI-1 before editing packages/desktop/renderer/main.tsx/state.ts; add genuine dock/undock/move, persisted saved layouts restored after app relaunch, and executable fuzzy palette; acceptance e2e/layout.spec.ts is not yet implemented. Do not skip to R1.3.
-- Engine and desktop TypeScript checks pass; focused desktop Engine regressions 5/5 (real relocated Node container forwarding), desktop supervision smoke 1/1, progress regressions 3/3. No PERF-reference, live model quality or M1 exit-gate claim.
+- R1.2 COMPLETE at 380e22f: exact acceptance 1/1; final expanded packaged layout + R1.1 regression 2/2 (45.8 s), including floating restoration, workspace/profile isolation, remapped keys, IME safety and all five palette categories. Raw report: evals/results/r1-2-packaged-layout-2026-11-11.json. Engine focused tests 9/9, 0 skipped; Engine/desktop TypeScript clean.
+- Next R1.3: read plan F-UI-2/PERF-13 and architecture §5.4, then extend packages/engine/src/agent/runtime.ts and packages/desktop/renderer/agent-panels.tsx; add e2e/monitor.spec.ts. Full agent/subagent/tool tree, budgets/leases/checkpoints, pause/resume/cancel/rollback and p95 event latency acceptance remain unfinished. F-UI-1 remains Partial for original all-FR-33 panel coverage (Intelligence Explorer is the approved FR-33 M2 part); do not start M2.
 - R0.8 remains postponed/open with acceptance unchanged, M0 unfinished. Original 26 completed M1 items retain their evidence; remaining M1 tasks and G1.1–G1.6/external gates are still required, no M2+ work.
 
 ## Ideas parking lot (one line each, max 15 — do not implement)
