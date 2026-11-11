@@ -1,0 +1,75 @@
+{
+  "task": "R1.4",
+  "packagedElectron": true,
+  "chromiumOsSandbox": "enabled (launched without --no-sandbox)",
+  "webPreferences": {
+    "sandbox": true,
+    "nodeIntegration": false,
+    "contextIsolation": true,
+    "webviewTag": false,
+    "nodeIntegrationInSubFrames": false
+  },
+  "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; worker-src 'self'; font-src 'self' data:; img-src 'self' data:; frame-src http://127.0.0.1:* http://localhost:*; frame-ancestors 'none'; base-uri 'none'; object-src 'none'; form-action 'none'",
+  "inlineScript": {
+    "ran": false,
+    "violated": "script-src-elem"
+  },
+  "ipc": {
+    "unlisted": "IPC channel not allowed: fs.readFile",
+    "badPayload": "invalid shell.openExternal payload: invalid url scheme",
+    "unlistedAfterReopen": "IPC channel not allowed: engine.kill",
+    "allowlist": [
+      "app.info",
+      "engine.connection",
+      "engine.status",
+      "shell.openExternal"
+    ]
+  },
+  "crash": {
+    "rendererPid": 17582,
+    "enginePid": 17562,
+    "engineAliveAfterKill": true,
+    "taskStatusDuringCrash": "running",
+    "reopenedWindowReattachedMs": 849,
+    "finalTaskStatus": "done",
+    "rendererCrashes": 1
+  },
+  "engineCrash": {
+    "killedEnginePid": 17562,
+    "restartedEnginePid": 18110,
+    "supervisorRestarts": 1,
+    "checkpointsBefore": [
+      "ckpt_01m74feexjyn9j5vfdck4rjyz4",
+      "ckpt_01m74feezjkb35jk38nhph1b4v"
+    ],
+    "checkpointsAfter": [
+      "ckpt_01m74feexjyn9j5vfdck4rjyz4",
+      "ckpt_01m74feezjkb35jk38nhph1b4v"
+    ],
+    "editFileCalls": 1,
+    "runShellCalls": [
+      "ok"
+    ],
+    "finalTaskStatus": "done"
+  },
+  "providerRequests": 6,
+  "coldStartToConnectedMs": {
+    "value": 2496,
+    "note": "local packaged Electron under Xvfb in the build VM; not PERF-1 reference-hardware certification"
+  },
+  "events": [
+    "workbench.connected",
+    "ipc.rejected",
+    "ipc.rejected",
+    "renderer.gone",
+    "window.reopened",
+    "workbench.connected",
+    "ipc.rejected",
+    "engine.exit",
+    "engine.restarting",
+    "engine.spawned",
+    "engine.ready",
+    "workbench.connected"
+  ],
+  "pageErrors": []
+}

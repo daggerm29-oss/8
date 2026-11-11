@@ -1,0 +1,41 @@
+{
+  "date": "2026-11-11",
+  "milestone": "M1",
+  "task": "R1.2",
+  "implementationCommit": "380e22f",
+  "branch": "helix/session-2026-11-10-m1-workbench",
+  "pullRequest": "https://github.com/daggerm29-oss/8/pull/23",
+  "verification": {
+    "exactAcceptance": { "command": "cd packages/desktop && npx playwright test e2e/layout.spec.ts", "passed": 1, "failed": 0, "exitCode": 0 },
+    "finalExpandedAcceptance": { "command": "cd packages/desktop && npx playwright test e2e/layout.spec.ts e2e/workbench.spec.ts", "passed": 2, "failed": 0, "exitCode": 0, "report": "evals/results/r1-2-packaged-layout-2026-11-11.json" },
+    "focusedEngine": { "command": "cd packages/engine && HELIX_SANDBOX_BACKENDS=local-container,local-unshare,local-os node --disable-warning=ExperimentalWarning --test --test-concurrency=1 test/workbench-layout.test.ts test/desktop-workbench.test.ts", "passed": 9, "failed": 0, "skipped": 0, "exitCode": 0 },
+    "engineTypeScript": { "command": "npx tsc -p tsconfig.helix.json", "exitCode": 0 },
+    "desktopTypeScript": { "command": "pnpm --filter @helix/desktop typecheck", "exitCode": 0 },
+    "progressScopeRegressions": { "command": "node --test scripts/progress.test.mjs scripts/check-scope.test.mjs", "passed": 17, "failed": 0, "exitCode": 0 },
+    "scopeGuard": { "command": "node scripts/check-scope.mjs", "exitCode": 0, "baselineRecovery": "Fetched original scope baseline f4742348efe912d2188dbc28a260aca32d391577 into shallow checkout before rerunning; no scope edits." },
+    "fullEngineOnceAtSessionEnd": {
+      "command": "cd packages/engine && HELIX_SANDBOX_BACKENDS=local-container,local-unshare,local-os node --disable-warning=ExperimentalWarning --test --test-concurrency=1 'test/**/*.test.ts'",
+      "passed": 175,
+      "total": 175,
+      "failed": 0,
+      "cancelled": 0,
+      "skipped": 0,
+      "todo": 0,
+      "durationMs": 163796.358925,
+      "exitCode": 0,
+      "workspaceTask": "sbx_q9DmHP43ktx6r2rNOch5ARqRxZXg:33",
+      "rawOutput": "evals/results/r1-2-engine-suite-2026-11-11.txt"
+    },
+    "browser": {
+      "route": "http://localhost:4100/desktop/index.html",
+      "mode": "actual bundled desktop renderer served by restarted Engine; separate from packaged Electron acceptance",
+      "viewport": { "width": 1216, "height": 587, "colorScheme": "dark" },
+      "verified": ["connected Engine", "real js-calc workspace", "dockable panels and layout controls", "fuzzy opn fil executes Open File", "fuzzy srccalc opens src/calc.js in Monaco", "no page errors"],
+      "screenshots": ["/tmp/v0-workspace/browser/screenshots/r1-2-final-workbench.png", "/tmp/v0-workspace/browser/screenshots/r1-2-final-editor.png"],
+      "dragLimitation": "Electron CDP dragTo did not deliver native drags. Packaged tests dispatch HTML5 events through the library handler; separate agent-browser native drag verified Problems moving into Editor group."
+    }
+  },
+  "acceptanceBoundaries": ["Conformance HTTP provider scripts agent text and read_file intent only; Engine, sandbox, persistence, index, ledger and checkpoints are real.", "No live-model quality or reference-hardware PERF claim.", "F-UI-1 and FR-33 remain Partial for original remaining panel coverage; no requirement removed, narrowed or reassigned.", "M1 and its automated/external exit gates remain unfinished; PR stays open and unmerged.", "R0.8 remains postponed and unfinished; M0 is not complete; no M2 work."],
+  "nextTask": "R1.3 Agent Activity Monitor",
+  "safeToMerge": false
+}

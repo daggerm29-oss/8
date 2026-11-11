@@ -69,7 +69,9 @@ Other progress rules:
 
 - If a task is unfinished: leave its box unticked, push, and write in "Current task notes" exactly where to resume (file, function, next step).
 - Run the full engine suite once (command in `progress.md` "How to run", timeout ≥ 600 s). If anything fails, fix it or record it under Unfinished and set `Safe to merge: no`. Put the result in "Last session".
-- Mark the PR ready for review (`gh pr ready`), run `node scripts/progress.mjs`, then end your reply with this block:
+- One PR covers the entire milestone. Continue the existing branch and open PR while the milestone is unfinished; a session or individual task ending is not a merge checkpoint. Keep it open and unmerged, and do not create another branch or PR per task.
+- Request completion review/merge and mark the PR ready (`gh pr ready`) only when milestone task completion is 100% and its applicable automated exit gates pass. Until then, report `ACTION NEEDED: none — continue this milestone on the existing branch/PR` and `Safe to merge: no — milestone unfinished` (or the concrete failing gate). External gates remain explicitly open as required above.
+- Run `node scripts/progress.mjs`, then end your reply with this block:
 
 ```
 SESSION SUMMARY
@@ -78,8 +80,8 @@ Unfinished: <task — where to resume>   (or: none)
 Full engine suite (once, at session end): <command> → <passed>/<total>
 Requirements changed: <ID → Partial/Done>; ...   (or: none)
 Open exit gates for this milestone: <automated: ...> | <external: ...>
-ACTION NEEDED: Review and merge this PR into main before starting the next session: <PR URL>
-Safe to merge: yes                     (or: no — <reason>)
+ACTION NEEDED: none — continue this milestone on the existing branch/PR: <PR URL> (at 100% tasks + passing applicable automated gates only: completion review/merge)
+Safe to merge: no — milestone unfinished (or, only at the completion checkpoint: yes)
 Checklist completion (progress.md, tasks only): Overall <x>% | M0 <x>% | M1 <x>% | M2 <x>% | M3 <x>% | M4 <x>% | M5 <x>% | M6 <x>%
 Next task: <next task name>
 ```

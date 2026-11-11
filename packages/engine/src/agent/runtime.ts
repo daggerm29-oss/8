@@ -36,6 +36,8 @@ import { prefixedId } from '../util/ids.ts';
 import { globalRedactor } from '../util/redact.ts';
 import { unifiedDiff, type FileDiff } from '../util/diff.ts';
 
+import { taskActivity } from './activity.ts';
+
 export const MAX_VERIFY_ATTEMPTS = 3;
 const TASK_RETRY_DELAYS_MS = [5_000, 15_000, 30_000, 60_000];
 const TERMINAL: TaskStatus[] = ['done', 'failed', 'cancelled'];
@@ -156,8 +158,225 @@ export class TaskRuntime {
   /** Replay tasks: recorded tool results served instead of running tools. */
   private readonly replays = new Map<string, ToolScript>();
 
+  private readonly pauses = new Map<string, { ready: Promise<void>; acknowledge(): void; wait: Promise<void>; release(): void; previous: TaskStatus }>();
+  private readonly unsubscribeActivity: () => void;
+
   constructor(opts: RuntimeOptions) {
     this.o = opts;
+    this.unsubscribeActivity = opts.bus.subscribe('ledger.entry', (event) => {
+      if (event.task) this.emitActivity(event.task);
+    });
+  }
+
+  activity(task: string) {
+    const models = this.o.gateway.providers()
+      .filter((p) => p.configured)
+      .flatMap((p) => this.o.gateway.adapter(p.id).bundledModels().map((m) => `${p.id}/${m.id}`));
+    return taskActivity(this.o.db, task, models);
+  }
+
+  setModel(id: string, p: { provider: string; model: string }): TaskSummary {
+    const r = this.row(id);
+    if (TERMINAL.includes(r.status)) throw new Error(`task ${id} is ${r.status}`);
+    const provider = p.provider?.trim();
+    const model = p.model?.trim();
+    if (!provider || !model) throw new Error('provider and model are required');
+    this.o.gateway.adapter(provider);
+    const primaryRole = r.policy_profile === 'plan' ? 'planner' : 'coder';
+    const nextRef: ModelRef = { provider, model };
+    const updated = this.resolveTaskRoles(this.wsPath(r.ws), { provider, model, roles: { [primaryRole]: refString(nextRef) }, policyProfile: r.policy_profile });
+    this.demoted.get(id)?.delete(refString(nextRef));
+    this.saveArtifact(id, 'roles', 'Model roles', updated);
+    this.o.db.run('UPDATE tasks SET provider = ?, model = ?, updated_at = ? WHERE id = ?', provider, model, new Date().toISOString(), id);
+    this.publish(id, r.ws, 'policy.changed', { change: 'task_model', subject: `task:${id}`, role: primaryRole, from: `${r.provider}/${r.model}`, to: `${provider}/${model}`, by: 'user' }, 'audit');
+    return this.summary(id);
+  }
+
+  async fork(task: string, checkpoint: string, opts: { goal?: string; title?: string; provider?: string; model?: string; start?: boolean } = {}): Promise<TaskSummary> {
+    const source = this.row(task);
+    const allCkpts = this.o.db.all<{ rowid: number; id: string; step: string | null }>('SELECT rowid, id, step FROM checkpoints WHERE task = ? ORDER BY rowid', task);
+    const targetCkpt = allCkpts.find((c) => c.id === checkpoint);
+    if (!targetCkpt) throw new Error(`unknown checkpoint ${checkpoint}`);
+    if (!TERMINAL.includes(source.status)) {
+      await this.pause(task);
+      const run = this.running.get(task);
+      if (run) { run.controller.abort(); await run.done; }
+      this.o.db.run("UPDATE tool_calls SET status = 'cancelled' WHERE task = ? AND status = 'running'", task);
+      for (const call of this.pendingCalls(this.transcript(task))) this.addMessage(task, null, { role: 'tool', parts: [{ type: 'tool_result', callId: call.id, name: call.name, content: 'Paused at checkpoint fork. Re-observe the workspace before any further action.', isError: true, provenance: { source: 'builtin', trust: 'trusted', taint: false } }] });
+    }
+    const restored = this.restore(task, checkpoint);
+    const ckptRowById = new Map(allCkpts.map((c) => [c.id, c.rowid]));
+    const primarySteps = new Map(this.o.db.all<{ rowid: number; id: string }>("SELECT rowid, id FROM steps WHERE task = ? AND agent = 'primary' ORDER BY rowid", task).map((s) => [s.id, s.rowid]));
+    const targetStepRow = targetCkpt.step ? (primarySteps.get(targetCkpt.step) ?? Infinity) : Infinity;
+    const childStepsByParentCall = new Map<string, Set<string>>();
+    for (const a of this.o.db.all<{ id: string; parent_call: string | null }>('SELECT id, parent_call FROM agents WHERE task = ? AND parent_call IS NOT NULL', task)) {
+      const set = childStepsByParentCall.get(a.parent_call!) ?? new Set<string>();
+      for (const s of this.o.db.all<{ id: string }>('SELECT id FROM steps WHERE task = ? AND agent = ?', task, a.id)) set.add(s.id);
+      childStepsByParentCall.set(a.parent_call!, set);
+    }
+    const allCalls = this.o.db.all<{ id: string; step: string; call_id: string; checkpoint: string }>('SELECT id, step, call_id, checkpoint FROM tool_calls WHERE task = ? ORDER BY rowid', task);
+    const completedCallIds = new Set<string>();
+    for (const c of allCalls) {
+      if (!primarySteps.has(c.step)) continue;
+      if ((ckptRowById.get(c.checkpoint) ?? Infinity) >= targetCkpt.rowid) continue;
+      const childSteps = childStepsByParentCall.get(c.id);
+      const nestedAfter = childSteps && allCkpts.some((ck) => ck.step && childSteps.has(ck.step) && ck.rowid >= targetCkpt.rowid);
+      if (!nestedAfter) completedCallIds.add(c.call_id);
+    }
+    const rawMsgs = this.o.db.all<{ role: Message['role']; parts_json: string; step: string | null }>('SELECT role, parts_json, step FROM messages WHERE task = ? ORDER BY id', task);
+    const forkedMessages: Message[] = [];
+    let pendingSynthetic: Array<Extract<Part, { type: 'tool_call' }>> = [];
+    let cut = false;
+    for (let i = 0; i < rawMsgs.length && !cut; i++) {
+      const m = rawMsgs[i];
+      const parts = parseJson<Part[]>(m.parts_json, []);
+      if (i === 0 && m.role === 'user') { forkedMessages.push({ role: 'user', parts }); continue; }
+      if (m.role === 'assistant') {
+        const toolCalls = parts.filter((p): p is Extract<Part, { type: 'tool_call' }> => p.type === 'tool_call');
+        if (toolCalls.length) {
+          const done = toolCalls.filter((tc) => completedCallIds.has(tc.id));
+          if (!done.length) break;
+          forkedMessages.push({ role: 'assistant', parts });
+          pendingSynthetic = toolCalls.filter((tc) => !completedCallIds.has(tc.id));
+          if (pendingSynthetic.length) cut = true;
+        } else {
+          const stepRow = m.step ? (primarySteps.get(m.step) ?? Infinity) : Infinity;
+          if (stepRow >= targetStepRow) break;
+          forkedMessages.push({ role: 'assistant', parts });
+        }
+      } else if (m.role === 'tool') {
+        const kept = parts.filter((p) => p.type === 'tool_result' && completedCallIds.has(p.callId));
+        if (kept.length) forkedMessages.push({ role: 'tool', parts: kept });
+      } else if (m.role === 'user') {
+        const laterCompleted = rawMsgs.slice(i + 1).some((later) => later.role === 'assistant' && parseJson<Part[]>(later.parts_json, []).some((p) => p.type === 'tool_call' && completedCallIds.has(p.id)));
+        if (!laterCompleted) break;
+        forkedMessages.push({ role: 'user', parts });
+      }
+    }
+    for (const call of pendingSynthetic) {
+      forkedMessages.push({ role: 'tool', parts: [{ type: 'tool_result', callId: call.id, name: call.name, content: 'Skipped at checkpoint fork boundary; re-observe workspace state.', isError: true, provenance: { source: 'builtin', trust: 'trusted', taint: false } }] });
+    }
+    if (opts.goal?.trim()) forkedMessages.push({ role: 'user', parts: [{ type: 'text', text: opts.goal.trim() }] });
+    const wsPath = this.wsPath(source.ws);
+    const sbx = this.sandboxStatusFor(wsPath);
+    if (!sbx.backend) throw new SandboxUnavailableError(sbx.reason ?? 'no isolating sandbox backend is available');
+    const provider = opts.provider?.trim() || source.provider;
+    const model = opts.model?.trim() || source.model;
+    this.o.gateway.adapter(provider);
+    const baseRoles = this.roles(source);
+    const primaryRole = source.policy_profile === 'plan' ? 'planner' : 'coder';
+    const explicitModel = Boolean(opts.provider?.trim() || opts.model?.trim());
+    const roles: ResolvedRoles = explicitModel
+      ? this.resolveTaskRoles(wsPath, { provider, model, roles: { [primaryRole]: `${provider}/${model}` }, policyProfile: source.policy_profile })
+      : baseRoles;
+    assertUsable(roles, [primaryRole]);
+    const forkedId = prefixedId('task');
+    const now = new Date().toISOString();
+    const title = opts.title ?? `Fork of ${source.title}`;
+    const stepCount = forkedMessages.filter((m) => m.role === 'assistant').length;
+    this.o.db.run(
+      `INSERT INTO tasks (id, ws, title, goal, status, provider, model, policy_profile, preapprove_json, verify_command, max_steps, step_count, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'paused', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      forkedId, source.ws, title, opts.goal?.trim() || source.goal, provider, model, source.policy_profile, source.preapprove_json, source.verify_command, source.max_steps, stepCount, now, now,
+    );
+    const budget = this.o.db.get<{ soft_usd: number | null; hard_usd: number | null; soft_tokens: number | null; hard_tokens: number | null }>("SELECT * FROM budgets WHERE scope = 'task' AND scope_id = ?", task);
+    if (budget) this.o.ledger.setBudget({ scope: 'task', scopeId: forkedId, softUsd: budget.soft_usd ?? undefined, hardUsd: budget.hard_usd ?? undefined, softTokens: budget.soft_tokens ?? undefined, hardTokens: budget.hard_tokens ?? undefined });
+    this.saveArtifact(forkedId, 'roles', 'Model roles', roles);
+    const ctxArt = this.artifacts(task, 'context').at(-1);
+    if (ctxArt) this.saveArtifact(forkedId, 'context', ctxArt.title, ctxArt.data);
+    this.saveArtifact(forkedId, 'fork', `Forked from ${task} at ${checkpoint}`, { task, checkpoint, restored: restored.restored, deleted: restored.deleted });
+    for (const m of forkedMessages) this.addMessage(forkedId, null, m);
+    this.publish(forkedId, source.ws, 'task.created', { title, provider, model, roles: summarizeRoles(roles), forkedFrom: { task, checkpoint } });
+    this.publish(forkedId, source.ws, 'task.forked', { fromTask: task, checkpoint, restored: restored.restored, deleted: restored.deleted, by: 'user' }, 'audit');
+    this.emitActivity(task);
+    if (opts.start) return this.resume(forkedId);
+    return this.summary(forkedId);
+  }
+
+  private emitActivity(task: string): void {
+    this.o.bus.publish({ topic: 'agent.step.activity', ws: this.row(task).ws, task, data: this.activity(task), persist: 'none' });
+  }
+
+  async pause(id: string): Promise<TaskSummary> {
+    const row = this.row(id);
+    if (TERMINAL.includes(row.status)) throw new Error(`task ${id} is ${row.status}`);
+    let pause = this.pauses.get(id);
+    if (!pause) {
+      let acknowledge!: () => void;
+      let release!: () => void;
+      pause = { ready: new Promise<void>((r) => { acknowledge = r; }), wait: new Promise<void>((r) => { release = r; }), acknowledge: () => acknowledge(), release: () => release(), previous: row.status };
+      this.pauses.set(id, pause);
+      this.setStatus(id, this.running.has(id) && row.status !== 'awaiting_approval' ? 'pausing' : 'paused');
+      if (!this.running.has(id) || row.status === 'awaiting_approval') pause.acknowledge();
+      this.publish(id, row.ws, 'task.pause_requested', { by: 'user' }, 'audit');
+    }
+    await pause.ready;
+    return this.summary(id);
+  }
+
+  resume(id: string): TaskSummary {
+    const row = this.row(id);
+    if (TERMINAL.includes(row.status)) throw new Error(`task ${id} is ${row.status}`);
+    const pause = this.pauses.get(id);
+    this.pauses.delete(id);
+    pause?.acknowledge();
+    pause?.release();
+    this.setStatus(id, this.approvalList(id).some((a) => a.status === 'pending') ? 'awaiting_approval' : 'running');
+    this.publish(id, row.ws, 'task.resumed', { by: 'user' }, 'audit');
+    if (!this.running.has(id)) this.start(id);
+    return this.summary(id);
+  }
+
+  private async safePoint(id: string, signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted();
+    const pause = this.pauses.get(id);
+    if (!pause) return;
+    this.setStatus(id, 'paused');
+    pause.acknowledge();
+    await new Promise<void>((resolve) => {
+      const aborted = () => resolve();
+      signal.addEventListener('abort', aborted, { once: true });
+      void pause.wait.then(() => { signal.removeEventListener('abort', aborted); resolve(); });
+    });
+    signal.throwIfAborted();
+  }
+
+  async rollback(task: string, checkpoint: string) {
+    if (!this.checkpoints(task).some((c) => c.id === checkpoint)) throw new Error(`unknown checkpoint ${checkpoint}`);
+    if (!TERMINAL.includes(this.row(task).status)) await this.pause(task);
+    const run = this.running.get(task);
+    if (run) { run.controller.abort(); await run.done; }
+    this.o.db.run("UPDATE tool_calls SET status = 'cancelled' WHERE task = ? AND status = 'running'", task);
+    const result = this.restore(task, checkpoint);
+    for (const call of this.pendingCalls(this.transcript(task))) this.addMessage(task, null, { role: 'tool', parts: [{ type: 'tool_result', callId: call.id, name: call.name, content: 'Cancelled by user rollback. Re-observe the workspace before any further action.', isError: true, provenance: { source: 'builtin', trust: 'trusted', taint: false } }] });
+    this.addMessage(task, null, { role: 'user', parts: [{ type: 'text', text: `User restored checkpoint ${checkpoint}. Files restored: ${result.restored.join(', ')}; deleted: ${result.deleted.join(', ')}. Re-observe these files; do not assume earlier tool results reflect the current workspace.` }] });
+    this.emitActivity(task);
+    return result;
+  }
+
+  private async withWriteLease<T>(t: TaskRow, toolCall: string, needed: boolean, signal: AbortSignal, fn: () => Promise<T>): Promise<T> {
+    if (!needed) return fn();
+    const db = this.o.db;
+    const id = prefixedId('lease');
+    while (true) {
+      await this.safePoint(t.id, signal);
+      const now = new Date().toISOString();
+      db.run("UPDATE activity_leases SET state = 'expired', released_at = ? WHERE ws = ? AND state = 'held' AND expires_at < ?", now, t.ws, now);
+      const acquired = db.run("INSERT OR IGNORE INTO activity_leases (id, ws, task, holder, tool_call, globs_json, mode, state, acquired_at, heartbeat, expires_at) VALUES (?, ?, ?, 'primary', ?, '[\"**\"]', 'write', 'held', ?, ?, ?)", id, t.ws, t.id, toolCall, now, now, new Date(Date.now() + 60_000).toISOString());
+      if (Number(acquired.changes)) break;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    this.emitActivity(t.id);
+    const heartbeat = setInterval(() => {
+      db.run("UPDATE activity_leases SET heartbeat = ?, expires_at = ? WHERE id = ? AND state = 'held'", new Date().toISOString(), new Date(Date.now() + 60_000).toISOString(), id);
+      this.emitActivity(t.id);
+    }, 10_000);
+    try { return await fn(); }
+    finally {
+      clearInterval(heartbeat);
+      db.run("UPDATE activity_leases SET state = 'released', released_at = ? WHERE id = ? AND state = 'held'", new Date().toISOString(), id);
+      this.emitActivity(t.id);
+    }
   }
 
   /**
@@ -325,6 +544,7 @@ export class TaskRuntime {
 
   private publish(task: string, ws: string, topic: string, data: unknown, persist: 'none' | 'log' | 'audit' = 'log'): void {
     this.o.bus.publish({ topic, ws, task, data, persist });
+    if (/^(task\.|agent\.|tool\.|checkpoint\.|approval\.)/.test(topic)) this.emitActivity(task);
   }
 
   private addMessage(task: string, step: string | null, m: Message): void {
@@ -344,8 +564,9 @@ export class TaskRuntime {
   }
 
   start(id: string): void {
-    if (this.running.has(id)) return;
     const r = this.row(id);
+    if (r.status === 'paused' || r.status === 'pausing') throw new Error(`task ${id} is paused; use resume`);
+    if (this.running.has(id)) return;
     if (TERMINAL.includes(r.status)) throw new Error(`task ${id} is ${r.status}`);
     const controller = new AbortController();
     const done = this.o.tracer.withSpan('task', { 'task.id': id, 'ws.id': r.ws, provider: r.provider, model: r.model, policy_profile: r.policy_profile, resumed: r.step_count > 0 }, async (span) => {
@@ -364,6 +585,11 @@ export class TaskRuntime {
       .catch((error: Error) => this.o.logger?.error('task span failed', { task: id, error: error.message }))
       .finally(() => {
         this.running.delete(id);
+        const pause = this.pauses.get(id);
+        pause?.acknowledge();
+        pause?.release();
+        this.pauses.delete(id);
+        if (this.row(id).status === 'pausing') this.setStatus(id, 'paused');
         this.o.bus.flush();
       });
     this.running.set(id, { controller, done });
@@ -443,7 +669,9 @@ export class TaskRuntime {
         this.publish(r.id, this.row(r.id).ws, 'approval.decided', { approvalId: a.id, tool: a.tool, actionClass: a.action_class, approved: false, by: 'system', reason: 'expired on restart' }, 'audit');
       }
       this.o.db.run(`UPDATE approvals SET status = 'expired' WHERE task = ? AND status = 'pending'`, r.id);
-      this.publish(r.id, this.row(r.id).ws, 'task.resumed', { previousOwner: r.owner_engine }, 'audit');
+      // The previous owner is dead, so its write leases can never be released; without this the resumed tool call waits for lease expiry (NFR-4).
+      const staleLeases = this.o.db.run(`UPDATE activity_leases SET state = 'expired', released_at = ? WHERE task = ? AND state = 'held'`, new Date().toISOString(), r.id);
+      this.publish(r.id, this.row(r.id).ws, 'task.resumed', { previousOwner: r.owner_engine, expiredLeases: Number(staleLeases.changes) }, 'audit');
       this.start(r.id);
       resumed.push(r.id);
     }
@@ -451,6 +679,7 @@ export class TaskRuntime {
   }
 
   async shutdown(): Promise<void> {
+    this.unsubscribeActivity();
     const all = [...this.running.values()];
     for (const r of all) r.controller.abort();
     await Promise.allSettled(all.map((r) => r.done));
@@ -490,6 +719,7 @@ export class TaskRuntime {
       const context = this.composeContext(initial, root, index);
       await this.baseline(initial, sandbox, signal);
       while (!signal.aborted) {
+        await this.safePoint(id, signal);
         const t = this.row(id);
         const messages = this.transcript(id);
         const pending = this.pendingCalls(messages);
@@ -611,7 +841,7 @@ export class TaskRuntime {
 
   artifacts(task: string, kind?: string): Array<{ id: string; kind: string; title: string; data: unknown; at: string }> {
     return this.o.db.all<{ id: string; kind: string; title: string; data_json: string; at: string }>(
-      `SELECT id, kind, title, data_json, at FROM artifacts WHERE task = ? ${kind ? 'AND kind = ?' : ''} ORDER BY at, id`, ...(kind ? [task, kind] : [task]),
+      `SELECT id, kind, title, data_json, at FROM artifacts WHERE task = ? ${kind ? 'AND kind = ?' : ''} ORDER BY rowid`, ...(kind ? [task, kind] : [task]),
     ).map((r) => ({ id: r.id, kind: r.kind, title: r.title, data: parseJson(r.data_json, null), at: r.at }));
   }
 
@@ -806,6 +1036,7 @@ export class TaskRuntime {
     const now = new Date().toISOString();
     this.o.db.run(`INSERT INTO steps (id, task, agent, idx, kind, status, started_at) VALUES (?, ?, 'primary', ?, 'model', 'running', ?)`, stepId, t.id, t.step_count, now);
     this.publish(t.id, t.ws, 'task.step', { stepId, index: t.step_count, kind: 'model' });
+    this.publish(t.id, t.ws, 'agent.step.started', { stepId, agent: 'primary', index: t.step_count, kind: 'model' });
     const activated = activatedTools(messages.flatMap((m) => m.parts.filter((p): p is Extract<Part, { type: 'tool_result' }> => p.type === 'tool_result' && p.name === TOOL_SEARCH).map((p) => p.content)));
     const tools = this.o.tools.specs((name) => (t.policy_profile === 'plan' ? PLAN_TOOLS.includes(name) : name !== 'submit_plan' && (!this.o.tools.isDeferred(name) || activated.has(name))));
     const system = systemPrompt(root, this.gateSummary(root, t.verify_command), t.policy_profile, context);
@@ -829,6 +1060,7 @@ export class TaskRuntime {
         // The gateway already retried quickly; a sustained overload backs off at task level instead of failing the task.
         if (!(error instanceof ProviderError) || !error.retryable || attempt >= TASK_RETRY_DELAYS_MS.length || signal.aborted) {
           this.o.db.run(`UPDATE steps SET status = 'error', ended_at = ? WHERE id = ?`, new Date().toISOString(), stepId);
+          this.publish(t.id, t.ws, 'agent.step.completed', { stepId, agent: 'primary', index: t.step_count, kind: 'model', status: 'error' });
           throw error;
         }
         this.publish(t.id, t.ws, 'task.backoff', { stepId, kind: error.kind, delayMs: TASK_RETRY_DELAYS_MS[attempt] });
@@ -847,6 +1079,7 @@ export class TaskRuntime {
       'usage.cost_usd': result.costUsd ?? undefined, latency_ms: Math.round(result.latencyMs * 10) / 10, model_attempts: result.attempts, 'model.ref': refString(result.ref), role: plan ? 'planner' : 'coder',
       'ledger.entry': result.ledgerEntryId, 'tool_calls.requested': requested.length, finish_reason: result.finishReason, outcome: 'ok',
     });
+    this.publish(t.id, t.ws, 'agent.step.completed', { stepId, agent: 'primary', index: t.step_count, kind: 'model', status: 'done', ledgerEntryId: result.ledgerEntryId });
     this.publish(t.id, t.ws, 'agent.message', { stepId, text, toolCalls: requested, costUsd: result.costUsd });
   }
 
@@ -854,33 +1087,62 @@ export class TaskRuntime {
    * Explore subagent (F-ORC-1 minimal, §10.2): fresh brief (the question only, not the parent transcript),
    * explorer role, read-only tools, a step cap, and a summary truncated to ~1.5k tokens.
    */
-  private async explore(t: TaskRow, question: string, sandbox: LocalSandbox, signal: AbortSignal, index?: WorkspaceIndex): Promise<string> {
+  private async explore(t: TaskRow, question: string, sandbox: LocalSandbox, signal: AbortSignal, index?: WorkspaceIndex, parentCall?: string): Promise<string> {
     const tools = this.o.tools.specs((name) => EXPLORE_TOOLS.includes(name));
     const system = 'You are a read-only code explorer subagent. Answer the question about the workspace using find_symbol, code_search and read_file. '
       + 'You cannot modify files or run commands. Finish with a short plain-text summary (max ~200 words) of findings, each with path:line evidence, then a list of suggested files.';
     const messages: Message[] = [{ role: 'user', parts: [{ type: 'text', text: question }] }];
-    this.publish(t.id, t.ws, 'agent.subagent', { kind: 'explore', question: question.slice(0, 300), tools: tools.map((s) => s.name) });
-    for (let step = 0; step < EXPLORE_MAX_STEPS; step++) {
-      const res = await this.callRole(t, 'explorer', 'explore', {
-        ws: t.ws, task: t.id, agent: 'explore', signal,
-        request: { system, messages, tools, toolChoice: step === EXPLORE_MAX_STEPS - 1 ? 'none' : 'auto', maxOutputTokens: 2048 },
-      });
-      messages.push(res.message);
-      const calls = res.message.parts.filter((p): p is Extract<Part, { type: 'tool_call' }> => p.type === 'tool_call');
-      if (!calls.length) {
-        const text = res.message.parts.flatMap((p) => (p.type === 'text' ? [p.text] : [])).join('').trim() || '(the explore subagent returned no summary)';
-        return text.length > EXPLORE_MAX_CHARS ? `${text.slice(0, EXPLORE_MAX_CHARS)}\n[truncated]` : text;
+    const agent = prefixedId('explore');
+    this.o.db.run("INSERT INTO agents (id, task, kind, model_role, state, parent, parent_call, started_at) VALUES (?, ?, 'explore', 'explorer', 'running', 'primary', ?, ?)", agent, t.id, parentCall ?? null, new Date().toISOString());
+    this.publish(t.id, t.ws, 'agent.subagent', { agent, parent: 'primary', kind: 'explore', question: question.slice(0, 300), tools: tools.map((s) => s.name) });
+    let state = 'done';
+    try {
+      for (let step = 0; step < EXPLORE_MAX_STEPS; step++) {
+        await this.safePoint(t.id, signal);
+        const stepId = prefixedId('step');
+        this.o.db.run("INSERT INTO steps (id, task, agent, idx, kind, status, started_at) VALUES (?, ?, ?, ?, 'explore', 'running', ?)", stepId, t.id, agent, step, new Date().toISOString());
+        this.publish(t.id, t.ws, 'agent.step.started', { stepId, agent, index: step, kind: 'explore' });
+        const res = await this.callRole(t, 'explorer', 'explore', {
+          ws: t.ws, task: t.id, agent, step: stepId, signal,
+          request: { system, messages, tools, toolChoice: step === EXPLORE_MAX_STEPS - 1 ? 'none' : 'auto', maxOutputTokens: 2048 },
+        });
+        messages.push(res.message);
+        const text = res.message.parts.flatMap((p) => p.type === 'text' ? [p.text] : []).join('').trim();
+        this.o.db.run("UPDATE steps SET status = 'done', ended_at = ?, ledger_entry = ?, detail_json = ? WHERE id = ?", new Date().toISOString(), res.ledgerEntryId, json({ text: globalRedactor.redact(text) }), stepId);
+        this.publish(t.id, t.ws, 'agent.step.completed', { stepId, agent, index: step, kind: 'explore', status: 'done', ledgerEntryId: res.ledgerEntryId });
+        const calls = res.message.parts.filter((p): p is Extract<Part, { type: 'tool_call' }> => p.type === 'tool_call');
+        if (!calls.length) return text.length > EXPLORE_MAX_CHARS ? `${text.slice(0, EXPLORE_MAX_CHARS)}\n[truncated]` : text || '(the explore subagent returned no summary)';
+        const results: Part[] = [];
+        for (const call of calls) {
+          await this.safePoint(t.id, signal);
+          const id = prefixedId('tc');
+          const checkpoint = prefixedId('ckpt');
+          this.o.db.transaction(() => {
+            this.o.db.run('INSERT INTO checkpoints (id, task, step, files_json, at) VALUES (?, ?, ?, ?, ?)', checkpoint, t.id, stepId, '[]', new Date().toISOString());
+            this.o.db.run("INSERT INTO tool_calls (id, task, step, call_id, tool, args_json, status, checkpoint, at) VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?)", id, t.id, stepId, call.id, call.name, json(call.args), checkpoint, new Date().toISOString());
+          });
+          this.emitActivity(t.id);
+          const started = performance.now();
+          const allowed = EXPLORE_TOOLS.includes(call.name);
+          const out = allowed
+            ? await this.o.tools.run(call.name, call.args, { sandbox, signal, index })
+            : { content: `tool '${call.name}' is not available to the read-only explore subagent`, isError: true };
+          this.o.db.run('UPDATE tool_calls SET status = ?, summary = ?, duration_ms = ? WHERE id = ?', signal.aborted ? 'cancelled' : !allowed ? 'denied' : out.isError ? 'error' : 'ok', globalRedactor.redact(out.content.slice(0, 300)), Math.round(performance.now() - started), id);
+          this.emitActivity(t.id);
+          signal.throwIfAborted();
+          results.push({ type: 'tool_result', callId: call.id, name: call.name, content: out.content.slice(0, 20_000), isError: out.isError, provenance: { source: 'builtin', trust: 'trusted', taint: false } });
+        }
+        messages.push({ role: 'tool', parts: results });
       }
-      const results: Part[] = [];
-      for (const call of calls) {
-        const out = EXPLORE_TOOLS.includes(call.name)
-          ? await this.o.tools.run(call.name, call.args, { sandbox, signal, index })
-          : { content: `tool '${call.name}' is not available to the read-only explore subagent`, isError: true };
-        results.push({ type: 'tool_result', callId: call.id, name: call.name, content: out.content.slice(0, 20_000), isError: out.isError, provenance: { source: 'builtin', trust: 'trusted', taint: false } });
-      }
-      messages.push({ role: 'tool', parts: results });
+      return `explore subagent stopped after ${EXPLORE_MAX_STEPS} steps without a summary`;
+    } catch (error) {
+      state = signal.aborted ? 'cancelled' : 'error';
+      this.o.db.run("UPDATE steps SET status = ?, ended_at = ? WHERE task = ? AND agent = ? AND status = 'running'", state, new Date().toISOString(), t.id, agent);
+      throw error;
+    } finally {
+      this.o.db.run('UPDATE agents SET state = ?, ended_at = ? WHERE id = ?', state, new Date().toISOString(), agent);
+      this.emitActivity(t.id);
     }
-    return `explore subagent stopped after ${EXPLORE_MAX_STEPS} steps without a summary`;
   }
 
   /** Content-addressed blob refs for a tool call's input and output, redacted first, so traces point at I/O without embedding it (NFR-10). */
@@ -919,6 +1181,7 @@ export class TaskRuntime {
     let tainted = this.transcript(t.id).some((m) => m.parts.some((p) => p.type === 'tool_result' && p.provenance?.taint));
     for (const call of calls) {
       if (signal.aborted) return;
+      await this.safePoint(t.id, signal);
       const existing = this.o.db.get<{ id: string; checkpoint: string }>('SELECT id, checkpoint FROM tool_calls WHERE task = ? AND call_id = ? AND status = ?', t.id, call.id, 'running');
       const toolId = existing?.id ?? prefixedId('tc');
       const checkpointId = existing?.checkpoint ?? prefixedId('ckpt');
@@ -926,6 +1189,7 @@ export class TaskRuntime {
         this.o.db.run('INSERT INTO checkpoints (id, task, step, files_json, at) VALUES (?, ?, ?, ?, ?)', checkpointId, t.id, origin?.step_id ?? null, '[]', new Date().toISOString());
         this.o.db.run('INSERT INTO tool_calls (id, task, step, call_id, tool, args_json, status, checkpoint, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', toolId, t.id, origin?.step_id ?? 'tools', call.id, call.name, json(call.args), 'running', checkpointId, new Date().toISOString());
       });
+      this.emitActivity(t.id);
       const decision = evaluate({ tool: call.name, args: call.args, profile: t.policy_profile, preapprove, sandboxHasNetwork: sandbox.info().network, tainted });
       let allowed = decision.verdict === 'allow';
       if (decision.verdict === 'ask') allowed = await this.ask(t, call, decision.actionClass, signal);
@@ -950,7 +1214,9 @@ export class TaskRuntime {
       const script = this.replays.get(t.id);
       const replayed = script?.next(call, allowed ? 'allowed' : 'denied');
       // One `tool.call` span per call, denied ones included (§26.1), under the agent step that requested it.
-      const out: ToolOutput = await this.o.tracer.withSpan('tool.call', {
+      await this.safePoint(t.id, signal);
+      const readOnly = ['read_file', 'list_dir', 'search', 'find_symbol', 'code_search', 'impact', 'explore', 'submit_plan', 'tool_search'].includes(call.name);
+      const out: ToolOutput = await this.withWriteLease(t, toolId, allowed && !replayed && !readOnly, signal, () => this.o.tracer.withSpan('tool.call', {
         tool: call.name, 'task.id': t.id, call_id: call.id, 'checkpoint.id': checkpointId, action_class: decision.actionClass, 'policy.decision': allowed ? 'allow' : 'deny', 'policy.reason': decision.reason.slice(0, 200), replayed: Boolean(replayed),
         'model.cost_known': origin?.cost_usd !== null && origin?.cost_usd !== undefined,
         'model.cost_basis': 'shared originating model response; non-additive attribution, not an additional tool execution charge',
@@ -960,6 +1226,7 @@ export class TaskRuntime {
         const pre = await runHooks(sandbox, hooks, 'pre_tool', { tool: call.name, args: call.args }, signal);
         const blocked = pre.find((r) => r.exitCode !== 0);
         if (pre.length) this.publish(t.id, t.ws, 'hook.ran', { event: 'pre_tool', tool: call.name, runs: pre.map((r) => ({ run: r.run, exitCode: r.exitCode })) }, 'audit');
+        await this.safePoint(t.id, signal);
         let res: ToolOutput = blocked
           ? { content: `blocked by pre_tool hook \`${blocked.run}\` (exit ${blocked.exitCode})\n${formatHookRuns('pre_tool', pre)}`, isError: true, summary: `hook blocked ${call.name}`, provenance: { source: 'repo', trust: 'untrusted', taint: true, origin: 'hook:pre_tool' } }
           : replayed && allowed
@@ -970,7 +1237,7 @@ export class TaskRuntime {
               trace: (name, attrs, fn) => this.o.tracer.withSpan(name, attrs, fn),
               startDevServer: this.o.devServers ? () => this.o.devServers!.start(sandbox.root) : undefined,
               previewBrowser: this.previewBrowserFor(sandbox.root),
-              explore: (question) => this.explore(t, question, sandbox, signal, index),
+              explore: (question) => this.explore(t, question, sandbox, signal, index, toolId),
               beforeWrite: (abs, prev) => this.checkpoint(t, sandbox, abs, prev, checkpointId),
               submitArtifact: t.policy_profile === 'plan' ? (kind, title, data) => {
                 const artId = this.saveArtifact(t.id, kind, title, data);
@@ -993,7 +1260,7 @@ export class TaskRuntime {
         });
         if (res.isError) span.setStatus(StatusCode.ERROR, (res.summary ?? res.content).slice(0, 200));
         return res;
-      }, undefined, this.stepSpans.get(t.id));
+      }, undefined, this.stepSpans.get(t.id)));
       const durationMs = Math.round(performance.now() - started);
       this.o.db.run('UPDATE tool_calls SET status = ?, summary = ?, result_tokens = ?, duration_ms = ? WHERE id = ?',
         signal.aborted ? 'cancelled' : allowed ? (out.isError ? 'error' : 'ok') : 'denied', out.summary ?? null, Math.ceil(out.content.length / 4), durationMs, toolId);
@@ -1032,6 +1299,7 @@ export class TaskRuntime {
     const ref = previous === null ? null : this.o.blobs ? this.o.blobs.put(previous, { kind: 'checkpoint', id: t.id }) : previous;
     files.push({ path, before: ref });
     this.o.db.run('UPDATE checkpoints SET files_json = ? WHERE id = ?', json(files), checkpointId);
+    this.emitActivity(t.id);
   }
 
   private ask(t: TaskRow, call: Extract<Part, { type: 'tool_call' }>, actionClass: string, signal: AbortSignal): Promise<boolean> {
@@ -1049,11 +1317,12 @@ export class TaskRuntime {
     return new Promise((resolve) => {
       const done = (v: boolean) => {
         signal.removeEventListener('abort', onAbort);
-        if (!signal.aborted) this.setStatus(t.id, 'running');
+        if (!signal.aborted && !this.pauses.has(t.id)) this.setStatus(t.id, 'running');
         resolve(v);
       };
       const onAbort = () => {
         this.approvals.delete(approvalId);
+        this.o.db.run("UPDATE approvals SET status = 'expired' WHERE id = ? AND status = 'pending'", approvalId);
         resolve(false);
       };
       signal.addEventListener('abort', onAbort, { once: true });
@@ -1130,6 +1399,7 @@ export class TaskRuntime {
   /** One `gate.run` span per gate execution (§26.1); the command's own `sandbox.exec` span nests under it. */
   private gateRun(t: TaskRow, gate: Gate, command: string, phase: 'baseline' | 'verify', attempt: number, sandbox: LocalSandbox, signal: AbortSignal) {
     return this.o.tracer.withSpan('gate.run', { 'task.id': t.id, gate: gate.name, 'gate.kind': gate.kind, required: gate.required, phase, attempt, command: globalRedactor.redact(command).slice(0, 200) }, async (span) => {
+      await this.safePoint(t.id, signal);
       const r = await sandbox.exec(command, { timeoutMs: gate.timeoutMs, signal });
       span.setAttributes({ exit_code: r.exitCode, passed: r.exitCode === 0, timed_out: r.timedOut, duration_ms: r.durationMs, outcome: r.timedOut ? 'timeout' : r.exitCode === 0 ? 'ok' : 'failed' });
       return r;
