@@ -4,6 +4,7 @@ export * from './sse.ts';
 export * from './capabilities.ts';
 export * from './retry.ts';
 export * from './workbench.ts';
+export * from './activity.ts';
 
 export const PROTOCOL_VERSION = '0.1.0';
 
@@ -28,6 +29,8 @@ export type TaskStatus =
   | 'running'
   | 'verifying'
   | 'blocked'
+  | 'pausing'
+  | 'paused'
   | 'done'
   | 'failed'
   | 'cancelled';
@@ -99,6 +102,9 @@ export const Methods = {
   taskCreate: 'task.create',
   taskStart: 'task.start',
   taskResume: 'task.resume',
+  taskPause: 'task.pause',
+  taskActivity: 'task.activity',
+  taskRollback: 'task.rollback',
   taskCancel: 'task.cancel',
   taskGet: 'task.get',
   taskList: 'task.list',

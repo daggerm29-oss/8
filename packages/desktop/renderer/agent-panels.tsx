@@ -3,6 +3,7 @@ import { ArrowUp, Bot, Check, X } from "lucide-react";
 import { rpc, useRpc, queryClient } from "./rpc";
 import { useWorkbench, type Task } from "./state";
 import { CheckpointInspector } from "./checkpoint-inspector";
+import { ActivityTree } from './activity-tree';
 
 type Message = {
   role: string;
@@ -155,16 +156,6 @@ export function MonitorPanel() {
   const workspace = useWorkbench((state) => state.workspace);
   const selected = useWorkbench((state) => state.selectedTask);
   const monitor = useRpc<Task[]>("task.monitor");
-  const steps = useRpc<
-    {
-      id: string;
-      index: number;
-      kind: string;
-      status: string;
-      text?: string;
-      toolCalls: { id: string; tool: string; status: string }[];
-    }[]
-  >("task.steps", { task: selected }, !!selected);
   const tasks = (monitor.data ?? []).filter(
     (task) => task.workspacePath === workspace,
   );
@@ -237,24 +228,8 @@ export function MonitorPanel() {
       ) : (
         <div className="empty-state">No tasks in this workspace.</div>
       )}
+      {selected && <ActivityTree key={selected} task={selected} />}
       <CheckpointInspector />
-      <ol className="step-list">
-        {steps.data?.map((step) => (
-          <li key={step.id}>
-            <strong>
-              Step {step.index + 1} · {step.kind} · {step.status}
-            </strong>
-            <p>{step.text}</p>
-            <ul>
-              {step.toolCalls.map((call) => (
-                <li key={call.id}>
-                  {call.tool} · {call.status}
-                </li>
-              ))}
-            </ul>
-          </li>
-        ))}
-      </ol>
     </section>
   );
 }

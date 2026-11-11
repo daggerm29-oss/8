@@ -89,7 +89,7 @@ function compactionFrom(env: NodeJS.ProcessEnv, opts?: CompactionOptions): Compa
   };
 }
 
-const TOPICS = ['task.*', 'agent.*', 'tool.*', 'model.*', 'verify.*', 'approval.*', 'ledger.*', 'budget.*', 'context.*', 'artifact.*', 'checkpoint.*', 'workspace.*', 'egress.*', 'preview.*', 'secret.*', 'sandbox.*', 'policy.*', 'git.*', 'deploy.*', 'mcp.*'];
+const TOPICS = ['task.*', 'agent.**', 'tool.*', 'model.*', 'verify.*', 'approval.*', 'ledger.*', 'budget.*', 'context.*', 'artifact.*', 'checkpoint.*', 'workspace.*', 'egress.*', 'preview.*', 'secret.*', 'sandbox.*', 'policy.*', 'git.*', 'deploy.*', 'mcp.*'];
 
 /** Helix Engine (§6.2): composition root for storage, bus, gateway, tools, sandbox, and the task runtime. */
 export class Engine {
@@ -214,7 +214,10 @@ export class Engine {
     }));
     peer.handle(Methods.taskCreate, guard<TaskCreateParams>((p) => this.runtime.create(p)));
     peer.handle(Methods.taskStart, guard<{ id: string }>((p) => (this.runtime.start(p.id), this.runtime.summary(p.id))));
-    peer.handle(Methods.taskResume, guard<{ id: string }>((p) => (this.runtime.start(p.id), this.runtime.summary(p.id))));
+    peer.handle(Methods.taskResume, guard<{ id: string }>((p) => this.runtime.resume(p.id)));
+    peer.handle(Methods.taskPause, guard<{ id: string }>((p) => this.runtime.pause(p.id)));
+    peer.handle(Methods.taskActivity, guard<{ task: string }>((p) => this.runtime.activity(p.task)));
+    peer.handle(Methods.taskRollback, guard<{ task: string; checkpoint: string }>((p) => this.runtime.rollback(p.task, p.checkpoint)));
     peer.handle(Methods.taskCancel, guard<{ id: string }>((p) => this.runtime.cancel(p.id)));
     peer.handle(Methods.taskGet, guard<{ id: string }>((p) => this.runtime.summary(p.id)));
     peer.handle(Methods.taskList, guard<{ limit?: number }>((p) => this.runtime.list(p.limit)));

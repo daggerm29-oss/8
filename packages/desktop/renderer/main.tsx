@@ -237,11 +237,11 @@ function useQueryConfig() {
     },
   });
 }
-rpc.subscribe(({ method }) => {
-  if (method === "event")
+rpc.subscribe(({ method, params }) => {
+  if (method === "event" && params.topic !== 'agent.step.activity' && params.topic !== 'model.delta')
     void queryClient.invalidateQueries({
       predicate: (query) =>
-        !["engine-config"].includes(String(query.queryKey[0])),
+        !["engine-config", "task.activity"].includes(String(query.queryKey[0])),
     });
   if (method === "disconnected") {
     useWorkbench

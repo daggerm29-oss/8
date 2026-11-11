@@ -1,0 +1,28 @@
+.activity-tree { padding: 16px; border-top: 1px solid var(--border); }
+.activity-heading, .activity-controls, .activity-tree summary, .activity-tool { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.activity-heading { margin-bottom: 12px; }
+.activity-heading h2 { margin: 0; }
+.activity-status { border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; color: var(--accent); font-size: 11px; }
+.activity-usage { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 11px; }
+.activity-controls { margin-bottom: 14px; }
+.activity-controls label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; min-width: 0; flex: 1 1 220px; }
+.activity-controls select { width: 100%; max-width: 500px; }
+.activity-resources { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 18px; }
+.activity-resources > div { padding: 10px; border: 1px solid var(--border); background: var(--bg); flex: 1 1 190px; min-width: 0; }
+.activity-resources h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin-bottom: 8px; }
+.activity-resources p { margin-bottom: 4px; overflow-wrap: anywhere; }
+.activity-resources ul { margin: 0; padding-left: 16px; }
+.activity-resources li span { display: block; font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+.activity-branches, .activity-branches ol { list-style: none; padding-left: 16px; border-left: 1px solid var(--border); }
+.activity-branches { padding-left: 0; border: 0; }
+.activity-branches li { margin: 10px 0; min-width: 0; }
+.activity-tree summary { cursor: pointer; padding: 6px 0; }
+.activity-tree summary::before { content: '▸'; color: var(--muted); }
+.activity-tree details[open] > summary::before { content: '▾'; }
+.activity-agent > summary strong { color: var(--accent); }
+.activity-context { color: var(--muted); font-size: 11px; }
+.activity-context dl > div { display: flex; gap: 12px; }
+.activity-context dt { min-width: 100px; }
+.activity-output { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 160px; overflow: auto; }
+.activity-tool { font-size: 12px; }
+.activity-checkpoint { font-size: 10px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; margin-top: 4px; }

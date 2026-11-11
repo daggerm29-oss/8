@@ -69,7 +69,8 @@ class EngineRpc {
       token: token || undefined,
       topics: [
         "task.*",
-        "agent.*",
+        "agent.**",
+        "checkpoint.*",
         "tool.*",
         "verify.*",
         "approval.*",
@@ -105,6 +106,11 @@ class EngineRpc {
   }
 }
 export const rpc = new EngineRpc();
+rpc.subscribe(({ method, params }) => {
+  if (method !== 'event' || params.topic !== 'agent.step.activity') return;
+  const activity = params.data as import('@helix/protocol').TaskActivity;
+  queryClient.setQueryData(['task.activity', { task: activity.task }], activity);
+});
 export function useRpc<T>(method: string, params: object = {}, enabled = true) {
   return useQuery({
     queryKey: [method, params],

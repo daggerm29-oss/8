@@ -123,4 +123,18 @@ export const MIGRATIONS: string[] = [
   CREATE TRIGGER tool_call_checkpoint_required BEFORE INSERT ON tool_calls WHEN NEW.checkpoint IS NULL
     BEGIN SELECT RAISE(ABORT, 'tool call requires checkpoint'); END;
   `,
+  /* v10: R1.3 durable activity ancestry and M1 single-workspace write leases. */ `
+  ALTER TABLE agents ADD COLUMN parent TEXT;
+  ALTER TABLE agents ADD COLUMN parent_call TEXT;
+  ALTER TABLE agents ADD COLUMN started_at TEXT;
+  ALTER TABLE agents ADD COLUMN ended_at TEXT;
+  ALTER TABLE steps ADD COLUMN detail_json TEXT;
+  CREATE TABLE activity_leases (
+    id TEXT PRIMARY KEY, ws TEXT NOT NULL, task TEXT NOT NULL, holder TEXT NOT NULL, tool_call TEXT NOT NULL,
+    globs_json TEXT NOT NULL, mode TEXT NOT NULL, state TEXT NOT NULL, acquired_at TEXT NOT NULL,
+    heartbeat TEXT NOT NULL, expires_at TEXT NOT NULL, released_at TEXT
+  );
+  CREATE UNIQUE INDEX activity_lease_workspace ON activity_leases(ws) WHERE state = 'held';
+  CREATE INDEX activity_leases_task ON activity_leases(task);
+  `,
 ];
