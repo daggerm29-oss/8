@@ -15,16 +15,16 @@
 
 > These are **checklist completion** numbers (ticked items with recorded evidence ÷ all items). They are not a measure of product quality or release readiness; human launch gates in `docs/roadmap.md` are not counted.
 
-**Overall checklist completion: 39%** (76/197 roadmap items)  
+**Overall checklist completion: 40%** (78/197 roadmap items)  
 **Current milestone:** M1 MVP, grounded single agent  
-**Next task:** R1.7 Whole-toolchain containment completion (F-SBX-2, FR-19, FR-27, F-MCP-1, SEC-1) [§16.3]
+**Next task:** R1.8a Hard per-sandbox disk quota (F-SBX-5) [§16.4]
 
 **Execution-order exception:** user-authorized M1 work; M0 remains unfinished (R0.8 CI pipeline (plan §15.1, §15.7) [§35.6]). No acceptance criterion or gate is waived.
 
 | Milestone | Progress | Items | Status |
 | --- | --- | --- | --- |
 | M0 Foundations | ██████████ 96% | 22/23 | Unfinished (execution postponed) |
-| M1 MVP, grounded single agent | ████░░░░░░ 40% | 32/80 | In progress |
+| M1 MVP, grounded single agent | ████░░░░░░ 43% | 34/80 | In progress |
 | M2 Precision and efficiency | █████░░░░░ 45% | 22/49 | Partly built early |
 | M3 Parallel and background | ░░░░░░░░░░ 0% | 0/20 | Not started |
 | M4 Team and ecosystem | ░░░░░░░░░░ 0% | 0/16 | Not started |
@@ -34,12 +34,10 @@
 
 ## Current task notes (overwrite when the task changes)
 
-- PR #22 merged at ad9dff8061cd1ceae796cbd7c34c06df22843e3b (starting main verified). Continue the existing M1 branch helix/session-2026-11-10-m1-workbench and PR #23: https://github.com/daggerm29-oss/8/pull/23. PR #19 remains untouched.
-- R1.1 COMPLETE (7a31567) and R1.2 COMPLETE (380e22f): packaged Electron workbench, FlexLayout docking/floating/saved layouts, remapped shortcuts and fuzzy command palette verified.
-- R1.3 COMPLETE at 6cfeda8 (packaged monitor 1/1, p95 34 ms; `evals/results/r1-3-packaged-monitor-2026-11-11.json`).
-- R1.4 COMPLETE at c0a4942 + 2cb5096: `cd packages/desktop && node --test test/hardening.test.mjs && npx playwright test e2e/crash.spec.ts` → 4/4 + 1/1 (OS-sandboxed packaged Electron, strict script CSP, MessagePort IPC allowlist, renderer crash → same Engine + task alive → window reattached; Engine crash → supervised restart → task resumed from checkpoint; dead-owner lease recovery bug fixed). NFR-4 → Done; SEC-13 Partial (CI run via R0.8). Evidence `evals/results/r1-4-packaged-hardening-2026-11-11.json`.
-- R1.5 COMPLETE (bbbba0b); R1.6 COMPLETE (cc9fdbb): dashboard/export tests 1/1 Engine + 1/1 packaged Electron, actual R0.5 trace rendered, all five dimensions reconcile; regression a11y/layout/workbench 3/3 (24 scans/0 violations), locale 3/3, both TypeScript checks pass. Next R1.7: inspect whole-toolchain containment (§16.3), especially MCP stdio and browser launches; acceptance `cd packages/engine && node --test test/redteam-containment.test.ts`.
-- R0.8 remains postponed/open with acceptance unchanged, M0 unfinished. Remaining M1 tasks and G1.1–G1.6/external gates are still required; do not start M2+.
+- Branch helix/session-2026-11-10-m1-workbench, draft PR #23 (https://github.com/daggerm29-oss/8/pull/23). PR #19 (M3) parked, untouched.
+- R1.1–R1.6 complete (see roadmap evidence). R1.7 + R1.8 COMPLETE via CI run 43143536991 at e803082 (red-team 8/8 with real contained Chrome; lifecycle 6/6 with delegated cgroup memory controller).
+- CI at e803082 fails only at the R1.4 packaged crash e2e (`crash.spec.ts` "reopened window reattaches"), which skips the red-team regression and scope steps; investigate before marking the PR ready.
+- Next: R1.8a hard overlay-size disk quota (`test/sandbox-lifecycle.test.ts`, `HELIX_DISK_QUOTA=hard`), then R1.9, R1.10. R0.8 still postponed; do not start M2+.
 
 ## Ideas parking lot (one line each, max 15 — do not implement)
 

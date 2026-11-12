@@ -191,12 +191,12 @@ Desktop and UI
   - Accept [A-local]: `node --test test/ledger-dashboard.test.ts && cd packages/desktop && npx playwright test e2e/ledger.spec.ts` → dashboard totals by agent/task/tool/provider/model equal `ledger.query`; CSV and JSON export round-trip; trace viewer renders the span tree of the R0.5 run
 
 Sandbox
-- [ ] **R1.7 Whole-toolchain containment completion** (F-SBX-2, FR-19, FR-27, F-MCP-1, SEC-1) [§16.3] — MCP stdio servers and headless Chrome run inside sandboxes; nothing agent-initiated runs on the host. Done when: the red-team check "read host home" fails from shell, files, LSPs, dev servers, tests, MCP stdio, hooks, and browser.
+- [x] **R1.7 Whole-toolchain containment completion** (F-SBX-2, FR-19, FR-27, F-MCP-1, SEC-1) [§16.3] — MCP stdio servers and headless Chrome run inside sandboxes; nothing agent-initiated runs on the host. Done when: the red-team check "read host home" fails from shell, files, LSPs, dev servers, tests, MCP stdio, hooks, and browser.
   - Accept [A-local]: `node --test test/redteam-containment.test.ts` → for each of shell, file tools, LSP, dev server, test runner, MCP stdio server, hook, browser: an attempt to read a host-home canary file fails and the canary is absent from all outputs; `ps` on the host shows no MCP server or Chrome outside a sandbox
-  - Blocked: needs a runner that can mount a fresh procfs in a user namespace (CI ubuntu-24.04 with `HELIX_REDTEAM_REQUIRE_BROWSER=1`); the v0 VM's /proc has locked overmounts (/proc/kcore, /proc/keys) so crun/runc/unshare all get EPERM and Chrome exits without /proc. A-local parts pass (`node --test test/redteam-containment.test.ts` → 8/8 here: shell, file tools, LSP, dev server, test runner, MCP stdio contained in a separate mount ns, hook; browser fails closed with no host Chrome; strict mode → 7/8, browser refused)
-- [ ] **R1.8 Sandbox lifecycle and resources** (F-SBX-5, SEC-12, PERF-9) [§16.4] — cgroup CPU/memory/PID/disk limits (ISSUE-005), hydrate/snapshot/suspend/resume, reaper for orphaned sandboxes on Engine start and on a timer; no secrets in snapshots.
+  - Evidence: `node --test test/redteam-containment.test.ts (CI ubuntu-24.04, HELIX_REDTEAM_REQUIRE_BROWSER=1, CI run 43143536991) → 8/8` (shell, file tools, LSP, dev server, test runner, MCP stdio, hook, real contained Chrome; canary absent, no MCP/Chrome on host); local VM 8/8 (browser fails closed); commit e803082; artifact evals/results/r1-7-redteam-ci-2026-11-12.txt
+- [x] **R1.8 Sandbox lifecycle and resources** (F-SBX-5, SEC-12, PERF-9) [§16.4] — cgroup CPU/memory/PID/disk limits (ISSUE-005), hydrate/snapshot/suspend/resume, reaper for orphaned sandboxes on Engine start and on a timer; no secrets in snapshots.
   - Accept [A-local]: `node --test test/sandbox-lifecycle.test.ts` → memory hog killed at its cgroup limit, fork bomb stopped by PID limit, disk filler stopped by quota; snapshot → suspend → resume restores files and processes; orphaned sandboxes from a killed Engine are reaped on next start; no sentinel secret value appears in snapshot bytes
-  - Blocked: needs a host whose delegated cgroup subtree has the memory controller (CI ubuntu-24.04 domain cgroups via `scripts/cgroup-delegate.sh`); the v0 VM root cgroup is threaded (cpu/pids only). A-local parts pass (`sudo sh scripts/cgroup-delegate.sh $(id -u) $$ && node --test test/sandbox-lifecycle.test.ts` → 5/6: fork bomb stopped by pids.max, disk filler stopped by quota, snapshot→suspend→resume keeps the same process and restores files, no secret value in snapshot bytes, killed-Engine orphans reaped on next Engine start; memory hog fails with `memory limit is not enforced on this host`)
+  - Evidence: `sudo sh scripts/cgroup-delegate.sh && node --test test/sandbox-lifecycle.test.ts (CI ubuntu-24.04, CI run 43143536991) → 6/6` (memory hog killed at memory.max, fork bomb stopped by pids.max, disk filler stopped by quota, snapshot→suspend→resume, no sentinel secret in snapshot bytes, killed-Engine orphans reaped); commit e803082; artifact evals/results/r1-8-sandbox-lifecycle-ci-2026-11-12.txt
 - [ ] **R1.8a Hard per-sandbox disk quota** (F-SBX-5) [§16.4] — the sandbox's writable layer is an overlay whose upper dir lives on a size-limited filesystem, so writes past the quota fail with ENOSPC at the byte (closes the sampling gap of IMPL-ADR-034).
   - Accept [A-local]: `node --test test/sandbox-lifecycle.test.ts` with `HELIX_DISK_QUOTA=hard` → a 500 MB/s single- and multi-file filler gets ENOSPC with ≤ 1 MiB written beyond the quota; workspace edits below the quota still reach the host repo
 - [ ] **R1.9 Per-tool egress and network approvals** (F-SBX-3, FR-18) [§16.5, §10.5] — allowlists per workspace and per tool; per-domain network approval class with one-click allow.
@@ -597,7 +597,7 @@ External exit gates (plan §12 M4; not build tasks, never simulated):
 | FR-16 | M3 | Not started | DEF(M3) | M3 Write leases + worktrees; R3.3 | Not on `main`; two open defects |
 | FR-17 | M1 | Partial | RED | R1.29 | Not a shadow git object store (see F-GIT-2) |
 | FR-18 | M1 | Partial | RED | R1.9; R1.20 | No per-domain network approval class, no deploy class; push is hard-denied rather than approvable |
-| FR-19 | M1 | Partial | RED | R0.2; R1.7 | MCP servers and Chrome run on host (R1.7); agent shell/tools fail closed, `local-process` removed (R0.2, commit 66ff487) |
+| FR-19 | M1 | Done | RED | R0.2; R1.7 | Evidence: `node --test test/redteam-containment.test.ts (CI ubuntu-24.04, HELIX_REDTEAM_REQUIRE_BROWSER=1, CI run 43143536991) → 8/8`; commit e803082 (MCP stdio network denied + scoped credentials; agent shell/tools fail closed, R0.2 66ff487) |
 | FR-20 | M1 | Partial | RED | R1.21 | Framework detection limited; no HMR passthrough verification; no persisted recipe |
 | FR-21 | M1 | Not started | MISS | R1.22 | Multi-tab, sessions, presets, emulation |
 | FR-22 | M1 | Partial | RED | R1.24 | Build errors / dev-overlay detection; source-mapped stacks |
@@ -605,7 +605,7 @@ External exit gates (plan §12 M4; not build tasks, never simulated):
 | FR-24 | M2 | Partial | RED | R2.5 | Compiler plugins, React owner stack, source maps |
 | FR-25 | M1 | Partial | RED | R1.31 | Spec revision: negotiates `2025-06-18`, not 2026-07-28 (`mcp/client.ts:8`); extension negotiation (Tasks, Skills over MCP, MCP Apps) |
 | FR-26 | M2 | Partial (audit FV, residual gap) | FV | M2 MCP tool search; R2.7 | Success-rate regression (≤ 2 pp) not measured |
-| FR-27 | M1 | Partial | RED | R1.7; R1.32 | Process sandbox and credential scope per server |
+| FR-27 | M1 | Partial | RED | R1.7; R1.32 | Process sandbox per MCP server done (R1.7, e803082); remaining: per-server credential scope UI/policy (R1.32) |
 | FR-28 | M1 (worktree M3) | Partial | RED | R1.28; M3 Write leases + worktrees | Branch, rebase-assist, PR creation (unscheduled), hunk staging |
 | FR-29 | M1 | Partial (audit FV, residual gap) | FV | R1.30 | Remote branch deletion and `reset --hard` not specifically tested |
 | FR-30 | M1 (instructions), M3 (memory) | Not started | DEF(M3) | R1.14; M3 typed memory | Typed memory (M3); `CLAUDE.md` / `.cursor/rules` import **not implemented** and not scheduled (only AGENTS.md/HELIX.md loaded) |
@@ -646,10 +646,10 @@ External exit gates (plan §12 M4; not build tasks, never simulated):
 | F-ORC-4 | M1 | Partial | RED | R1.20 | Batch approval not found |
 | F-ORC-5 | M3 (local/cloud), M4 (issue triggers) | Not started | DEF(M3) | M3 workers; M3 Schedules and triggers; R3.5; R4.2 | All |
 | F-SBX-1 | M0 (local), M3 (cloud) | Partial | RED | R0.1; R0.2; M3 Cloud sandbox provider | M0 part: Evidence: `local-container`, `local-unshare` and `local-os` (bwrap) pass the conformance suite, fail closed otherwise (R0.1 commit 81b44e1; R0.2: `HELIX_SANDBOX_BACKENDS=local-container,local-unshare,local-os node --test test/sandbox-conformance.test.ts` → 24/24, commit 66ff487); still missing: Seatbelt run on macOS (A-host, R1.37), gVisor on a host with runsc; M3: cloud backends |
-| F-SBX-2 | M1 | Partial | RED | R1.7 | MCP and browser containment; red-team suite (§15.5) |
+| F-SBX-2 | M1 | Partial | RED | R1.7 | Host-home canary unreadable from all 8 tools (Evidence: `node --test test/redteam-containment.test.ts (CI ubuntu-24.04, HELIX_REDTEAM_REQUIRE_BROWSER=1, CI run 43143536991) → 8/8`; commit e803082); remaining: non-allowlisted hosts unreachable from every tool (per-tool egress R1.9) and full §15.5 red-team suite (R1.40) |
 | F-SBX-3 | M1 | Partial (audit FV, residual gap) | FV | R1.9 | Per-tool allowlist |
 | F-SBX-4 | M2 | Partial | RED | R2.9 | MCP path (MCP not sandboxed); memory-dump test; persisted bindings |
-| F-SBX-5 | M1 | Partial | RED | R1.8; R1.8a | cgroup memory limit evidence on a domain-cgroup host (CI); hard overlay-size disk quota (R1.8a); PERF-9 warm-start benchmark; hydrate from deps cache. Done locally: pids/cpu limits, freeze suspend/resume, in-sandbox snapshot/restore, reaper (`test/sandbox-lifecycle.test.ts` 5/6) |
+| F-SBX-5 | M1 | Partial | RED | R1.8; R1.8a | M1 limits/lifecycle pass on CI (sudo sh scripts/cgroup-delegate.sh && node --test test/sandbox-lifecycle.test.ts (CI ubuntu-24.04, CI run 43143536991) → 6/6; commit e803082); remaining: hard overlay-size disk quota (R1.8a), PERF-9 warm-start benchmark (R1.38), hydrate from deps cache |
 | F-PRV-1 | M1 | Partial | RED | R1.21 | Framework fixture set, persisted recipe |
 | F-PRV-2 | M1 | Partial | RED | R1.22 | All extras; no roadmap follow-up |
 | F-PRV-3 | M1 | Partial | RED | R1.24 | Source maps, Web Vitals, perf marks, overlay detection, Problems panel |
@@ -662,7 +662,7 @@ External exit gates (plan §12 M4; not build tasks, never simulated):
 | F-GIT-3 | M3 | Not started | DEF(M3) | M3 Write leases + worktrees | Not on `main` |
 | F-GIT-4 | M4 | Not started | MISS | R4.1 | PR creation |
 | F-GIT-5 | M1 | Partial | RED | R1.30 | Large-deletion guard, history-rewrite guard, pre-commit secret scan |
-| F-MCP-1 | M1 | Partial | RED | R1.7; R1.31 | Sandbox spawn, org scope, 2026-07-28 spec revision (uses 2025-06-18), extension negotiation, reference-server conformance |
+| F-MCP-1 | M1 | Partial | RED | R1.7; R1.31 | Sandbox spawn done (R1.7, e803082); remaining: org scope, 2026-07-28 spec revision (uses 2025-06-18), extension negotiation, reference-server conformance (R1.31) |
 | F-MCP-2 | M2 | Partial | RED | R2.7 | BM25 + embeddings index (keyword scoring only); success-drop measurement |
 | F-MCP-3 | M1 | Partial | RED | R1.32 | Two of four tiers; network/credential scope per tier |
 | F-MCP-4 | M2 | Partial (unverified) | NV | R2.8 | JSONPath projection and resource-version keys not verified |
@@ -706,7 +706,7 @@ External exit gates (plan §12 M4; not build tasks, never simulated):
 | NFR-11 | M1 | Not started | MISS | R1.42 | All |
 | NFR-12 | M1 | Done | GREEN | R1.5 | Evidence: `cd packages/desktop && node scripts/check-i18n.mjs && node --test test/i18n.test.mjs` → 0 hard-coded renderer UI strings, 3/3; typed English catalog incl. docking-library labels, parameter interpolation, translation fallback, locale-aware currency and document language/RTL support; existing language-neutral agent protocol/prompts unchanged; commit bbbba0b |
 | NFR-13 | M2 | Not started | MISS | R2.21 | No measurement |
-| SEC-1 | M0 (agent shell/tools), M1 (MCP stdio, browser; plan §12 M1) | Partial | RED | R0.2; R1.7 | M0 part: Evidence: `node --test test/fail-closed.test.ts` → 6/6 (fail closed with 0 spawned processes; `local-os` only via `workspace.trust` lightMode, audited `sandbox.light_mode`, permanent top-bar indicator from `workbench.status`); commit 66ff487; M1: MCP servers and Chrome on host |
+| SEC-1 | M0 (agent shell/tools), M1 (MCP stdio, browser; plan §12 M1) | Done | RED | R0.2; R1.7 | M0 part: Evidence: `node --test test/fail-closed.test.ts` → 6/6; commit 66ff487; M1 part: Evidence: `node --test test/redteam-containment.test.ts (CI ubuntu-24.04, HELIX_REDTEAM_REQUIRE_BROWSER=1, CI run 43143536991) → 8/8`; commit e803082 |
 | SEC-2 | M0 (Linux), M1 (macOS; plan §19), M2 (Windows; plan §12 M2) | Partial | RED | R0.1; R0.2; R1.37; R2.15 | M0 part: Evidence: `HELIX_SANDBOX_BACKENDS=local-container,local-unshare,local-os node --test test/sandbox-conformance.test.ts` → 24/24 (`ls $HOST_HOME`, `cat ~/.ssh/id_*` fail in every backend; no unisolated fallback remains); commit 66ff487; M1: no real macOS run; M2: WSL |
 | SEC-3 | M1 | Done | FV | M1 T1 Egress proxy | Evidence: `node --test test/egress.test.ts` → 4/4 pass; deny-by-default proxy, direct egress fails, private/loopback/link-local/metadata ranges blocked; commit 44604b6 |
 | SEC-4 | M2 (KMS M4) | Partial | RED | R2.9; R4.4 | KMS; bindings in memory only |
@@ -717,7 +717,7 @@ External exit gates (plan §12 M4; not build tasks, never simulated):
 | SEC-9 | M0 (export M4) | Partial | RED | R0.5; M4 control plane | M0 part: Evidence: `node --test test/trace-audit.test.ts` → append-only (UPDATE/DELETE rejected), hash-chained over the §26.5 record fields, covers approvals, credential use (injection count), policy changes, pushes and the other categories, `audit.verify` and JSONL `audit.export` work; commit d13622d. Remaining (M4): SIEM export connectors |
 | SEC-10 | M4 | Not started | DEF(M4) | M4 OAuth broker | OAuth |
 | SEC-11 | M1 | Not started | MISS | R1.44 | Data-handling display, zero retention |
-| SEC-12 | M1 | Partial | RED | R1.8 | Reaper and secret-free snapshots pass locally (`test/sandbox-lifecycle.test.ts`: orphans of a SIGKILLed Engine reaped on next start; snapshot bytes hold only the sentinel); Done after the R1.8 Accept passes in full on CI |
+| SEC-12 | M1 | Done | RED | R1.8 | Evidence: `sudo sh scripts/cgroup-delegate.sh && node --test test/sandbox-lifecycle.test.ts (CI ubuntu-24.04, CI run 43143536991) → 6/6` (reaper + secret-free snapshot bytes); commit e803082 |
 | SEC-13 | M1 | Partial | AMBER | R1.4; R0.8 | A-local verified (commit 2cb5096: context isolation, OS + renderer sandbox, no nodeIntegration, script-strict CSP with `frame-ancestors 'none'`, validated MessagePort IPC allowlist). Remaining: packaged hardening/crash step in `ci.yml` not yet run on CI (R0.8 Actions blocker). `style-src 'unsafe-inline'` retained for Monaco runtime styles (decisions.md, 2026-11-11 R1.4) |
 | SEC-14 | M1 | Not started | MISS | R1.43 | Signing, SBOM, reproducibility |
 | PERF-1 | M1 | Partial | RED | R1.1; R1.4; R1.38; G1.4 | Real packaged Electron launch verified locally (7a31567), not startup performance evidence. R1.4 part: crash hardening verified locally (2cb5096); local packaged cold start → connected 2496 ms (build VM, informational). Reference-hardware cold-start p95 benchmark remains R1.38/G1.4; CI launch run remains R0.8 |
@@ -734,5 +734,5 @@ External exit gates (plan §12 M4; not build tasks, never simulated):
 | PERF-12 | M1 | Not started | NI | R1.38; G1.4 | No benchmark; blocker: No fixture |
 | PERF-13 | M1 | Partial | NI | R1.3; R1.38; G1.4 | Local packaged Electron engine→panel event-stream latency p95 = 34 ms ≤ 50 ms across 128 samples (`cd packages/desktop && npx playwright test e2e/monitor.spec.ts` → 1/1; commit 6cfeda8; artifact `evals/results/r1-3-packaged-monitor-2026-11-11.json`); reference-hardware benchmark and ±10% CI regression gate remain R1.38/G1.4 |
 
-Totals: **154 IDs**: Done 18, Partial 86, Not started 50. The rejected items X19–X21 are not numbered requirements; task R1.46 keeps their enforcement tested.
+Totals: **154 IDs**: Done 21, Partial 83, Not started 50. The rejected items X19–X21 are not numbered requirements; task R1.46 keeps their enforcement tested.
 

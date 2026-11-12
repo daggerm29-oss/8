@@ -1,0 +1,10 @@
+CI run https://github.com/daggerm29-oss/8/actions/runs/43143536991 at e803082 (ubuntu-24.04, HELIX_REDTEAM_REQUIRE_BROWSER=1, HELIX_SANDBOX_BACKENDS=local-container,local-unshare,local-os)
+ok 118 - impact: precise callers replace the name-based heuristic for TS definitions (F-IDX-2)
+ok 119 - shell: host home canary is unreadable
+ok 120 - file tools: read/list/search/write/edit cannot reach the canary
+ok 121 - LSP: a workspace-supplied language service cannot read the canary
+ok 122 - dev server: a served page cannot embed the canary
+ok 123 - test runner: a proposed test cannot read the canary
+ok 124 - MCP stdio server: runs contained and cannot read the canary
+ok 125 - hook: a repo hook cannot read the canary
+ok 126 - browser: Chrome runs only inside a sandbox and cannot read the canary
