@@ -445,7 +445,10 @@ export class Engine {
     peer.handle(Methods.egressAllow, guard<{ workspacePath?: string; host: string; tool?: string }>((p) => {
       const host = normalizeHost(p.host);
       const tool = typeof p.tool === 'string' ? p.tool : undefined;
-      if (tool?.startsWith('mcp:') && !p.workspacePath) return this.net.allow('engine', host, { tool });
+      if (!p.workspacePath) {
+        if (!tool) throw new Error('workspacePath is required unless tool names an MCP server (mcp:<server>)');
+        return this.net.allow('engine', host, { tool });
+      }
       return this.net.allow(this.runtime.workspaceFor(this.knownWorkspace(String(p.workspacePath))).id, host, { tool });
     }));
     peer.handle(Methods.secretsBind, guard<{ workspacePath: string; name: string; injectHosts: string[]; value?: string }>((p) => {
