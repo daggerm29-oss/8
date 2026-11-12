@@ -34,10 +34,10 @@
 
 ## Current task notes (overwrite when the task changes)
 
-- Branch helix/session-2026-11-10-m1-workbench, draft PR #23 (https://github.com/daggerm29-oss/8/pull/23). PR #19 (M3) parked, untouched.
-- R1.1–R1.9 complete except R1.8b (Blocked: needs container runtime). R1.9 (18616d4): per-tool egress + `network` approvals (IMPL-ADR-036).
-- CI at e803082 fails only at the R1.4 packaged crash e2e (`crash.spec.ts` "reopened window reattaches"); investigate before marking the PR ready.
-- R1.10 complete (594dd0d). R1.11 complete (cf54e9d). R1.12 complete (603dbeb): `index.search` opts rerank/graph/expand/tokenBudget (retrieval.ts), `code_search` uses all; harness evals/retrieval-eval.ts. R1.13 complete (e83f377): embedders.ts (local MiniLM, gemini-embedding-2, hash fallback), `index.embedPending` lazy order + ledger, `HELIX_EMBEDDINGS`, RPC `index.structural`/`index.graph`. R1.14 complete (afb2f31): `context/instructions.ts` imports CLAUDE.md/.cursor/rules, RPC `context.explain`. Next: R1.15 context metrics. R0.8 still postponed; do not start M2+.
+- Branch helix/session-2026-11-10-m1-workbench, draft PR #23 (https://github.com/daggerm29-oss/8/pull/23), kept draft: M1 exit gates are not met. PR #19 (M3) parked, untouched.
+- R1.1–R1.14 complete except R1.8b (Blocked: needs container runtime). CI at e803082 failed only at the R1.4 packaged crash e2e (`crash.spec.ts` "reopened window reattaches"); investigate before marking ready.
+- R1.15 context metrics is [A-live] and needs the HTS-lite suite (R1.39, not built) plus Gemini quota; do R1.16 or R1.17 (A-local) first, or build `evals/context-metrics.ts` and leave R1.15 unticked with a Blocked line.
+- Embeddings: `HELIX_EMBEDDINGS=local|gemini|off` (default off); live test needs `node --env-file=.env.development.local`. Full engine suite: 207 pass, 12 fail, all `local-container`/cgroup tests (environmental, R1.8b).
 
 ## Ideas parking lot (one line each, max 15 — do not implement)
 
@@ -70,8 +70,5 @@
 
 ## Last session (overwrite each session, max 5 lines)
 
-- 2026-11-11 M1 PR #23: R1.3 complete (`6cfeda8`), exact packaged Electron monitor acceptance `cd packages/desktop && npx playwright test e2e/monitor.spec.ts` → 1/1 (36.5 s overall, 6.7 s test), p95 engine→panel latency = 34 ms ≤ 50 ms across 128 samples; focused Engine `test/monitor.test.ts` → 5/5, desktop unit `test/desktop.test.mjs` → 1/1, Engine/desktop TypeScript → 0 errors. Raw evidence `evals/results/r1-3-packaged-monitor-2026-11-11.json`.
-- Full engine suite ONCE at session end: `HELIX_SANDBOX_BACKENDS=local-container,local-unshare,local-os node --disable-warning=ExperimentalWarning --test --test-concurrency=1 "test/**/*.test.ts"` → 180/180, 0 failed, 0 skipped (153200.17 ms), exit 0, all three sandbox backends. Full raw output `evals/results/r1-3-engine-suite-2026-11-11.txt`; summary `evals/results/r1-3-session-verification-2026-11-11.json`.
-- Final browser: rebuilt desktop renderer, ran live `helix-workbench` on `:4100` (`/desktop/index.html`) and verified the Tasks/Activity Tree panel via `agent-browser` with zero page errors.
-- Generated checklist: M1 29/79 complete, 50 remaining; requirements Done 13/154 (`F-UI-2` → Done; `PERF-13` → Partial pending R1.38/G1.4 reference hardware). Next task: R1.4 Electron hardening and crash isolation. No requirement removed, narrowed or reassigned.
-- Safe to merge: no — M1 unfinished. Continue existing branch `helix/session-2026-11-10-m1-workbench` and PR #23; R0.8 remains postponed/open and M0 unfinished.
+- 2026-11-12: R1.11 structural search + graph queries, R1.12 retrieval pipeline + eval, R1.13 semantic embeddings (local MiniLM, gemini-embedding-2 live 10/10), R1.14 CLAUDE.md/.cursor/rules import + `context.explain`. Requirements Done 27 of 154.
+- Full engine suite at a5cca27: 207 pass, 12 fail (local-container sandbox tests, no container runtime here; none touch changed code). PR stays draft.
