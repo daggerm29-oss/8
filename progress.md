@@ -35,9 +35,9 @@
 ## Current task notes (overwrite when the task changes)
 
 - Branch helix/session-2026-11-10-m1-workbench, draft PR #23 (https://github.com/daggerm29-oss/8/pull/23). PR #19 (M3) parked, untouched.
-- R1.1–R1.6 complete (see roadmap evidence). R1.7 + R1.8 COMPLETE via CI run 43143536991 at e803082 (red-team 8/8 with real contained Chrome; lifecycle 6/6 with delegated cgroup memory controller).
-- CI at e803082 fails only at the R1.4 packaged crash e2e (`crash.spec.ts` "reopened window reattaches"), which skips the red-team regression and scope steps; investigate before marking the PR ready.
-- R1.8a COMPLETE (50bde71): hard overlay-on-tmpfs disk quota for local-unshare (IMPL-ADR-035). Added R1.8b (same for local-container, CI default). Next: R1.9 per-tool egress + network approvals (`test/egress.test.ts test/net-approval.test.ts`), then R1.10. R0.8 still postponed; do not start M2+.
+- R1.1–R1.9 complete except R1.8b (Blocked: needs container runtime). R1.9 (18616d4): per-tool egress + `network` approvals (IMPL-ADR-036).
+- CI at e803082 fails only at the R1.4 packaged crash e2e (`crash.spec.ts` "reopened window reattaches"); investigate before marking the PR ready.
+- Next: R1.10 indexer completion (`test/indexer.test.ts test/treesitter.test.ts`), then R1.11. R0.8 still postponed; do not start M2+.
 
 ## Ideas parking lot (one line each, max 15 — do not implement)
 
