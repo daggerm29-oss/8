@@ -70,5 +70,5 @@
 
 ## Last session (overwrite each session, max 5 lines)
 
-- 2026-11-12: R1.11 structural search + graph queries, R1.12 retrieval pipeline + eval, R1.13 semantic embeddings (local MiniLM, gemini-embedding-2 live 10/10), R1.14 CLAUDE.md/.cursor/rules import + `context.explain`. Requirements Done 27 of 154.
-- Full engine suite at a5cca27: 207 pass, 12 fail (local-container sandbox tests, no container runtime here; none touch changed code). PR stays draft.
+- 2026-11-12 (continued PR #23): R1.16 plan review (`plan.get/update/approve`, approval-gated execution task, review panel) and R1.17 gates (confirmation, `gate.waive`, audited minimal retry diffs). Requirements Done 29 of 154.
+- Full engine suite at 244909a: 211 pass, 20 fail, all sandbox-conformance/lifecycle: 12 local-container/cgroup (no delegated cgroup v2) and 8 `local-os` (backend unavailable on this host). Nothing else failed. PR stays draft.
