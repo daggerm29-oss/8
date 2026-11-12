@@ -4,7 +4,7 @@
 > AI sessions: read `AGENTS.md` first. This file is **replaced, not appended**; keep it under 120 lines.
 > Task details and Accept lines: `docs/roadmap.md`. Decisions and known issues: `docs/decisions.md`. Old session log: `docs/history/`.
 
-> **RESUME NOTE: R0.8 is intentionally POSTPONED at the user's request (2026-11-10).** Resume from R0.8 when the user says they are ready, not before. Do not start M1 and do not declare M0 complete. R0.8 stays `[ ]`, its acceptance is unchanged, and it is not waived.
+> **RESUME NOTE (user-authorized 2026-11-10, after merged PR #22): continue M1 from R1.1.** R0.8 remains intentionally POSTPONED and unfinished; M0 is not formally complete. This execution-order decision supersedes the earlier prohibition on starting M1, not the original product scope. R0.8 stays `[ ]`, its acceptance is unchanged, and it is not waived.
 > Exact Accept [A-host] (docs/roadmap.md R0.8): `gh workflow run ci.yml --ref <branch> && gh run watch --exit-status` → `ci-linux` green on the branch; a seeded failing test on a scratch branch turns it red. Branch: `helix/session-2026-11-10-local-container`.
 > Outstanding blockers: (1) manual dispatch + successful watch not yet done; (2) v0 GitHub App lacks Actions: Read and write (only Vercel can add it; the owner then approves; alternatively the owner runs the command); (3) nightly `bench-ref` needs a registered self-hosted `helix-reference` runner; (4) GitHub Actions secret `GEMINI_API` must be configured and verified (the Vercel env var does not apply to Actions); (5) later-milestone harnesses `bench/run.mjs`, `evals/hts-lite.ts`, `evals/browser.ts`, `evals/router-cache.ts` are not yet available. Nightly schedules also need the workflows on `main`.
 
@@ -15,14 +15,16 @@
 
 > These are **checklist completion** numbers (ticked items with recorded evidence ÷ all items). They are not a measure of product quality or release readiness; human launch gates in `docs/roadmap.md` are not counted.
 
-**Overall checklist completion: 36%** (70/196 roadmap items)  
-**Current milestone:** M0 Foundations  
-**Next task:** R0.8 CI pipeline (plan §15.1, §15.7) [§35.6]
+**Overall checklist completion: 44%** (88/199 roadmap items)  
+**Current milestone:** M1 MVP, grounded single agent  
+**Next task:** R1.8b Hard disk quota on `local-container` (F-SBX-5) [§16.4]
+
+**Execution-order exception:** user-authorized M1 work; M0 remains unfinished (R0.8 CI pipeline (plan §15.1, §15.7) [§35.6]). No acceptance criterion or gate is waived.
 
 | Milestone | Progress | Items | Status |
 | --- | --- | --- | --- |
-| M0 Foundations | ██████████ 96% | 22/23 | In progress |
-| M1 MVP, grounded single agent | ███░░░░░░░ 33% | 26/79 | Partly built early |
+| M0 Foundations | ██████████ 96% | 22/23 | Unfinished (execution postponed) |
+| M1 MVP, grounded single agent | █████░░░░░ 54% | 44/82 | In progress |
 | M2 Precision and efficiency | █████░░░░░ 45% | 22/49 | Partly built early |
 | M3 Parallel and background | ░░░░░░░░░░ 0% | 0/20 | Not started |
 | M4 Team and ecosystem | ░░░░░░░░░░ 0% | 0/16 | Not started |
@@ -32,16 +34,15 @@
 
 ## Current task notes (overwrite when the task changes)
 
-- R0.3 DONE / F-MDL-1 Done: explicit user-approved OpenAI M0 live-smoke exemption in plan §0.3. Both adapters 23/23 A-local; package/degradation gateway 11/11; Gemini live listing + two authenticated configuration/access responses 2/2 (28 models), fresh artifact fr-1-gemini-controls-2026-11-10T14-50-33-405Z.json. No OpenAI key, OAuth or billing claim.
-- G0.2 DONE: exact strict M0 scope command exits 0, all 154 IDs retained; scope guardrails 14/14, tsc clean. F-AGT-1 stays Partial across approved original M0/M1 split; R1.16 and new R1.47 retain M1 editable-plan/nested-Explore coverage (documentation only). Previous failed scope/exit artifacts retained unchanged.
-- R0.8 POSTPONED by the user (see resume note above); remains OPEN (owner action needed). Dispatch 403 = v0 GitHub App token lacks `actions=write` (header X-Accepted-Github-Permissions). Fix: grant the app "Actions: Read and write", or the owner runs the Accept command. Nightly: no workflows on `main`, 0 `helix-reference` runners, GEMINI_API Actions secret unverified. Not waived.
-- Container runtime RESTORED: VM had been reset (no Podman, crun, bwrap or storage left, so nothing deleted). Reinstalled them; probe picks crun with masked /proc and PTY ok. Focused sandbox/conformance/cancel/fail-closed/egress tests 51/51, 0 skipped, all three backends. Fresh full engine 166/166, 0 skipped.
-- ci-linux green at 2b55cfe (push 42840845440, PR 42840864785) and at 61b7223 (push 42845900460, PR 42846494225). Evidence: evals/results/m0-container-recovery-r0-8-diagnosis-2026-11-10.json. No code, CI or isolation change; no M1, no merge, PR #19 untouched. Safe to merge: no while R0.8 is open.
+- Branch helix/session-2026-11-10-m1-workbench, draft PR #23 (https://github.com/daggerm29-oss/8/pull/23), kept draft: M1 exit gates are not met. PR #19 (M3) parked, untouched.
+- R1.1–R1.14, R1.16, R1.17 complete except R1.8b (Blocked: needs container runtime). CI at e803082 failed only at the R1.4 packaged crash e2e (`crash.spec.ts` "reopened window reattaches"); investigate before marking ready.
+- Next: R1.15 context metrics is [A-live] (needs HTS-lite R1.39 + Gemini quota): build `evals/context-metrics.ts` and leave unticked with a Blocked line, or continue with R1.18+. Plan review and gate-waiver UIs (`plan-review-panel.tsx`, `gate-waiver-panel.tsx`) are typechecked but have no packaged e2e yet.
+- Embeddings: `HELIX_EMBEDDINGS=local|gemini|off` (default off). Run `pnpm install --frozen-lockfile` on a fresh checkout before tests.
 
 ## Ideas parking lot (one line each, max 15 — do not implement)
 
 - MCP resources/prompts, OAuth for remote MCP servers
-- Workbench: syntax highlighting, CRLF preservation, checkpoint user edits, pause/fork task
+- Workbench: syntax highlighting, CRLF preservation, checkpoint user edits
 - `--verify auto` emitting `{{tests}}` gates
 - Persist demoted model refs per workspace
 - PTY history indexing + live resize
@@ -57,7 +58,7 @@
 - Focused test: `cd packages/engine && node --disable-warning=ExperimentalWarning --test --test-concurrency=1 test/<file>.test.ts`
 - Full engine suite (once per session, right before SESSION SUMMARY; ~5–8 min, timeout ≥ 600 s): same command with `"test/**/*.test.ts"` (`pnpm test` can hang in the v0 VM)
 - CLI tests: `pnpm --filter @helix/cli test`
-- Workbench (service `helix-workbench`, port 4100): `bash -lc "set -a; . ./.env.development.local; set +a; exec node --disable-warning=ExperimentalWarning packages/engine/src/main.ts --ws 4100 --ui --host 0.0.0.0 --allow-host '*' --no-auth"`
+- Workbench: `pnpm --filter @helix/desktop build`, then service `helix-workbench`, port 4100: `node --env-file-if-exists=.env.development.local --disable-warning=ExperimentalWarning packages/engine/src/main.ts --ws 4100 --ui --desktop-ui packages/desktop/dist/renderer --host 0.0.0.0 --allow-host '*' --no-auth` (development preview only; packaged Electron uses per-launch authentication).
 - Desktop: `pnpm --filter @helix/desktop setup` (fetch Electron), test `cd packages/desktop && node --test test/desktop.test.mjs`
 - Live model: env `GEMINI_API`, model `gemini-3.5-flash-lite` (free tier ~20 req/day per model)
 
@@ -69,8 +70,5 @@
 
 ## Last session (overwrite each session, max 5 lines)
 
-- 2026-11-10 R0.8/container follow-up on PR #22 (no code change): VM-reset container runtime restored (podman 5.6.1 + crun 1.26 + bwrap 0.12.0, fresh storage, nothing deleted). Probe exit 0; focused conformance 51/51, 0 skipped, all three backends; tsc exit 0 after `pnpm install --frozen-lockfile`.
-- Full engine suite ONCE: `HELIX_SANDBOX_BACKENDS=local-container,local-unshare,local-os node --disable-warning=ExperimentalWarning --test --test-concurrency=1 "test/**/*.test.ts"` → 166/166, 0 failed, 0 skipped (133206 ms), exit 0. Earlier 157/165 failure artifact is retained unchanged.
-- CI at current commit 2b55cfe is green: push 42840845440 and PR 42840864785, ci-linux with every step passing.
-- R0.8 dispatch 403 diagnosed: the v0 GitHub App token lacks `actions=write`. Nightly runs are blocked by no workflows on `main`, 0 `helix-reference` runners and an unverified GEMINI_API Actions secret. Owner action needed; nothing waived.
-- Safe to merge: no while R0.8 is open. M0 is otherwise evidenced; next task R0.8 (owner authorization), not M1.
+- 2026-11-12 (continued PR #23): R1.16 plan review (`plan.get/update/approve`, approval-gated execution task, review panel) and R1.17 gates (confirmation, `gate.waive`, audited minimal retry diffs). Requirements Done 29 of 154.
+- Full engine suite at 244909a: 211 pass, 20 fail, all sandbox-conformance/lifecycle: 12 local-container/cgroup (no delegated cgroup v2) and 8 `local-os` (backend unavailable on this host). Nothing else failed. PR stays draft.

@@ -86,6 +86,12 @@ export interface RunSpec {
   envFile: string;
   tty: boolean;
   argv: string[];
+  /**
+   * Resource limits (R1.8). `inheritCgroup`: podman runs with `--cgroups=disabled`, so conmon and the container stay in
+   * the Engine-managed per-command cgroup the CLI was started in. Docker containers live under dockerd, so the
+   * limits are passed as flags instead.
+   */
+  limits?: { inheritCgroup: boolean; memoryBytes?: number; pids?: number; cpus?: number };
 }
 
 function mountArg(src: string, dst: string, ro: boolean): string {
@@ -104,6 +110,12 @@ export function runArgs(s: RunSpec): string[] {
   a.push('run', '--rm', '--name', s.name, '--network', 'none', ...(overlayRoot ? [] : ['--read-only']), '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--init', '-w', s.cwd, '--env-file', s.envFile);
   if (rt.cli === 'podman') a.push('--userns', 'keep-id', '--no-hosts', ...(rt.noHostname ? ['--no-hostname'] : []), '--read-only-tmpfs=false', '--log-driver', 'none');
   else a.push('--user', `${process.getuid?.() ?? 1000}:${process.getgid?.() ?? 1000}`, '--log-driver', 'none');
+  if (s.limits && rt.cli === 'podman' && s.limits.inheritCgroup) a.push('--cgroups=disabled');
+  if (s.limits && rt.cli === 'docker') {
+    if (s.limits.memoryBytes) a.push('--memory', String(s.limits.memoryBytes), '--memory-swap', String(s.limits.memoryBytes));
+    if (s.limits.pids) a.push('--pids-limit', String(s.limits.pids));
+    if (s.limits.cpus) a.push('--cpus', String(s.limits.cpus));
+  }
   for (const [k, v] of Object.entries(s.labels)) a.push('--label', `${k}=${v}`);
   if (rt.proc === 'masked') a.push('--mount', 'type=tmpfs,destination=/proc');
   a.push('-i');

@@ -3,6 +3,9 @@ export * from './models.ts';
 export * from './sse.ts';
 export * from './capabilities.ts';
 export * from './retry.ts';
+export * from './workbench.ts';
+export * from './activity.ts';
+export * from './ledger.ts';
 
 export const PROTOCOL_VERSION = '0.1.0';
 
@@ -27,6 +30,8 @@ export type TaskStatus =
   | 'running'
   | 'verifying'
   | 'blocked'
+  | 'pausing'
+  | 'paused'
   | 'done'
   | 'failed'
   | 'cancelled';
@@ -98,6 +103,11 @@ export const Methods = {
   taskCreate: 'task.create',
   taskStart: 'task.start',
   taskResume: 'task.resume',
+  taskPause: 'task.pause',
+  taskActivity: 'task.activity',
+  taskRollback: 'task.rollback',
+  taskFork: 'task.fork',
+  taskSetModel: 'task.setModel',
   taskCancel: 'task.cancel',
   taskGet: 'task.get',
   taskList: 'task.list',
@@ -105,6 +115,8 @@ export const Methods = {
   taskTranscript: 'task.transcript',
   approvalRespond: 'agent.approve',
   ledgerQuery: 'ledger.query',
+  ledgerDashboard: 'ledger.dashboard',
+  ledgerExport: 'ledger.export',
   budgetsSet: 'ledger.budgets.set',
   /* R0.4 (FR-31): ledger vs provider-reported usage + attribution completeness */
   ledgerReconcile: 'ledger.reconcile',
@@ -114,20 +126,34 @@ export const Methods = {
   /* SEC-1 trusted-repo light mode + permanent isolation indicator (R0.2) */
   workspaceTrust: 'workspace.trust',
   workbenchStatus: 'workbench.status',
+  workbenchSettingsGet: 'workbench.settings.get',
+  workbenchSettingsSet: 'workbench.settings.set',
+  workbenchSearch: 'workbench.search',
   eventsReplay: 'events.replay',
   /* M1 */
   indexUpdate: 'index.update',
   indexSearch: 'index.search',
   indexSymbols: 'index.symbols',
   indexImpact: 'index.impact',
+  contextExplain: 'context.explain',
+  indexStructural: 'index.structural',
+  indexGraph: 'index.graph',
   checkpointList: 'checkpoint.list',
   checkpointRestore: 'checkpoint.restore',
   artifactList: 'artifact.list',
+  gatesInfer: 'gates.infer',
+  gatesConfirm: 'gates.confirm',
+  gateWaive: 'gate.waive',
+  planGet: 'plan.get',
+  planUpdate: 'plan.update',
+  planApprove: 'plan.approve',
   diagnosticsParse: 'diagnostics.parse',
   /* M1 — workbench (F-UI-1) */
   checkpointDiff: 'checkpoint.diff',
   approvalList: 'agent.approvals.list',
   workspaceList: 'workspace.list',
+  workspaceOpen: 'workspace.open',
+  problemsList: 'problems.list',
   /* M1 — activity monitor (F-UI-2) */
   taskMonitor: 'task.monitor',
   taskSteps: 'task.steps',

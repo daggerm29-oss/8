@@ -1,13 +1,13 @@
-import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { ToolRegistry, type PreviewCapture, type Tool } from './registry.ts';
-import { codeSearch, domainMap, findSymbol, impactTool } from './index-tools.ts';
+import type { LocalSandbox } from '../sandbox/sandbox.ts';
+import { FileOpError } from '../sandbox/files.ts';
+import { codeSearch, domainMap, findSymbol, graphQueryTool, impactTool, structuralSearchTool } from './index-tools.ts';
 import { formatSnapshot } from '../preview/browser.ts';
 import { smokeCheck } from '../verify/testgen.ts';
 import { loadSkills, skillBody } from '../agent/skills.ts';
 
-const SKIP_DIRS = new Set(['node_modules', '.git', '.next', 'dist', 'build', '__pycache__', '.venv', 'target']);
 
 const readFile: Tool = {
   spec: {
@@ -15,11 +15,12 @@ const readFile: Tool = {
     description: 'Read a UTF-8 text file in the workspace. Returns numbered lines. Use startLine/endLine (1-based, inclusive) for large files.',
     inputSchema: { type: 'object', properties: { path: { type: 'string', description: 'Path relative to the workspace root' }, startLine: { type: 'integer', minimum: 1 }, endLine: { type: 'integer', minimum: 1 } }, required: ['path'] },
   },
-  async run(args, { sandbox }) {
+  async run(args, { sandbox, signal }) {
     const abs = sandbox.resolvePath(String(args.path));
-    if (!existsSync(abs)) return { content: `file not found: ${args.path}`, isError: true };
-    if (statSync(abs).isDirectory()) return { content: `${args.path} is a directory; use list_dir`, isError: true };
-    const lines = readFileSync(abs, 'utf8').split('\n');
+    const text = await readOrMissing(sandbox, abs, signal);
+    if (text === null) return { content: `file not found: ${args.path}`, isError: true };
+    if (text === DIRECTORY) return { content: `${args.path} is a directory; use list_dir`, isError: true };
+    const lines = text.split('\n');
     const start = Math.max(1, Number(args.startLine ?? 1));
     const end = Math.min(lines.length, Number(args.endLine ?? lines.length));
     const body = lines.slice(start - 1, end).map((l, i) => `${String(start + i).padStart(5)}  ${l}`).join('\n');
@@ -33,20 +34,9 @@ const listDir: Tool = {
     description: 'List files and directories (skips node_modules, .git, build output). Directories end with /.',
     inputSchema: { type: 'object', properties: { path: { type: 'string' }, depth: { type: 'integer', minimum: 1, maximum: 5 } } },
   },
-  async run(args, { sandbox }) {
+  async run(args, { sandbox, signal }) {
     const root = sandbox.resolvePath(String(args.path ?? '.'));
-    const depth = Number(args.depth ?? 2);
-    const out: string[] = [];
-    const walk = (dir: string, level: number) => {
-      if (out.length > 500) return;
-      for (const e of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
-        if (SKIP_DIRS.has(e.name)) continue;
-        const p = join(dir, e.name);
-        out.push(`${'  '.repeat(level)}${e.name}${e.isDirectory() ? '/' : ''}`);
-        if (e.isDirectory() && level + 1 < depth) walk(p, level + 1);
-      }
-    };
-    walk(root, 0);
+    const out = await sandbox.listDir(root, Number(args.depth ?? 2), signal);
     return { content: out.join('\n') || '(empty)', summary: `listed ${sandbox.relative(root)}` };
   },
 };
@@ -59,39 +49,31 @@ const search: Tool = {
   },
   async run(args, { sandbox, signal }) {
     const root = sandbox.resolvePath(String(args.path ?? '.'));
-    const rgArgs = ['--fixed-strings', '--line-number', '--no-heading', '--color=never', '--max-count=50', '--max-columns=300'];
-    if (args.glob) rgArgs.push('--glob', String(args.glob));
-    rgArgs.push('--', String(args.pattern), '.');
-    const text = await new Promise<string>((resolve) => {
-      const child = spawn('rg', rgArgs, { cwd: root, signal, stdio: ['ignore', 'pipe', 'pipe'] });
-      let buf = '';
-      child.stdout.on('data', (c: Buffer) => { if (buf.length < 100_000) buf += c.toString('utf8'); });
-      child.on('close', () => resolve(buf));
-      child.on('error', () => resolve(jsSearch(root, String(args.pattern))));
-    });
+    const text = await sandbox.searchText(root, String(args.pattern), args.glob ? String(args.glob) : undefined, signal);
     const lines = text.split('\n').filter(Boolean).slice(0, 200);
     return { content: lines.length ? lines.join('\n') : 'no matches', summary: `search '${args.pattern}': ${lines.length} matches` };
   },
 };
 
-function jsSearch(root: string, pattern: string): string {
-  const out: string[] = [];
-  const walk = (dir: string) => {
-    for (const e of readdirSync(dir, { withFileTypes: true })) {
-      if (SKIP_DIRS.has(e.name) || out.length >= 200) continue;
-      const p = join(dir, e.name);
-      if (e.isDirectory()) walk(p);
-      else if (statSync(p).size < 1_000_000) readFileSync(p, 'utf8').split('\n').forEach((l, i) => { if (l.includes(pattern)) out.push(`${p.slice(root.length + 1)}:${i + 1}:${l.slice(0, 300)}`); });
-    }
-  };
-  walk(root);
-  return out.join('\n');
+const DIRECTORY = Symbol('directory');
+
+/** One in-sandbox read: the text, null when the file does not exist, or DIRECTORY. */
+async function readOrMissing(sandbox: LocalSandbox, abs: string, signal?: AbortSignal): Promise<string | null | typeof DIRECTORY> {
+  try {
+    return await sandbox.readText(abs, signal);
+  } catch (e) {
+    if (e instanceof FileOpError && e.code === 'ENOENT') return null;
+    if (e instanceof FileOpError && e.code === 'EISDIR') return DIRECTORY;
+    throw e;
+  }
 }
 
-function writeWithCheckpoint(abs: string, content: string, beforeWrite?: (p: string, prev: string | null) => void): void {
-  beforeWrite?.(abs, existsSync(abs) ? readFileSync(abs, 'utf8') : null);
-  mkdirSync(dirname(abs), { recursive: true });
-  writeFileSync(abs, content);
+async function writeWithCheckpoint(sandbox: LocalSandbox, abs: string, content: string, beforeWrite?: (p: string, prev: string | null) => void, signal?: AbortSignal): Promise<void> {
+  if (beforeWrite) {
+    const prev = await readOrMissing(sandbox, abs, signal);
+    beforeWrite(abs, typeof prev === 'string' ? prev : null);
+  }
+  await sandbox.writeText(abs, content, signal);
 }
 
 const writeFile: Tool = {
@@ -100,9 +82,9 @@ const writeFile: Tool = {
     description: 'Create or overwrite a file with the full content. Prefer edit_file for small changes to existing files.',
     inputSchema: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] },
   },
-  async run(args, { sandbox, beforeWrite }) {
+  async run(args, { sandbox, beforeWrite, signal }) {
     const abs = sandbox.resolvePath(String(args.path), 'write');
-    writeWithCheckpoint(abs, String(args.content), beforeWrite);
+    await writeWithCheckpoint(sandbox, abs, String(args.content), beforeWrite, signal);
     return { content: `wrote ${sandbox.relative(abs)} (${String(args.content).split('\n').length} lines)`, summary: `wrote ${sandbox.relative(abs)}` };
   },
 };
@@ -113,16 +95,16 @@ const editFile: Tool = {
     description: 'Replace an exact string in a file. old_string must match exactly once unless replace_all is true. Include enough context to be unique.',
     inputSchema: { type: 'object', properties: { path: { type: 'string' }, old_string: { type: 'string', minLength: 1 }, new_string: { type: 'string' }, replace_all: { type: 'boolean' } }, required: ['path', 'old_string', 'new_string'] },
   },
-  async run(args, { sandbox, beforeWrite }) {
+  async run(args, { sandbox, beforeWrite, signal }) {
     const abs = sandbox.resolvePath(String(args.path), 'write');
-    if (!existsSync(abs)) return { content: `file not found: ${args.path}`, isError: true };
-    const text = readFileSync(abs, 'utf8');
+    const text = await readOrMissing(sandbox, abs, signal);
+    if (typeof text !== 'string') return { content: `file not found: ${args.path}`, isError: true };
     const oldS = String(args.old_string);
     const count = text.split(oldS).length - 1;
     if (count === 0) return { content: `old_string not found in ${args.path}. Re-read the file and copy the exact text (including whitespace).`, isError: true };
     if (count > 1 && !args.replace_all) return { content: `old_string matches ${count} times in ${args.path}; add surrounding context or set replace_all`, isError: true };
     const next = args.replace_all ? text.split(oldS).join(String(args.new_string)) : text.replace(oldS, () => String(args.new_string));
-    writeWithCheckpoint(abs, next, beforeWrite);
+    await writeWithCheckpoint(sandbox, abs, next, beforeWrite, signal);
     return { content: `edited ${sandbox.relative(abs)} (${args.replace_all ? count : 1} replacement${count > 1 && args.replace_all ? 's' : ''})`, summary: `edited ${sandbox.relative(abs)}` };
   },
 };
@@ -279,7 +261,7 @@ const proposeTest: Tool = {
     const command = args.command ? String(args.command) : `node --test ${JSON.stringify(path)}`;
     const r = await smokeCheck(sandbox, { testPath: path, testContent: String(args.content), targetPath: target, range, command, signal });
     const table = r.mutants.map((m) => `  ${target}:${m.line} '${m.from}'→'${m.to}': ${m.killed ? 'killed' : 'survived'}`).join('\n');
-    if (r.accepted) writeWithCheckpoint(sandbox.resolvePath(path, 'write'), String(args.content), beforeWrite);
+    if (r.accepted) await writeWithCheckpoint(sandbox, sandbox.resolvePath(path, 'write'), String(args.content), beforeWrite, signal);
     return {
       content: `${r.accepted ? `ACCEPTED: wrote ${path}` : `REJECTED: ${path} not written`} — ${r.reason}${table ? `\nmutants:\n${table}` : ''}${r.accepted ? '' : `\ntest output (tail):\n${r.baseline.output}`}`,
       isError: !r.accepted,
@@ -342,6 +324,6 @@ export const submitPlan: Tool = {
 
 export function builtinTools(): ToolRegistry {
   const reg = new ToolRegistry();
-  for (const t of [readFile, listDir, search, findSymbol, codeSearch, impactTool, domainMap, writeFile, editFile, runShell, startDevServerTool, previewScreenshot, previewConsole, previewSnapshot, exploreTool, proposeTest, useSkill, submitPlan]) reg.register(t);
+  for (const t of [readFile, listDir, search, findSymbol, codeSearch, impactTool, domainMap, structuralSearchTool, graphQueryTool, writeFile, editFile, runShell, startDevServerTool, previewScreenshot, previewConsole, previewSnapshot, exploreTool, proposeTest, useSkill, submitPlan]) reg.register(t);
   return reg;
 }

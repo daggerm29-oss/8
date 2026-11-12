@@ -1,3 +1,4 @@
+import { sandboxProcAvailable } from '../src/sandbox/sandbox.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
@@ -16,7 +17,7 @@ const V2 = `<!doctype html><title>Shop</title><main><h1>Cart</h1>
 
 const flat = (nodes: A11yNode[]): A11yNode[] => nodes.flatMap((n) => [n, ...flat(n.children ?? [])]);
 
-test('environment snapshot: pruned AX tree with stable refs, telemetry, and diff (F-PRV-3/4)', { skip: findChrome() ? false : 'no Chrome/Chromium' }, async () => {
+test('environment snapshot: pruned AX tree with stable refs, telemetry, and diff (F-PRV-3/4)', { skip: findChrome() && sandboxProcAvailable() ? false : 'no Chrome/Chromium, or the sandbox cannot give a contained browser a private /proc on this host' }, async () => {
   let page = V1;
   const server = createServer((q, s) => {
     if (q.url?.startsWith('/api/')) { s.statusCode = 404; s.end('nope'); return; }

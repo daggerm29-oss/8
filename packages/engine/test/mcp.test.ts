@@ -30,8 +30,8 @@ test('McpManager: connect, paginated tools/list, call, errors, timeout, policy c
   const mgr = new McpManager({
     home: dir, registry,
     config: {
-      fake: { command: process.execPath, args: [SERVER], env: { MARKER_FILE: marker, LEAK_CHECK: '1' }, trust: 'trusted', timeoutMs: 500 },
-      untrusted: { command: process.execPath, args: [SERVER], env: { MARKER_FILE: marker } },
+      fake: { command: process.execPath, args: ['--input-type=module', '-e', readFileSync(SERVER, 'utf8')], cwd: dir, env: { MARKER_FILE: marker, LEAK_CHECK: '1' }, trust: 'trusted', timeoutMs: 500 },
+      untrusted: { command: process.execPath, args: ['--input-type=module', '-e', readFileSync(SERVER, 'utf8')], cwd: dir, env: { MARKER_FILE: marker } },
       broken: { command: '/nonexistent/mcp-binary' },
       off: { command: 'x', enabled: false },
     },
@@ -79,8 +79,9 @@ test('engine: MCP tools reach the model; headless denies side-effecting MCP call
   const repo = mkdtempSync(join(tmpdir(), 'helix-mcp-repo-'));
   mkdirSync(join(repo, 'src'));
   writeFileSync(join(repo, 'src/a.js'), 'export const a = 1;\n');
-  const marker = join(home, 'marker.txt');
-  writeFileSync(join(home, 'mcp.json'), JSON.stringify({ servers: { fake: { command: process.execPath, args: [SERVER], env: { MARKER_FILE: marker } } } }));
+  const dir = mkdtempSync(join(tmpdir(), 'helix-mcp-scope-'));
+  const marker = join(dir, 'marker.txt');
+  writeFileSync(join(home, 'mcp.json'), JSON.stringify({ servers: { fake: { command: process.execPath, args: ['--input-type=module', '-e', readFileSync(SERVER, 'utf8')], cwd: dir, env: { MARKER_FILE: marker } } } }));
   const engine = new Engine({ home, env: { GEMINI_API_KEY: fake.apiKey, HELIX_GEMINI_BASE_URL: fake.url }, indexing: false, retry: { baseDelayMs: 1, maxDelayMs: 2 } });
   try {
     const { port, token } = await engine.serve();

@@ -1,3 +1,4 @@
+import { sandboxProcAvailable } from '../src/sandbox/sandbox.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
@@ -22,7 +23,7 @@ function fixture(): string {
   return root;
 }
 
-test('agent takes a preview screenshot and reads console errors of the fixture page (F-PRV-5)', { skip: findChrome() ? false : 'no Chrome/Chromium' }, async () => {
+test('agent takes a preview screenshot and reads console errors of the fixture page (F-PRV-5)', { skip: findChrome() && sandboxProcAvailable() ? false : 'no Chrome/Chromium, or the sandbox cannot give a contained browser a private /proc on this host' }, async () => {
   const root = fixture();
   const turns: FakeTurn[] = [
     { toolCalls: [{ name: 'preview_screenshot', args: {} }], usage: { input: 50, output: 5 } },

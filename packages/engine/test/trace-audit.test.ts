@@ -5,7 +5,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { cpSync, mkdtempSync } from 'node:fs';
+import { cpSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:https';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -229,6 +229,7 @@ test('R0.5: scripted run produces the full span tree and one audit event per §2
     // `trace.get` serves the same tree over RPC (local trace viewer, §26.1).
     const rpc = await peer.request<{ spans: StoredSpan[] }>(Methods.traceGet, { task: task1 });
     assert.deepEqual(rpc.spans.map((s) => s.spanId), spans.map((s) => s.spanId));
+    if (process.env.HELIX_TRACE_FIXTURE_OUT) writeFileSync(process.env.HELIX_TRACE_FIXTURE_OUT, JSON.stringify({ home, repo, task: task1, spans: rpc.spans, ledger: engine.ledger.totals({ task: task1 }), entries: engine.ledger.entries({ task: task1 }) }));
 
     // ---- Task 2: interactive, one approval granted and one denied ----------------------------------------------------------------
     const repo2 = tmp('helix-trace-int-');

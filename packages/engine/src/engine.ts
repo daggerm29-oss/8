@@ -1,4 +1,5 @@
 import type { CompactionOptions } from './context/compaction.ts';
+import { embedderFromEnv, type Embedder } from './index/embedders.ts';
 import { mkdirSync, writeFileSync, rmSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,23 +22,32 @@ import { globalRedactor } from './util/redact.ts';
 import { Vault } from './vault/vault.ts';
 import { detectKeychain, type Keychain } from './vault/keychain.ts';
 import { Ledger } from './models/ledger.ts';
+import { ledgerDashboard, exportLedger, ledgerRows, validateLedgerFilter, type LedgerFilter } from './models/ledger-dashboard.ts';
 import { ModelGateway } from './models/gateway.ts';
 import { ReplayAdapter, exportBundle, type SessionBundle } from './replay/bundle.ts';
 import { builtinTools } from './tools/builtin.ts';
 import { McpManager, type McpServerConfig, type McpServerStatus } from './mcp/manager.ts';
 import { TaskRuntime } from './agent/runtime.ts';
+import type { PlanEdit } from './agent/plan-review.ts';
 import { LocalSandbox, SandboxUnavailableError, availableBackends, mountNsAvailable, sandboxStatus, unshareAvailable } from './sandbox/sandbox.ts';
 import { localOsTool } from './sandbox/localos.ts';
 import { containerRuntime } from './sandbox/container.ts';
 import { DEFAULT_EGRESS_ALLOWLIST, EgressProxy, type UpstreamOverride } from './sandbox/egress.ts';
+import { NetPolicy, normalizeHost } from './sandbox/net-policy.ts';
 import { DevServers } from './preview/devserver.ts';
 import { PreviewBrowser } from './preview/browser.ts';
 import { elementContext, mapElementToSource, parseLoc } from './preview/locate.ts';
 import { listWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile } from './workspace/files.ts';
-import { gitCommit, gitDiff, gitStageAll, gitStatus } from './workspace/git.ts';
-import { WorkspaceIndex } from './index/index.ts';
+import { gitDiff, gitStageAll, gitStatus } from './workspace/git.ts';
+import { explainInstructions } from './context/instructions.ts';
+import { WorkspaceIndex, type GraphOp } from './index/index.ts';
+import type { Lang } from './index/extract.ts';
 import { parseDiagnostics } from './diagnostics/parsers.ts';
 import { DepGate } from './policy/depgate.ts';
+import { listProblems, recordTerminalProblems } from './workspace/problems.ts';
+import { desktopAsset } from './workspace/desktop-assets.ts';
+import { getWorkbenchSettings, setWorkbenchSettings, searchWorkbench } from './workspace/workbench.ts';
+import { startReaper } from './sandbox/reaper.ts';
 
 export const ENGINE_VERSION = '0.1.0';
 
@@ -57,12 +67,16 @@ export interface EngineOptions {
   adapters?: ProviderAdapter[];
   /** Test seam for the masking proxy (F-SBX-4): where intercepted requests really go. */
   egressUpstream?: UpstreamOverride;
+  /** How long a `network` approval waits before it is denied (default 5 min). */
+  netApprovalTimeoutMs?: number;
   retry?: { maxRetries?: number; baseDelayMs?: number; maxDelayMs?: number };
   taskRetryScale?: number;
   /** Resume interrupted tasks on open (default true). */
   recover?: boolean;
   /** Build the code index and composed context per task (default true). */
   indexing?: boolean;
+  /** Semantic embedder; default from `HELIX_EMBEDDINGS` (local | gemini | off). */
+  embedder?: Embedder;
   /** Connect MCP servers from `$HELIX_HOME/mcp.json` (default true). */
   mcp?: boolean;
   /** Inline MCP server config (overrides mcp.json; tests). */
@@ -86,7 +100,7 @@ function compactionFrom(env: NodeJS.ProcessEnv, opts?: CompactionOptions): Compa
   };
 }
 
-const TOPICS = ['task.*', 'agent.*', 'tool.*', 'model.*', 'verify.*', 'approval.*', 'ledger.*', 'budget.*', 'context.*', 'artifact.*', 'checkpoint.*', 'workspace.*', 'egress.*', 'preview.*', 'secret.*', 'sandbox.*', 'policy.*', 'git.*', 'deploy.*', 'mcp.*'];
+const TOPICS = ['task.*', 'agent.**', 'tool.*', 'model.*', 'verify.*', 'approval.*', 'ledger.*', 'budget.*', 'context.*', 'artifact.*', 'plan.*', 'gate.*', 'gates.*', 'checkpoint.*', 'workspace.*', 'egress.*', 'preview.*', 'secret.*', 'sandbox.*', 'policy.*', 'git.*', 'deploy.*', 'mcp.*'];
 
 /** Helix Engine (§6.2): composition root for storage, bus, gateway, tools, sandbox, and the task runtime. */
 export class Engine {
@@ -101,10 +115,12 @@ export class Engine {
   readonly gateway: ModelGateway;
   readonly replay: ReplayAdapter;
   readonly runtime: TaskRuntime;
+  private readonly embedder?: Embedder;
   readonly blobs: BlobStore;
   readonly mcp: McpManager;
   /** Allowlisting HTTP/CONNECT proxy shared by every sandbox (F-SBX-3). */
   readonly egress: EgressProxy;
+  readonly net: NetPolicy;
   /** Managed workspace dev servers (F-PRV-1). */
   readonly devServers: DevServers;
   /** Lazily launched headless Chrome for agent browser tools (F-PRV-5). */
@@ -114,6 +130,7 @@ export class Engine {
   /** Resolves once configured MCP servers are connected (or failed) and their tools are registered. */
   readonly mcpReady: Promise<McpServerStatus[]>;
   private heartbeat?: NodeJS.Timeout;
+  private stopReaper?: () => void;
   private wss?: WebSocketServer;
   private http?: Server;
   private closed = false;
@@ -132,11 +149,14 @@ export class Engine {
     this.ledger = new Ledger(this.db, this.bus);
     this.replay = new ReplayAdapter();
     this.gateway = new ModelGateway({ adapters: [...(opts.adapters ?? [new GeminiAdapter(), new OpenAIAdapter()]), this.replay], vault: this.vault, ledger: this.ledger, tracer: this.tracer, logger: this.logger, retry: opts.retry });
+    this.net = new NetPolicy({ db: this.db, bus: this.bus, workspaceId: (root) => this.runtime.workspaceFor(root).id, timeoutMs: opts.netApprovalTimeoutMs });
     this.egress = new EgressProxy({
-      isAllowed: (host, ctx) => DEFAULT_EGRESS_ALLOWLIST.includes(host) || !!this.db.get('SELECT 1 AS ok FROM egress_allow WHERE ws = ? AND host = ?', this.runtime.workspaceFor(ctx.root).id, host),
+      isAllowed: (host, ctx) => this.net.isAllowed(host, ctx),
+      ask: (info, ctx) => this.net.ask(info, ctx),
       onDenied: (info, ctx) => {
-        this.bus.publish({ topic: 'egress.denied', ws: this.runtime.workspaceFor(ctx.root).id, data: { ...info, sandbox: ctx.sandboxId }, persist: 'audit' });
-        this.logger.warn('egress.denied', { ...info, sandbox: ctx.sandboxId });
+        const attribution = { sandbox: ctx.sandboxId, ...(ctx.tool ? { tool: ctx.tool } : {}), ...(ctx.task ? { task: ctx.task } : {}) };
+        this.bus.publish({ topic: 'egress.denied', ws: this.net.scope(ctx), data: { ...info, ...attribution }, persist: 'audit' });
+        this.logger.warn('egress.denied', { ...info, ...attribution });
       },
       onInject: (info, ctx) => {
         this.bus.publish({ topic: 'secret.used', ws: this.runtime.workspaceFor(ctx.root).id, data: { name: info.secret, host: info.host, where: info.where, uses: info.uses, sandbox: ctx.sandboxId }, persist: 'audit' });
@@ -152,11 +172,12 @@ export class Engine {
       onReady: (root, info) => this.bus.publish({ topic: 'preview.ready', ws: this.runtime.workspaceFor(root).id, data: { ...info, workspacePath: root } }),
       onExit: (root, info, code) => this.bus.publish({ topic: 'preview.exited', ws: this.runtime.workspaceFor(root).id, data: { ...info, workspacePath: root, exitCode: code } }),
     });
-    this.browser = new PreviewBrowser({ outDir: join(this.home, 'screenshots') });
+    this.browser = new PreviewBrowser({ outDir: join(this.home, 'screenshots'), allowTarget: (_host, port) => this.devServers.hostPorts().includes(port) });
     const tools = builtinTools();
-    this.mcp = new McpManager({ home: this.home, registry: tools, logger: this.logger, config: opts.mcpServers, toolSearchThreshold: opts.mcpToolSearchThreshold, audit: (topic, data) => this.bus.publish({ topic, ws: 'engine', data, persist: 'audit' }) });
+    this.mcp = new McpManager({ home: this.home, registry: tools, logger: this.logger, config: opts.mcpServers, toolSearchThreshold: opts.mcpToolSearchThreshold, egress: this.egress, audit: (topic, data) => this.bus.publish({ topic, ws: 'engine', data, persist: 'audit' }) });
     this.mcpReady = opts.mcp === false ? Promise.resolve([]) : this.mcp.start();
-    this.runtime = new TaskRuntime({ db: this.db, bus: this.bus, gateway: this.gateway, ledger: this.ledger, tools, tracer: this.tracer, engineId: this.id, blobs: this.blobs, logger: this.logger, egress: this.egress, devServers: this.devServers, browser: this.browser, taskRetryScale: opts.taskRetryScale, helixHome: this.home, replay: this.replay, indexing: opts.indexing, compaction: compactionFrom(env, opts.compaction),
+    this.embedder = opts.embedder ?? embedderFromEnv(env);
+    this.runtime = new TaskRuntime({ db: this.db, bus: this.bus, gateway: this.gateway, ledger: this.ledger, tools, tracer: this.tracer, engineId: this.id, blobs: this.blobs, logger: this.logger, egress: this.egress, devServers: this.devServers, browser: this.browser, taskRetryScale: opts.taskRetryScale, helixHome: this.home, replay: this.replay, indexing: opts.indexing, embedder: this.embedder, compaction: compactionFrom(env, opts.compaction),
       depGate: env.HELIX_DEP_GATE === 'off' ? undefined : new DepGate({ osvUrl: env.HELIX_OSV_URL, npmRegistryUrl: env.HELIX_NPM_REGISTRY_URL, pypiUrl: env.HELIX_PYPI_URL }) });
 
     const now = new Date().toISOString();
@@ -170,9 +191,13 @@ export class Engine {
     }
   }
 
-  /** Sandbox reaper (§16.4): sandboxes owned by engines that are gone are marked destroyed. */
+  /**
+   * Sandbox reaper (§16.4, SEC-12): on start and every 5 minutes, sandboxes whose owning Engine is gone are destroyed
+   * (cgroup tree killed, labelled containers and directories removed); their rows are marked destroyed.
+   */
   private reapSandboxes(): void {
     this.db.run(`UPDATE sandboxes SET state = 'destroyed', destroyed_at = ? WHERE state != 'destroyed' AND owner_engine != ?`, new Date().toISOString(), this.id);
+    this.stopReaper = startReaper({ onReap: (r) => this.logger.info('reaped orphaned sandboxes', { sandboxes: r.reaped, containers: r.containers, cgroups: r.cgroups }) });
   }
 
   /** Register every JSON-RPC method (§22.1 M0 subset) on a peer. */
@@ -211,13 +236,19 @@ export class Engine {
     }));
     peer.handle(Methods.taskCreate, guard<TaskCreateParams>((p) => this.runtime.create(p)));
     peer.handle(Methods.taskStart, guard<{ id: string }>((p) => (this.runtime.start(p.id), this.runtime.summary(p.id))));
-    peer.handle(Methods.taskResume, guard<{ id: string }>((p) => (this.runtime.start(p.id), this.runtime.summary(p.id))));
+    peer.handle(Methods.taskResume, guard<{ id: string }>((p) => this.runtime.resume(p.id)));
+    peer.handle(Methods.taskPause, guard<{ id: string }>((p) => this.runtime.pause(p.id)));
+    peer.handle(Methods.taskActivity, guard<{ task: string }>((p) => this.runtime.activity(p.task)));
+    peer.handle(Methods.taskRollback, guard<{ task: string; checkpoint: string }>((p) => this.runtime.rollback(p.task, p.checkpoint)));
+    peer.handle(Methods.taskFork, guard<{ task: string; checkpoint: string; goal?: string; title?: string; provider?: string; model?: string; start?: boolean }>((p) => this.runtime.fork(p.task, p.checkpoint, p)));
+    peer.handle(Methods.taskSetModel, guard<{ id: string; provider: string; model: string }>((p) => this.runtime.setModel(p.id, p)));
     peer.handle(Methods.taskCancel, guard<{ id: string }>((p) => this.runtime.cancel(p.id)));
     peer.handle(Methods.taskGet, guard<{ id: string }>((p) => this.runtime.summary(p.id)));
     peer.handle(Methods.taskList, guard<{ limit?: number }>((p) => this.runtime.list(p.limit)));
     peer.handle(Methods.taskWait, guard<{ id: string; timeoutMs?: number }>((p) => this.runtime.wait(p.id, p.timeoutMs)));
     peer.handle(Methods.taskTranscript, guard<{ id: string }>((p) => this.runtime.transcript(p.id)));
     peer.handle(Methods.approvalRespond, guard<{ approvalId: string; approved: boolean; always?: boolean }>((p) => {
+      if (this.net.has(p.approvalId)) return { ...this.net.decide(p.approvalId, !p.approved ? 'deny' : p.always ? 'always' : 'once'), alwaysAllowed: null };
       let alwaysAllowed: { server: string; tool: string } | null = null;
       if (p.approved && p.always) {
         const tool = this.runtime.approvalTool(p.approvalId);
@@ -229,7 +260,18 @@ export class Engine {
       return { ok: true, alwaysAllowed };
     }));
     peer.handle(Methods.ledgerReconcile, guard<{ task?: string; ws?: string; since?: string; tolerancePct?: number }>((p) => this.gateway.reconcile(p)));
-    peer.handle(Methods.ledgerQuery, guard<{ task?: string; ws?: string; entries?: boolean }>((p) => ({ totals: this.ledger.totals(p), entries: p.entries ? this.ledger.entries({ task: p.task }) : undefined })));
+    const ledgerFilter = (p: LedgerFilter & { workspacePath?: string }): LedgerFilter => {
+      const ws = p.workspacePath ? this.runtime.workspaceFor(this.knownWorkspace(p.workspacePath)).id : p.ws;
+      const filter = { task: p.task, ws, since: p.since };
+      validateLedgerFilter(filter);
+      return filter;
+    };
+    peer.handle(Methods.ledgerQuery, guard<LedgerFilter & { workspacePath?: string; entries?: boolean }>((p) => {
+      const filter = ledgerFilter(p);
+      return { totals: this.ledger.totals(filter), entries: p.entries ? ledgerRows(this.db, filter) : undefined };
+    }));
+    peer.handle(Methods.ledgerDashboard, guard<LedgerFilter & { workspacePath?: string }>((p) => ledgerDashboard(this.db, this.ledger, ledgerFilter(p))));
+    peer.handle(Methods.ledgerExport, guard<LedgerFilter & { workspacePath?: string; format: 'json' | 'csv' }>((p) => exportLedger(this.db, ledgerFilter(p), p.format)));
     peer.handle(Methods.budgetsSet, guard<Parameters<Ledger['setBudget']>[0]>((p) => {
       const previous = this.ledger.getBudget(p.scope, p.scopeId);
       const id = this.ledger.setBudget(p);
@@ -244,6 +286,20 @@ export class Engine {
       return { unshare: unshareAvailable(), mountNs: mountNsAvailable(), container: containerRuntime(), localOs: lo ? { tool: lo.kind, proc: lo.proc } : null, available: availableBackends(), default: s.backend, isolation: s.isolation, reason: s.reason };
     }));
     peer.handle(Methods.workbenchStatus, guard<{ workspacePath?: string }>((p) => this.workbenchStatus(p.workspacePath)));
+    peer.handle(Methods.workbenchSettingsGet, guard<{ workspacePath: string }>((p) => {
+      const root = this.knownWorkspace(p.workspacePath);
+      return getWorkbenchSettings(this.db, this.runtime.workspaceFor(root).id);
+    }));
+    peer.handle(Methods.workbenchSettingsSet, guard<{ workspacePath: string; profile?: unknown; layout?: unknown; keymap?: unknown }>((p) => {
+      const root = this.knownWorkspace(p.workspacePath);
+      return setWorkbenchSettings(this.db, this.runtime.workspaceFor(root).id, p);
+    }));
+    peer.handle(Methods.workbenchSearch, guard<{ workspacePath: string; query: string }>((p) => {
+      const root = this.knownWorkspace(p.workspacePath);
+      if (typeof p.query !== 'string' || p.query.length > 100) throw new Error('Invalid palette query');
+      this.index(root).update();
+      return searchWorkbench(this.db, root, this.runtime.workspaceFor(root).id, p.query);
+    }));
     peer.handle(Methods.workspaceTrust, guard<{ workspacePath: string; trusted: boolean; lightMode?: boolean }>((p) => {
       if (typeof p.workspacePath !== 'string' || !p.workspacePath) throw new Error('workspacePath is required');
       let root: string;
@@ -263,10 +319,22 @@ export class Engine {
       const idx = this.index(p.workspacePath);
       return { ...idx.update(), ...idx.counts(), generation: idx.generation() };
     }));
-    peer.handle(Methods.indexSearch, guard<{ workspacePath: string; query: string; limit?: number }>((p) => {
+    peer.handle(Methods.indexSearch, guard<{ workspacePath: string; query: string; limit?: number }>(async (p) => {
       const idx = this.index(p.workspacePath);
       idx.update();
-      return idx.search(p.query, { limit: p.limit });
+      const semantic = this.embedder ? await idx.queryEmbedding(this.embedder, p.query, this.ledger).catch(() => undefined) : undefined;
+      return idx.search(p.query, { limit: p.limit, rerank: 'auto', graph: true, expand: true, tokenBudget: 4000, semantic });
+    }));
+    peer.handle(Methods.contextExplain, guard<{ workspacePath: string; touchedPaths?: string[] }>((p) => explainInstructions(realpathSync(resolve(p.workspacePath)), { helixHome: this.home, touchedPaths: p.touchedPaths })));
+    peer.handle(Methods.indexStructural, guard<{ workspacePath: string; pattern: string; lang?: Lang; path?: string; limit?: number }>((p) => {
+      const idx = this.index(p.workspacePath);
+      idx.update();
+      return idx.structural(p.pattern, { lang: p.lang, pathPrefix: p.path, limit: p.limit });
+    }));
+    peer.handle(Methods.indexGraph, guard<{ workspacePath: string; op: GraphOp; target: string; depth?: number }>((p) => {
+      const idx = this.index(p.workspacePath);
+      idx.update();
+      return idx.graphQuery({ op: p.op, target: p.target, depth: p.depth });
     }));
     peer.handle(Methods.indexSymbols, guard<{ workspacePath: string; name: string }>((p) => {
       const idx = this.index(p.workspacePath);
@@ -285,10 +353,27 @@ export class Engine {
       return this.runtime.reverifyArtifact(p.id);
     }));
     peer.handle(Methods.artifactList, guard<{ task: string; kind?: string }>((p) => this.runtime.artifacts(p.task, p.kind)));
+    peer.handle(Methods.gatesInfer, guard<{ workspacePath: string }>((p) => this.runtime.gatesInfer(p.workspacePath)));
+    peer.handle(Methods.gatesConfirm, guard<{ workspacePath: string; gates?: unknown }>((p) => this.runtime.gatesConfirm(p.workspacePath, p.gates === undefined ? undefined : { gates: p.gates })));
+    peer.handle(Methods.gateWaive, guard<{ task: string; reason: string }>((p) => this.runtime.gateWaive(p.task, p.reason)));
+    peer.handle(Methods.planGet, guard<{ task: string }>((p) => this.runtime.planGet(p.task)));
+    peer.handle(Methods.planUpdate, guard<{ task: string; planId?: string; edit: PlanEdit }>((p) => this.runtime.planUpdate(p.task, p.edit ?? {}, p.planId)));
+    peer.handle(Methods.planApprove, guard<{ task: string; planId?: string; policyProfile?: 'headless' | 'interactive'; preapprove?: string[] }>((p) => this.runtime.planApprove(p.task, p)));
     peer.handle(Methods.diagnosticsParse, guard<{ command: string; output: string }>((p) => parseDiagnostics(p.command, p.output)));
     peer.handle(Methods.checkpointDiff, guard<{ task: string; checkpoint?: string }>((p) => this.runtime.diff(p.task, p.checkpoint)));
     peer.handle(Methods.approvalList, guard<{ task?: string }>((p) => this.runtime.approvalList(p.task)));
     peer.handle(Methods.workspaceList, guard(() => this.runtime.workspaces()));
+    peer.handle(Methods.workspaceOpen, guard<{ workspacePath: string }>((p) => {
+      if (typeof p.workspacePath !== 'string' || !p.workspacePath) throw new Error('workspacePath is required');
+      const root = realpathSync(resolve(p.workspacePath));
+      if (!statSync(root).isDirectory()) throw new Error('workspacePath must be a directory');
+      return this.runtime.workspaceFor(root);
+    }));
+    peer.handle(Methods.problemsList, guard<{ workspacePath: string }>((p) => {
+      const root = this.knownWorkspace(p.workspacePath);
+      this.bus.flush();
+      return listProblems(this.db, this.runtime.workspaceFor(root).id);
+    }));
     peer.handle(Methods.taskMonitor, guard<{ limit?: number }>((p) => this.runtime.monitor(Math.min(Math.max(Number(p?.limit) || 50, 1), 200))));
     peer.handle(Methods.taskSteps, guard<{ task: string }>((p) => {
       if (typeof p.task !== 'string' || !p.task) throw new Error('task is required');
@@ -360,6 +445,9 @@ export class Engine {
           cwd: p.cwd, timeoutMs: Math.min(Math.max(Number(p.timeoutMs) || 120_000, 1000), 600_000), maxOutputBytes: 1024 * 1024, signal: ctrl.signal,
           onOutput: (stream, text) => peer.notify(Notifications.terminalOutput, { runId, stream, text }),
         });
+        const ws = this.runtime.workspaceFor(sbx.root);
+        const diagnostics = recordTerminalProblems(this.db, ws.id, p.command, `${r.stdout}\n${r.stderr}`);
+        this.bus.publish({ topic: 'workspace.problems_updated', ws: ws.id, data: { diagnostics }, persist: 'log' });
         return { runId, exitCode: r.exitCode, signal: r.signal, timedOut: r.timedOut, truncated: r.truncated, durationMs: r.durationMs, killed: ctrl.signal.aborted, sandbox: sbx.info() };
       } finally { runs.delete(runId); }
     }));
@@ -380,13 +468,14 @@ export class Engine {
       this.bus.publish({ topic: 'vault.key_deleted', ws: 'engine', data: { provider: p.provider, store: this.vault.keychain.kind }, persist: 'audit' });
       return { ok: true, provider: p.provider, source: this.vault.keySource(p.provider) };
     }));
-    peer.handle(Methods.egressAllow, guard<{ workspacePath: string; host: string }>((p) => {
-      const host = typeof p.host === 'string' ? p.host.trim().toLowerCase() : '';
-      if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(host) || host.length > 253) throw new Error('host must be a DNS name like example.com');
-      const ws = this.runtime.workspaceFor(this.knownWorkspace(p.workspacePath));
-      this.db.run('INSERT OR IGNORE INTO egress_allow (ws, host, at) VALUES (?, ?, ?)', ws.id, host, new Date().toISOString());
-      this.bus.publish({ topic: 'egress.allowed', ws: ws.id, data: { host, by: 'user' }, persist: 'audit' });
-      return { ok: true, host };
+    peer.handle(Methods.egressAllow, guard<{ workspacePath?: string; host: string; tool?: string }>((p) => {
+      const host = normalizeHost(p.host);
+      const tool = typeof p.tool === 'string' ? p.tool : undefined;
+      if (!p.workspacePath) {
+        if (!tool) throw new Error('workspacePath is required unless tool names an MCP server (mcp:<server>)');
+        return this.net.allow('engine', host, { tool });
+      }
+      return this.net.allow(this.runtime.workspaceFor(this.knownWorkspace(String(p.workspacePath))).id, host, { tool });
     }));
     peer.handle(Methods.secretsBind, guard<{ workspacePath: string; name: string; injectHosts: string[]; value?: string }>((p) => {
       const root = this.knownWorkspace(p.workspacePath);
@@ -401,7 +490,8 @@ export class Engine {
     peer.handle(Methods.secretsList, guard<{ workspacePath: string }>((p) => this.egress.bindingsFor(this.knownWorkspace(p.workspacePath)).map((b) => ({ name: b.name, injectHosts: b.injectHosts }))));
     peer.handle(Methods.egressList, guard<{ workspacePath: string }>((p) => {
       const ws = this.runtime.workspaceFor(this.knownWorkspace(p.workspacePath));
-      return { defaults: DEFAULT_EGRESS_ALLOWLIST, workspace: this.db.all<{ host: string; at: string }>('SELECT host, at FROM egress_allow WHERE ws = ? ORDER BY host', ws.id) };
+      const rows = this.net.list(ws.id);
+      return { defaults: DEFAULT_EGRESS_ALLOWLIST, workspace: rows.filter((r) => !r.tool), tools: [...rows.filter((r) => r.tool), ...this.net.list('engine')] };
     }));
 
     peer.handle(Methods.previewStart, guard<{ workspacePath: string }>((p) => this.devServers.start(this.knownWorkspace(p.workspacePath))));
@@ -445,7 +535,7 @@ export class Engine {
     peer.handle(Methods.gitStatus, guard<{ workspacePath: string }>((p) => gitStatus(this.knownWorkspace(p.workspacePath))));
     peer.handle(Methods.gitDiff, guard<{ workspacePath: string }>((p) => gitDiff(this.knownWorkspace(p.workspacePath))));
     peer.handle(Methods.gitStageAll, guard<{ workspacePath: string }>((p) => gitStageAll(this.knownWorkspace(p.workspacePath))));
-    peer.handle(Methods.gitCommit, guard<{ workspacePath: string; message: string }>((p) => gitCommit(this.knownWorkspace(p.workspacePath), p.message)));
+    peer.handle(Methods.gitCommit, guard<{ workspacePath: string; message: string }>((p) => this.runtime.commit(this.knownWorkspace(p.workspacePath), p.message)));
 
     const ptys = new Map<string, ReturnType<LocalSandbox['pty']>>();
     peer.onClose(() => { ptys.forEach((p) => p.kill()); ptys.clear(); });
@@ -535,7 +625,7 @@ export class Engine {
    * the server, so serving the page does not leak it. Host and Origin headers must be loopback (or listed in
    * `allowedHosts`) to defeat DNS rebinding. `noAuth` exists only for remote dev previews and is loud about it.
    */
-  async serve(opts: { port?: number; host?: string; ui?: boolean; noAuth?: boolean; allowedHosts?: string[] } = {}): Promise<{ port: number; token: string; url: string }> {
+  async serve(opts: { port?: number; host?: string; ui?: boolean; noAuth?: boolean; allowedHosts?: string[]; desktopUiDir?: string } = {}): Promise<{ port: number; token: string; url: string }> {
     const token = randomToken();
     const host = opts.host ?? '127.0.0.1';
     const allowed = new Set(['127.0.0.1', 'localhost', '[::1]', ...(opts.allowedHosts ?? [])]);
@@ -559,11 +649,14 @@ export class Engine {
         return;
       }
       if (!opts.ui) { res.writeHead(404).end('not found'); return; }
-      const file = UI_FILES[path === '/' ? '/index.html' : path];
+      if (path === '/' && opts.desktopUiDir) { res.writeHead(302, { location: '/desktop/index.html', 'cache-control': 'no-store' }).end(); return; }
+      const file = path.startsWith('/desktop/') && opts.desktopUiDir ? desktopAsset(opts.desktopUiDir, path) : UI_FILES[path === '/' ? '/index.html' : path];
       if (!file) { res.writeHead(404).end('not found'); return; }
       res.writeHead(200, {
         'content-type': file.type, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer',
-        'content-security-policy': "default-src 'self'; connect-src 'self' ws: wss:; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; frame-src http://127.0.0.1:* http://localhost:*; frame-ancestors *",
+        'content-security-policy': path.startsWith('/desktop/')
+          ? "default-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; worker-src 'self'; font-src 'self' data:; img-src 'self' data:; frame-src http://127.0.0.1:* http://localhost:*; frame-ancestors 'self'; base-uri 'none'; object-src 'none'; form-action 'none'"
+          : "default-src 'self'; connect-src 'self' ws: wss:; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; frame-src http://127.0.0.1:* http://localhost:*; frame-ancestors 'self'; base-uri 'none'; object-src 'none'; form-action 'none'",
       }).end(readFileSync(file.name));
     });
     this.wss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024 });
@@ -575,13 +668,14 @@ export class Engine {
     const actual = (this.http.address() as { port: number }).port;
     writeFileSync(join(this.home, 'engine.json'), JSON.stringify({ engineId: this.id, pid: process.pid, port: actual, token }), { mode: 0o600 });
     const shown = host === '0.0.0.0' || host === '::' ? '127.0.0.1' : host;
-    return { port: actual, token, url: `http://${shown}:${actual}/${opts.noAuth ? '' : `#token=${token}`}` };
+    return { port: actual, token, url: `http://${shown}:${actual}/${opts.desktopUiDir ? 'desktop/index.html' : ''}${opts.noAuth ? '' : `#token=${token}`}` };
   }
 
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
     clearInterval(this.heartbeat);
+    this.stopReaper?.();
     await this.runtime.shutdown();
     await this.mcpReady.catch(() => []);
     await this.mcp.close();
@@ -589,6 +683,7 @@ export class Engine {
     this.terminals.clear();
     await this.devServers.closeAll();
     await this.browser.close();
+    this.net.close();
     this.egress.close();
     for (const c of this.wss?.clients ?? []) c.terminate();
     this.wss?.close();

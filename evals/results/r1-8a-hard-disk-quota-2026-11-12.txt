@@ -1,0 +1,32 @@
+# R1.8a: sudo sh scripts/cgroup-delegate.sh $(id -u) $$ && HELIX_DISK_QUOTA=hard node --test test/sandbox-lifecycle.test.ts (v0 VM, local-unshare, 3 consecutive runs at 50bde71; memory hog = known threaded-cgroup VM limit, passes on CI per R1.8)
+## run
+✖ memory hog is killed at its cgroup limit (75.386743ms)
+✔ fork bomb is stopped by the PID limit (3188.47201ms)
+✔ disk filler is stopped by the quota (536.627688ms)
+✔ snapshot → suspend → resume restores files and processes (1205.521041ms)
+✔ no sentinel secret value appears in snapshot bytes (223.685251ms)
+✔ orphaned sandboxes from a killed Engine are reaped on next start (2063.772518ms)
+ℹ tests 6
+ℹ pass 5
+ℹ fail 1
+## run
+✖ memory hog is killed at its cgroup limit (73.777053ms)
+✔ fork bomb is stopped by the PID limit (3172.566055ms)
+✔ disk filler is stopped by the quota (551.167262ms)
+✔ snapshot → suspend → resume restores files and processes (1170.630801ms)
+✔ no sentinel secret value appears in snapshot bytes (223.452444ms)
+✔ orphaned sandboxes from a killed Engine are reaped on next start (2087.908426ms)
+ℹ tests 6
+ℹ pass 5
+ℹ fail 1
+## run
+✖ memory hog is killed at its cgroup limit (74.488503ms)
+✔ fork bomb is stopped by the PID limit (3188.224124ms)
+✔ disk filler is stopped by the quota (563.700882ms)
+✔ snapshot → suspend → resume restores files and processes (1222.38204ms)
+✔ no sentinel secret value appears in snapshot bytes (240.197945ms)
+✔ orphaned sandboxes from a killed Engine are reaped on next start (2091.146954ms)
+ℹ tests 6
+ℹ pass 5
+ℹ fail 1
+## regression: HELIX_SANDBOX_BACKENDS=local-unshare HELIX_DISK_QUOTA=hard node --test test/sandbox.test.ts test/sandbox-conformance.test.ts → 16/16; HELIX_DISK_QUOTA=hard node --test test/redteam-containment.test.ts → 8/8

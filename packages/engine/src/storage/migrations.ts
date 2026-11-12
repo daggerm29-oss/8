@@ -123,4 +123,28 @@ export const MIGRATIONS: string[] = [
   CREATE TRIGGER tool_call_checkpoint_required BEFORE INSERT ON tool_calls WHEN NEW.checkpoint IS NULL
     BEGIN SELECT RAISE(ABORT, 'tool call requires checkpoint'); END;
   `,
+  /* v10: R1.3 durable activity ancestry and M1 single-workspace write leases. */ `
+  ALTER TABLE agents ADD COLUMN parent TEXT;
+  ALTER TABLE agents ADD COLUMN parent_call TEXT;
+  ALTER TABLE agents ADD COLUMN started_at TEXT;
+  ALTER TABLE agents ADD COLUMN ended_at TEXT;
+  ALTER TABLE steps ADD COLUMN detail_json TEXT;
+  CREATE TABLE activity_leases (
+    id TEXT PRIMARY KEY, ws TEXT NOT NULL, task TEXT NOT NULL, holder TEXT NOT NULL, tool_call TEXT NOT NULL,
+    globs_json TEXT NOT NULL, mode TEXT NOT NULL, state TEXT NOT NULL, acquired_at TEXT NOT NULL,
+    heartbeat TEXT NOT NULL, expires_at TEXT NOT NULL, released_at TEXT
+  );
+  CREATE UNIQUE INDEX activity_lease_workspace ON activity_leases(ws) WHERE state = 'held';
+  CREATE INDEX activity_leases_task ON activity_leases(task);
+  `,
+  /* v11: R1.9 per-tool egress allowlists (F-SBX-3); tool '' = the whole workspace, 'mcp:<server>' = that tool only. */ `
+  CREATE TABLE egress_allow_v11 (ws TEXT NOT NULL, tool TEXT NOT NULL DEFAULT '', host TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY (ws, tool, host));
+  INSERT INTO egress_allow_v11 (ws, tool, host, at) SELECT ws, '', host, at FROM egress_allow;
+  DROP TABLE egress_allow;
+  ALTER TABLE egress_allow_v11 RENAME TO egress_allow;
+  `,
+  /* v12: R1.13 semantic chunk vectors (F-IDX-6, §12.3). Vectors live in idx_embeddings keyed by sha256(model + chunk text); this maps chunks to them per model, so models coexist and a model change re-embeds lazily. */ `
+  CREATE TABLE idx_sem_vectors (ws TEXT NOT NULL, path TEXT NOT NULL, start_line INTEGER NOT NULL, end_line INTEGER NOT NULL, symbol TEXT NOT NULL, model TEXT NOT NULL, hash TEXT NOT NULL);
+  CREATE INDEX idx_sem_vectors_path ON idx_sem_vectors(ws, path, model);
+  `,
 ];

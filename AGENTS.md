@@ -1,6 +1,6 @@
 # Rules for AI build sessions (Helix)
 
-Each session runs on limited credits and may stop at any moment. Use the whole session for development: complete as many consecutive roadmap tasks as possible, saving and reporting after every task. These rules apply to every milestone (M0 through M6).
+Each session runs on limited credits (about $5) and may stop at any moment. Spend them on building, not on reading or log output: target **3–5 completed roadmap tasks per session**, in roadmap order, saving and reporting after every task. The budget rules in §1a are how that target is reached; they never reduce scope. These rules apply to every milestone (M0 through M6). The same resume prompt (`docs/RESUME_PROMPT.md`) starts every session.
 
 ## 0. Authority (read first)
 
@@ -18,11 +18,19 @@ Each session runs on limited credits and may stop at any moment. Use the whole s
 ## 1. What to read (in this order, nothing else up front)
 
 1. This file.
-2. `progress.md` (dashboard shows the current milestone and next task).
-3. The current milestone section of `docs/roadmap.md`, including its exit gates.
-4. For the next task: the `plan.md` rows for every requirement ID it cites (grep the ID), and the `architecture.md` sections in its brackets (grep the heading, read just that section).
+2. Run `gh auth status >/dev/null 2>&1; node scripts/next-task.mjs` and read the generated `CURRENT_TASK.md` (gitignored, ~4k tokens). It copies verbatim: the latest branch CI result with filtered failure lines, the progress.md resume notes, the next 3 open tasks of the current milestone with their Accept lines, the `plan.md` rows for every requirement ID they cite, their requirement status rows, the `architecture.md` sections in their brackets, the milestone's open exit gates, and any Stuck/Blocked tasks.
+3. Only if the packet says a section was truncated or not found, or you need a detail it lacks, grep that one item in the source file and read just those lines.
 
-Do not read `plan.md` or `architecture.md` in full. Do not read `docs/history/`. Read `docs/decisions.md` only for the component you are changing.
+Do not read `plan.md`, `architecture.md`, `docs/roadmap.md` or `progress.md` in full — the packet replaces that reading, and the source files stay authoritative (§0). Do not read `docs/history/`. Read `docs/decisions.md` only for the component you are changing (grep it).
+
+## 1a. Budget rules (how 3–5 tasks fit in one session)
+
+- **Quiet output.** Run every test, build, typecheck, install and CI-log command through `node scripts/quiet.mjs "<command>"`. It saves the full log under `/tmp/helix-logs/` and prints only the exit code, failure lines and the last 40 lines. Read the full log only with a targeted grep or line range. Copy it into `evals/results/` when it is evidence.
+- **Small reads.** Read source files by grep plus line ranges, not whole large files. Never print lockfiles, generated files, `dist/` or `node_modules/`.
+- **Stuck rule.** If the same failure survives 3 genuinely different fix attempts, stop that task: leave it unticked, write `  - Stuck: <exact failure>; tried <1>, <2>, <3>; next idea <x>` under it, commit, push, and move to the next task. This is not a deferral or scope change — the task stays open, and `next-task.mjs` lists it under Stuck for a later session.
+- **CI failures.** Start from `node scripts/quiet.mjs "gh run view <id> --log-failed"`, not from re-running the whole pipeline. Rebuild packaged Electron only when the task or failure requires it.
+- **No re-reading.** After a task, rerun `node scripts/next-task.mjs` instead of re-reading documents. Don't re-open files you already have in context.
+- **Short updates.** Per-task update is the one line in §4 step 6. No restating plans or recaps between steps.
 
 ## 2. What to build
 
@@ -69,7 +77,9 @@ Other progress rules:
 
 - If a task is unfinished: leave its box unticked, push, and write in "Current task notes" exactly where to resume (file, function, next step).
 - Run the full engine suite once (command in `progress.md` "How to run", timeout ≥ 600 s). If anything fails, fix it or record it under Unfinished and set `Safe to merge: no`. Put the result in "Last session".
-- Mark the PR ready for review (`gh pr ready`), run `node scripts/progress.mjs`, then end your reply with this block:
+- One PR covers the entire milestone. Continue the existing branch and open PR while the milestone is unfinished; a session or individual task ending is not a merge checkpoint. Keep it open and unmerged, and do not create another branch or PR per task.
+- Request completion review/merge and mark the PR ready (`gh pr ready`) only when milestone task completion is 100% and its applicable automated exit gates pass. Until then, report `ACTION NEEDED: none — continue this milestone on the existing branch/PR` and `Safe to merge: no — milestone unfinished` (or the concrete failing gate). External gates remain explicitly open as required above.
+- Run `node scripts/progress.mjs`, then end your reply with this block:
 
 ```
 SESSION SUMMARY
@@ -78,8 +88,8 @@ Unfinished: <task — where to resume>   (or: none)
 Full engine suite (once, at session end): <command> → <passed>/<total>
 Requirements changed: <ID → Partial/Done>; ...   (or: none)
 Open exit gates for this milestone: <automated: ...> | <external: ...>
-ACTION NEEDED: Review and merge this PR into main before starting the next session: <PR URL>
-Safe to merge: yes                     (or: no — <reason>)
+ACTION NEEDED: none — continue this milestone on the existing branch/PR: <PR URL> (at 100% tasks + passing applicable automated gates only: completion review/merge)
+Safe to merge: no — milestone unfinished (or, only at the completion checkpoint: yes)
 Checklist completion (progress.md, tasks only): Overall <x>% | M0 <x>% | M1 <x>% | M2 <x>% | M3 <x>% | M4 <x>% | M5 <x>% | M6 <x>%
 Next task: <next task name>
 ```

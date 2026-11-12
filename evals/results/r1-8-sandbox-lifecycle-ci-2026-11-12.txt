@@ -1,0 +1,8 @@
+CI run https://github.com/daggerm29-oss/8/actions/runs/43143536991 at e803082 (ubuntu-24.04, sudo sh scripts/cgroup-delegate.sh before the suite)
+ok 157 - [local-os] PTY: interactive shell on a real terminal
+ok 158 - memory hog is killed at its cgroup limit
+ok 159 - fork bomb is stopped by the PID limit
+ok 160 - disk filler is stopped by the quota
+ok 161 - snapshot → suspend → resume restores files and processes
+ok 162 - no sentinel secret value appears in snapshot bytes
+ok 163 - orphaned sandboxes from a killed Engine are reaped on next start

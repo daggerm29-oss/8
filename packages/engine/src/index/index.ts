@@ -1,12 +1,18 @@
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync, watch as fsWatch, type FSWatcher } from 'node:fs';
+import { blake3Hex, merkleTree } from './hash.ts';
+import { HelixIgnore } from './ignore.ts';
+import { structuralSearch, type StructuralMatch } from './structural.ts';
 import { dirname, join, normalize, relative } from 'node:path';
 import type { Db } from '../storage/db.ts';
 import { extract, identifierTerms, isTestPath, langOf, type Lang } from './extract.ts';
 import { extractRefs } from './graph.ts';
 import { extractDomain, type ConfigKey, type DbTable, type Route } from './domain.ts';
 import { dot, embed, EMBED_DIM, EMBED_MODEL, fromBlob, toBlob } from './embed.ts';
+import { estimateTokens, isAmbiguous, localReranker, mergeAdjacent, type Reranker } from './retrieval.ts';
+import type { Embedder } from './embedders.ts';
+import { costOf, type Ledger } from '../models/ledger.ts';
 
 const SKIP_DIRS = new Set(['node_modules', '.git', '.next', 'dist', 'build', 'out', 'coverage', '__pycache__', '.venv', 'venv', 'target', '.turbo', '.cache', 'vendor']);
 const SECRET_FILE = /(^|\/)(\.env(\.[\w-]+)?|.*\.pem|id_[a-z0-9]+|.*\.key|credentials\.json|.*secret.*\.json)$/i;
@@ -23,7 +29,55 @@ export interface SearchHit {
   score: number;
   why: string[];
   preview: string;
+  /** Estimated tokens of `preview` (packing budget unit). */
+  tokens: number;
 }
+
+/** Retrieval stages beyond first-stage fusion are opt-in so callers can measure each one (plan §15.3). */
+export interface SearchOptions {
+  limit?: number;
+  pathPrefix?: string;
+  /** Rerank the fused pool: 'auto' only when the top scores are close, 'always' forces it. Default 'never'. */
+  rerank?: 'never' | 'auto' | 'always';
+  /** Replaces the bundled local reranker (cross-encoder or Tier-S LLM). */
+  reranker?: Reranker;
+  rerankPool?: number;
+  /** Add a graph-neighborhood retriever seeded by these files (open files, recent edits) or, by default, the top first-stage hits. */
+  graph?: boolean;
+  seeds?: string[];
+  /** Append type signatures and 1-hop caller call sites for the top results, flagged `expand:*` in `why`. */
+  expand?: boolean;
+  /** Merge adjacent slices and stop adding results once this many tokens are packed. */
+  tokenBudget?: number;
+  /** Query embedding from a semantic embedder (see `queryEmbedding`); adds the `vector` retriever over its vectors. */
+  semantic?: { model: string; vector: Float32Array };
+}
+
+export interface EmbedRunOptions {
+  /** Files the user has open: embedded first. */
+  openFiles?: string[];
+  maxChunks?: number;
+  batchSize?: number;
+  /** Each embedding call becomes one `embedder` ledger row (cost visible next to model spend). */
+  ledger?: Pick<Ledger, 'record'>;
+  task?: string;
+  agent?: string;
+}
+
+export interface EmbedRunResult {
+  model: string;
+  kind: Embedder['kind'];
+  pending: number;
+  embedded: number;
+  reused: number;
+  inputTokens: number;
+  costUsd: number | null;
+  /** Files in the order their chunks were embedded. */
+  order: string[];
+  error?: string;
+}
+
+export interface VectorHit { path: string; startLine: number; endLine: number; symbol: string; sim: number }
 
 export interface SymbolHit {
   name: string;
@@ -68,6 +122,11 @@ export interface PlanImpactReport {
   riskTerms: Array<{ term: string; value: number; weight: number; contribution: number }>;
   precision: 'heuristic';
 }
+
+export type GraphOp = 'definitions' | 'references' | 'callers' | 'callees' | 'dependents' | 'importers' | 'tests';
+export const GRAPH_OPS: readonly GraphOp[] = ['definitions', 'references', 'callers', 'callees', 'dependents', 'importers', 'tests'];
+export interface GraphItem { path: string; line?: number; symbol?: string; depth?: number }
+export interface GraphResult { op: GraphOp; target: string; items: GraphItem[]; precision: 'heuristic' }
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -124,12 +183,64 @@ export class WorkspaceIndex {
       };
       walk(this.root);
     }
-    return files.filter((f) => !f.split('/').some((seg) => SKIP_DIRS.has(seg)) && !SECRET_FILE.test(f) && langOf(f) !== null);
+    return this.indexable(files);
   }
 
-  update(): IndexStats {
+  /** Drops skip-dirs, secret files, unknown languages, and `.helixignore` paths (FR-11). */
+  private indexable(files: string[]): string[] {
+    const ignore = HelixIgnore.load(this.root);
+    return files.filter((f) => !f.split('/').some((seg) => SKIP_DIRS.has(seg)) && !SECRET_FILE.test(f) && langOf(f) !== null && !ignore.ignores(f));
+  }
+
+  /** Merkle tree over the indexed files: directory path ('' is the root) → BLAKE3 hash. */
+  merkle(): Map<string, string> {
+    return merkleTree(this.db.all<{ path: string; hash: string }>('SELECT path, hash FROM idx_files WHERE ws = ?', this.ws));
+  }
+
+  merkleRoot(): string {
+    return this.merkle().get('') ?? '';
+  }
+
+  /**
+   * File watcher (F-IDX-1): re-indexes only the saved paths after a short debounce. A change to `.helixignore`
+   * triggers a full pass. Returns a handle whose `close()` stops watching.
+   */
+  watch(onUpdate?: (stats: IndexStats) => void, debounceMs = 25): { close(): void } {
+    const pending = new Set<string>();
+    let timer: NodeJS.Timeout | undefined;
+    let full = false;
+    const flush = () => {
+      timer = undefined;
+      const paths = [...pending];
+      pending.clear();
+      const wasFull = full;
+      full = false;
+      try {
+        const stats = wasFull ? this.update() : this.update(paths);
+        if (stats.indexed || stats.removed) onUpdate?.(stats);
+      } catch { /* a racing delete or rename is picked up by the next event */ }
+    };
+    let watcher: FSWatcher;
+    try {
+      watcher = fsWatch(this.root, { recursive: true }, (_event, name) => {
+        if (!name) return;
+        const rel = String(name).split('\\').join('/');
+        if (rel === '.helixignore') full = true;
+        else if (rel === '.git' || rel.startsWith('.git/') || rel.split('/').some((s) => SKIP_DIRS.has(s))) return;
+        else pending.add(rel);
+        timer ??= setTimeout(flush, debounceMs);
+      });
+    } catch {
+      return { close() {} };
+    }
+    return { close: () => { if (timer) clearTimeout(timer); watcher.close(); } };
+  }
+
+  /** Re-indexes the workspace, or only `paths` (workspace-relative) when given. */
+  update(paths?: string[]): IndexStats {
     const started = performance.now();
-    const files = this.listFiles();
+    const subset = paths ? new Set(paths) : null;
+    const files = subset ? this.indexable([...subset]) : this.listFiles();
     const known = new Map(this.db.all<{ path: string; hash: string }>('SELECT path, hash FROM idx_files WHERE ws = ?', this.ws).map((r) => [r.path, r.hash]));
     const stats: IndexStats = { files: files.length, indexed: 0, removed: 0, unchanged: 0, symbols: 0, durationMs: 0 };
     const present = new Set<string>();
@@ -142,11 +253,11 @@ export class WorkspaceIndex {
       const buf = readFileSync(abs);
       if (buf.subarray(0, 8000).includes(0)) continue;
       present.add(path);
-      const hash = createHash('sha256').update(buf).digest('hex');
+      const hash = blake3Hex(buf);
       if (known.get(path) === hash) { stats.unchanged++; continue; }
       work.push({ path, hash, text: buf.toString('utf8'), lang: langOf(path)!, size: st.size });
     }
-    const removed = [...known.keys()].filter((p) => !present.has(p));
+    const removed = [...known.keys()].filter((p) => !present.has(p) && (!subset || subset.has(p)));
     if (work.length || removed.length) {
       this.db.transaction(() => {
         for (const p of [...removed, ...work.map((w) => w.path)]) this.drop(p);
@@ -167,6 +278,7 @@ export class WorkspaceIndex {
     this.db.run('DELETE FROM idx_chunks WHERE ws = ? AND path = ?', this.ws, path);
     this.db.run('DELETE FROM idx_refs WHERE ws = ? AND path = ?', this.ws, path);
     this.db.run('DELETE FROM idx_vectors WHERE ws = ? AND path = ?', this.ws, path);
+    this.db.run('DELETE FROM idx_sem_vectors WHERE ws = ? AND path = ?', this.ws, path);
     for (const t of ['idx_routes', 'idx_tables', 'idx_config']) this.db.run(`DELETE FROM ${t} WHERE ws = ? AND path = ?`, this.ws, path);
   }
 
@@ -388,19 +500,93 @@ export class WorkspaceIndex {
     )?.q ?? '';
   }
 
+  /** AST-pattern search over indexed files (FR-9, §12.2). */
+  structural(pattern: string, opts: { lang?: Lang; pathPrefix?: string; limit?: number } = {}): { matches: StructuralMatch[]; error?: string } {
+    const rows = this.db.all<{ path: string; lang: string }>('SELECT path, lang FROM idx_files WHERE ws = ? ORDER BY path', this.ws)
+      .filter((r) => !opts.pathPrefix || r.path.startsWith(opts.pathPrefix));
+    const files = function* (root: string) {
+      for (const r of rows) {
+        let text: string;
+        try { text = readFileSync(join(root, r.path), 'utf8'); } catch { continue; }
+        yield { path: r.path, lang: r.lang as Lang, text };
+      }
+    };
+    return structuralSearch(files(this.root), pattern, opts);
+  }
+
+  /**
+   * General graph query (FR-9, §11.5): deterministic lookups over definitions, call edges, import edges and test
+   * edges. `target` is a symbol name for definitions/references/callers/callees/tests and a file path (or, for
+   * `importers`, a module specifier) for dependents/importers/tests.
+   */
+  graphQuery(q: { op: GraphOp; target: string; depth?: number }): GraphResult {
+    const depth = Math.min(Math.max(q.depth ?? 1, 1), 4);
+    const items: GraphItem[] = [];
+    const exactDefs = () => this.findSymbol(q.target, 40).filter((h) => h.name === q.target || h.qualifiedName === q.target || h.qualifiedName.endsWith(`.${q.target}`));
+    const isFile = this.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM idx_files WHERE ws = ? AND path = ?', this.ws, q.target)!.n > 0;
+    switch (q.op) {
+      case 'definitions':
+        for (const d of exactDefs()) items.push({ path: d.path, line: d.line, symbol: d.qualifiedName });
+        break;
+      case 'references':
+        for (const r of this.db.all<{ path: string; line: number; caller: string }>('SELECT path, line, caller FROM idx_refs WHERE ws = ? AND name = ? ORDER BY path, line LIMIT 500', this.ws, q.target.split('.').at(-1)!)) items.push({ path: r.path, line: r.line, symbol: r.caller || undefined });
+        break;
+      case 'callers':
+        for (const c of this.impact(q.target, { depth }).callers) items.push({ path: c.path, line: c.line, symbol: c.caller || undefined, depth: c.depth });
+        break;
+      case 'callees': {
+        const seen = new Set<string>();
+        for (const d of exactDefs()) {
+          for (const r of this.db.all<{ name: string }>('SELECT DISTINCT name FROM idx_refs WHERE ws = ? AND path = ? AND caller = ? ORDER BY name', this.ws, d.path, d.qualifiedName)) {
+            if (seen.has(r.name)) continue;
+            seen.add(r.name);
+            const def = this.findSymbol(r.name, 5).find((h) => h.name === r.name);
+            if (def) items.push({ path: def.path, line: def.line, symbol: def.qualifiedName });
+          }
+        }
+        break;
+      }
+      case 'dependents': {
+        const seen = new Set<string>([q.target]);
+        let frontier = [q.target];
+        for (let d = 1; d <= depth && frontier.length; d++) {
+          const next: string[] = [];
+          for (const f of frontier) for (const p of this.dependents(f)) if (!seen.has(p)) { seen.add(p); next.push(p); items.push({ path: p, depth: d }); }
+          frontier = next;
+        }
+        break;
+      }
+      case 'importers':
+        for (const r of this.db.all<{ path: string }>('SELECT DISTINCT path FROM idx_imports WHERE ws = ? AND (resolved = ? OR spec = ?) ORDER BY path', this.ws, q.target, q.target)) items.push({ path: r.path });
+        break;
+      case 'tests': {
+        const paths = new Set<string>();
+        const files = isFile ? [q.target] : exactDefs().map((d) => d.path);
+        for (const f of files) for (const t of this.coveringTests(f)) paths.add(t);
+        if (!isFile) {
+          const name = q.target.split('.').at(-1)!;
+          for (const r of this.db.all<{ path: string }>('SELECT DISTINCT r.path FROM idx_refs r JOIN idx_files f ON f.ws = r.ws AND f.path = r.path WHERE r.ws = ? AND r.name = ? AND f.is_test = 1', this.ws, name)) paths.add(r.path);
+        }
+        for (const p of [...paths].sort()) items.push({ path: p });
+        break;
+      }
+    }
+    return { op: q.op, target: q.target, items, precision: 'heuristic' };
+  }
+
   /** Test files that import a file (static `tests` edges heuristic, §11.5). */
   coveringTests(path: string): string[] {
     return this.db.all<{ path: string }>('SELECT DISTINCT i.path FROM idx_imports i JOIN idx_files f ON f.ws = i.ws AND f.path = i.path WHERE i.ws = ? AND i.resolved = ? AND f.is_test = 1', this.ws, path).map((r) => r.path);
   }
 
-  /** Hybrid retrieval: BM25 + symbol + path retrievers fused with RRF; deterministic query planning (§11.6). */
-  search(query: string, opts: { limit?: number; pathPrefix?: string } = {}): SearchHit[] {
+  /** Hybrid retrieval: parallel retrievers fused with RRF, optional rerank, graph neighborhood, expansion and packing (§11.6). */
+  search(query: string, opts: SearchOptions = {}): SearchHit[] {
     const limit = opts.limit ?? 10;
     const identifiers = [...new Set(query.match(/[A-Za-z_$][\w$]{2,}/g) ?? [])];
     const isIdentifierQuery = identifiers.some((i) => /[a-z][A-Z]|_|\$/.test(i)) || /[.:]{1,2}\w/.test(query);
     const terms = [...new Set(identifierTerms(query).split(' ').filter((t) => t.length > 2 && !STOP.has(t)))];
     const pathSeeds = [...new Set(query.match(/[\w./-]+\.\w{1,5}/g) ?? [])];
-    const lists: Array<{ name: string; weight: number; hits: Array<{ key: string; path: string; start: number; end: number; symbol: string | null; body?: string }> }> = [];
+    const lists: RetrieverList[] = [];
     const prefix = opts.pathPrefix ? `${opts.pathPrefix.replace(/\/$/, '')}/%` : '%';
 
     if (terms.length) {
@@ -417,36 +603,223 @@ export class WorkspaceIndex {
         `SELECT v.path, v.start_line, v.end_line, v.symbol, e.vec FROM idx_vectors v JOIN idx_embeddings e ON e.hash = v.hash WHERE v.ws = ? AND v.path LIKE ? AND e.model = ?`, this.ws, prefix, EMBED_MODEL,
       );
       const scored = rows.map((r) => ({ r, sim: dot(q, fromBlob(r.vec)) })).filter((x) => x.sim >= VECTOR_MIN_SIM).sort((a, b) => b.sim - a.sim).slice(0, 50);
-      lists.push({ name: 'vector', weight: isIdentifierQuery ? 0.5 : 1.0, hits: scored.map(({ r }) => ({ key: `${r.path}:${r.start_line}`, path: r.path, start: Number(r.start_line), end: Number(r.end_line), symbol: r.symbol || null })) });
+      lists.push({ name: 'vector:lexical', weight: (isIdentifierQuery ? 0.5 : 1.0) * (opts.semantic ? 0.4 : 1), hits: scored.map(({ r }) => ({ key: `${r.path}:${r.start_line}`, path: r.path, start: Number(r.start_line), end: Number(r.end_line), symbol: r.symbol || null })) });
+    }
+    if (opts.semantic) {
+      const found = this.vectorSearch(opts.semantic.model, opts.semantic.vector, { limit: 30, pathPrefix: opts.pathPrefix });
+      const floor = Math.max(0.1, (found[0]?.sim ?? 0) * 0.6);
+      lists.push({ name: 'vector', weight: isIdentifierQuery ? 0.8 : 1.5, hits: found.filter((h) => h.sim >= floor).map((h) => ({ key: `${h.path}:${h.startLine}`, path: h.path, start: h.startLine, end: h.endLine, symbol: h.symbol || null })) });
     }
     if (identifiers.length) {
-      const hits: (typeof lists)[number]['hits'] = [];
+      const hits: RetrieverList['hits'] = [];
       for (const id of identifiers.slice(0, 8)) for (const s of this.findSymbol(id, 5)) if (s.path.startsWith(opts.pathPrefix ?? '')) hits.push({ key: `sym:${s.path}:${s.line}`, path: s.path, start: s.line, end: Math.min(s.endLine, s.line + 120), symbol: s.qualifiedName });
       lists.push({ name: 'symbol', weight: isIdentifierQuery ? 1.5 : 0.8, hits });
     }
     if (pathSeeds.length) {
-      const hits: (typeof lists)[number]['hits'] = [];
+      const hits: RetrieverList['hits'] = [];
       for (const seed of pathSeeds) for (const f of this.db.all<{ path: string; lines: number }>('SELECT path, lines FROM idx_files WHERE ws = ? AND path LIKE ? LIMIT 5', this.ws, `%${seed}`)) hits.push({ key: `path:${f.path}`, path: f.path, start: 1, end: Math.min(f.lines, 80), symbol: null });
       lists.push({ name: 'path', weight: 1.5, hits });
     }
 
-    // RRF fusion; overlapping slices in the same file merge their scores (dedupe, §13.2 step 3).
-    const fused = new Map<string, { path: string; start: number; end: number; symbol: string | null; score: number; why: Set<string>; body?: string }>();
-    for (const list of lists) {
-      list.hits.forEach((h, rank) => {
-        const existing = [...fused.values()].find((f) => f.path === h.path && h.start <= f.end && h.end >= f.start);
-        const add = list.weight / (RRF_K + rank + 1);
-        if (existing) {
-          existing.score += add;
-          existing.why.add(list.name);
-          if (h.symbol && !existing.symbol) { existing.symbol = h.symbol; existing.start = h.start; existing.end = h.end; }
-        } else fused.set(h.key, { ...h, score: add, why: new Set([list.name]) });
-      });
+    let ranked = fuseRanked(lists);
+    if (opts.graph && ranked.length) {
+      const seeds = opts.seeds?.length ? opts.seeds : [...new Set(ranked.slice(0, 3).map((f) => f.path))];
+      const hits = this.graphNeighborhood(seeds, terms, opts.pathPrefix ?? '');
+      if (hits.length) { lists.push({ name: 'graph', weight: 0.7, hits }); ranked = fuseRanked(lists); }
     }
-    return [...fused.values()]
-      .sort((a, b) => b.score - a.score)
-      .slice(0, limit)
-      .map((f) => ({ path: f.path, startLine: f.start, endLine: f.end, symbol: f.symbol, score: Number(f.score.toFixed(5)), why: [...f.why], preview: this.slice(f.path, f.start, Math.min(f.end, f.start + 40)) }));
+
+    const rerankMode = opts.rerank ?? 'never';
+    if (rerankMode !== 'never' && ranked.length > 1) {
+      const pool = ranked.slice(0, opts.rerankPool ?? 20);
+      if (rerankMode === 'always' || isAmbiguous(pool.map((f) => f.score))) {
+        const rerank = opts.reranker ?? localReranker(terms);
+        const texts = pool.map((f) => this.sliceText(f.path, f.start, Math.min(f.end, f.start + 80)));
+        const scores = rerank(query, pool.map((f, i) => ({ path: f.path, symbol: f.symbol, text: texts[i] })));
+        const top = pool[0].score;
+        pool.forEach((f, i) => { f.score = 0.4 * (f.score / top) + 0.6 * scores[i]; f.why.add('rerank'); });
+        ranked = [...pool].sort((a, b) => b.score - a.score).concat(ranked.slice(pool.length));
+      }
+    }
+
+    const packed = opts.tokenBudget === undefined ? ranked : mergeAdjacent(ranked);
+    const out: SearchHit[] = [];
+    let used = 0;
+    for (const f of packed) {
+      if (out.length >= limit) break;
+      const preview = this.slice(f.path, f.start, Math.min(f.end, f.start + 40));
+      const tokens = estimateTokens(preview);
+      if (opts.tokenBudget !== undefined && out.length && used + tokens > opts.tokenBudget) break;
+      used += tokens;
+      out.push({ path: f.path, startLine: f.start, endLine: f.end, symbol: f.symbol, score: Number(f.score.toFixed(5)), why: [...f.why], preview, tokens });
+    }
+    if (opts.expand) out.push(...this.expansion(out.slice(0, 3), opts.tokenBudget === undefined ? Infinity : Math.max(0, opts.tokenBudget - used)));
+    return out;
+  }
+
+  /** Query embedding for `search({ semantic })`; the call is a ledger row when a ledger is given. */
+  async queryEmbedding(embedder: Embedder, query: string, ledger?: Pick<Ledger, 'record'>, ctx: { task?: string; agent?: string } = {}): Promise<{ model: string; vector: Float32Array }> {
+    const started = performance.now();
+    const result = await embedder.embed([query], 'query');
+    ledger?.record({ ws: this.ws, task: ctx.task, agent: ctx.agent, role: 'embedder', provider: embedder.provider, model: embedder.id, usage: embeddingUsage(result.inputTokens, result.usageSource), latencyMs: performance.now() - started, status: 'ok' }, embedder.pricing);
+    return { model: embedder.id, vector: result.vectors[0] };
+  }
+
+  /** Cosine ranking of stored chunk vectors for one model (vectors are L2-normalized, so dot product). */
+  vectorSearch(model: string, query: Float32Array, opts: { limit?: number; pathPrefix?: string; minSim?: number } = {}): VectorHit[] {
+    const prefix = opts.pathPrefix ? `${opts.pathPrefix.replace(/\/$/, '')}/%` : '%';
+    const table = model === EMBED_MODEL ? 'idx_vectors' : 'idx_sem_vectors';
+    const rows = this.db.all<{ path: string; start_line: number; end_line: number; symbol: string; vec: Uint8Array }>(
+      `SELECT v.path, v.start_line, v.end_line, v.symbol, e.vec FROM ${table} v JOIN idx_embeddings e ON e.hash = v.hash WHERE v.ws = ? AND v.path LIKE ? AND e.model = ?`, this.ws, prefix, model);
+    return rows
+      .map((r) => ({ path: r.path, startLine: Number(r.start_line), endLine: Number(r.end_line), symbol: r.symbol, sim: dot(query, fromBlob(r.vec)) }))
+      .filter((h) => h.sim >= (opts.minSim ?? -1))
+      .sort((a, b) => b.sim - a.sim)
+      .slice(0, opts.limit ?? 50);
+  }
+
+  /** Chunks that still lack a vector for `model`; used to show embedding progress. */
+  pendingChunks(model: string): number {
+    return this.db.get<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM idx_chunks c WHERE c.ws = ? AND NOT EXISTS (SELECT 1 FROM idx_sem_vectors v WHERE v.ws = c.ws AND v.path = c.path AND v.start_line = c.start_line AND v.end_line = c.end_line AND v.model = ?)`, this.ws, model)!.n;
+  }
+
+  /**
+   * Lazy semantic embedding (§12.3). Pending chunks are ordered open files first, then recency x import fan-in
+   * (graph centrality). Identical chunk text is embedded once (content-hash dedupe). Every embedding call is one
+   * `embedder` ledger row. A failing backend stops the run and leaves search working on the other retrievers.
+   */
+  async embedPending(embedder: Embedder, opts: EmbedRunOptions = {}): Promise<EmbedRunResult> {
+    const result: EmbedRunResult = { model: embedder.id, kind: embedder.kind, pending: 0, embedded: 0, reused: 0, inputTokens: 0, costUsd: 0, order: [], };
+    const rows = this.db.all<{ path: string; start_line: number; end_line: number; symbol: string; body: string }>(
+      `SELECT c.path, c.start_line, c.end_line, c.symbol, c.body FROM idx_chunks c WHERE c.ws = ? AND NOT EXISTS (SELECT 1 FROM idx_sem_vectors v WHERE v.ws = c.ws AND v.path = c.path AND v.start_line = c.start_line AND v.end_line = c.end_line AND v.model = ?)`, this.ws, embedder.id);
+    result.pending = rows.length;
+    const open = new Set(opts.openFiles ?? []);
+    const fanIn = new Map(this.db.all<{ p: string; n: number }>('SELECT resolved AS p, COUNT(*) AS n FROM idx_imports WHERE ws = ? AND resolved IS NOT NULL GROUP BY resolved', this.ws).map((r) => [r.p, Number(r.n)]));
+    const priority = new Map<string, number>();
+    for (const path of new Set(rows.map((r) => r.path))) {
+      let ageDays = 0;
+      try { ageDays = Math.max(0, (Date.now() - statSync(join(this.root, path)).mtimeMs) / 86_400_000); } catch { /* deleted since indexing: lowest recency */ ageDays = 365; }
+      priority.set(path, open.has(path) ? Number.POSITIVE_INFINITY : (1 + (fanIn.get(path) ?? 0)) / (1 + ageDays));
+    }
+    const queue = rows
+      .sort((a, b) => (priority.get(b.path)! - priority.get(a.path)!) || a.path.localeCompare(b.path) || Number(a.start_line) - Number(b.start_line))
+      .slice(0, opts.maxChunks ?? rows.length);
+    const seenPaths = new Set<string>();
+    const batchSize = opts.batchSize ?? 32;
+    for (let i = 0; i < queue.length; i += batchSize) {
+      const batch = queue.slice(i, i + batchSize).map((r) => {
+        const text = `// ${r.path}\n// ${r.symbol}\n${r.body}`.slice(0, 2000);
+        return { r, text, hash: createHash('sha256').update(`${embedder.id}\0${r.symbol}\0${r.body}`).digest('hex') };
+      });
+      const missing = new Map<string, string>();
+      for (const b of batch) if (!missing.has(b.hash) && !this.db.get('SELECT 1 FROM idx_embeddings WHERE hash = ?', b.hash)) missing.set(b.hash, b.text);
+      if (missing.size) {
+        const started = performance.now();
+        const hashes = [...missing.keys()];
+        try {
+          const out = await embedder.embed([...missing.values()], 'document');
+          hashes.forEach((h, k) => this.db.run('INSERT OR REPLACE INTO idx_embeddings (hash, model, dim, vec) VALUES (?, ?, ?, ?)', h, embedder.id, embedder.dim, toBlob(out.vectors[k])));
+          const entry = opts.ledger?.record({ ws: this.ws, task: opts.task, agent: opts.agent, role: 'embedder', provider: embedder.provider, model: embedder.id, usage: embeddingUsage(out.inputTokens, out.usageSource), latencyMs: performance.now() - started, status: 'ok' }, embedder.pricing);
+          result.inputTokens += out.inputTokens;
+          const cost = entry ? entry.costUsd : costOf(embedder.pricing, embeddingUsage(out.inputTokens, out.usageSource));
+          result.costUsd = cost === null || result.costUsd === null ? null : result.costUsd + cost;
+          result.embedded += hashes.length;
+        } catch (e) {
+          result.error = e instanceof Error ? e.message : String(e);
+          opts.ledger?.record({ ws: this.ws, task: opts.task, agent: opts.agent, role: 'embedder', provider: embedder.provider, model: embedder.id, usage: embeddingUsage(0, 'estimate'), latencyMs: performance.now() - started, status: 'error', error: result.error }, embedder.pricing);
+          break;
+        }
+      }
+      result.reused += batch.length - [...new Set(batch.map((b) => b.hash))].filter((h) => missing.has(h)).length;
+      for (const b of batch) {
+        this.db.run('INSERT INTO idx_sem_vectors (ws, path, start_line, end_line, symbol, model, hash) VALUES (?, ?, ?, ?, ?, ?, ?)', this.ws, b.r.path, Number(b.r.start_line), Number(b.r.end_line), b.r.symbol, embedder.id, b.hash);
+        if (!seenPaths.has(b.r.path)) { seenPaths.add(b.r.path); result.order.push(b.r.path); }
+      }
+    }
+    return result;
+  }
+
+  /** Raw (unnumbered) lines `start..end` of a file; reranker input. */
+  private sliceText(path: string, start: number, end: number): string {
+    const abs = join(this.root, path);
+    if (!existsSync(abs)) return '';
+    return readFileSync(abs, 'utf8').split('\n').slice(start - 1, end).join('\n');
+  }
+
+  /**
+   * Graph-neighborhood retriever (§11.6): what the seed files call (definitions they import), who calls them (callers
+   * that import them), and their import neighbors, most query-relevant first. Edges are the name-based call graph
+   * narrowed by import edges, as in `impact`.
+   */
+  private graphNeighborhood(seeds: string[], terms: string[], pathPrefix: string): RetrieverList['hits'] {
+    const hits: Array<RetrieverList['hits'][number] & { relevance: number }> = [];
+    const seen = new Set<string>(seeds);
+    const relevance = (text: string) => { const have = new Set(identifierTerms(text).split(' ')); return terms.filter((t) => have.has(t)).length; };
+    const add = (path: string, start: number, end: number, symbol: string | null, label: string) => {
+      const key = `graph:${path}:${start}`;
+      if (seen.has(key) || seeds.includes(path) || !path.startsWith(pathPrefix)) return;
+      seen.add(key);
+      hits.push({ key, path, start, end, symbol, label, relevance: relevance(`${symbol ?? ''} ${path}`) });
+    };
+    const symbolAt = (path: string, name: string) => this.db.all<{ line: number; end_line: number; qualified_name: string }>(
+      `SELECT line, end_line, qualified_name FROM idx_symbols WHERE ws = ? AND path = ? AND (name = ? OR qualified_name = ?) AND kind != 'heading' LIMIT 1`, this.ws, path, name, name);
+    for (const seed of seeds.slice(0, 5)) {
+      const imported = new Set(this.db.all<{ resolved: string }>('SELECT DISTINCT resolved FROM idx_imports WHERE ws = ? AND path = ? AND resolved IS NOT NULL', this.ws, seed).map((r) => r.resolved));
+      const importers = this.dependents(seed);
+      for (const { name } of this.db.all<{ name: string }>('SELECT DISTINCT name FROM idx_refs WHERE ws = ? AND path = ? LIMIT 60', this.ws, seed)) {
+        for (const def of this.db.all<{ path: string; line: number; end_line: number; qualified_name: string }>(
+          `SELECT path, line, end_line, qualified_name FROM idx_symbols WHERE ws = ? AND name = ? AND path != ? AND kind IN ('function', 'method', 'class') LIMIT 3`, this.ws, name, seed)) {
+          if (imported.has(def.path)) add(def.path, def.line, Math.min(def.end_line, def.line + 120), def.qualified_name, 'graph:calls');
+        }
+      }
+      const own = this.db.all<{ name: string }>(`SELECT DISTINCT name FROM idx_symbols WHERE ws = ? AND path = ? AND kind IN ('function', 'method', 'class') LIMIT 30`, this.ws, seed).map((r) => r.name);
+      for (const name of own) {
+        for (const ref of this.db.all<{ path: string; line: number; caller: string }>('SELECT path, line, caller FROM idx_refs WHERE ws = ? AND name = ? AND path != ? LIMIT 10', this.ws, name, seed)) {
+          if (!importers.includes(ref.path)) continue;
+          const enclosing = ref.caller ? symbolAt(ref.path, ref.caller)[0] : undefined;
+          if (enclosing) add(ref.path, enclosing.line, Math.min(enclosing.end_line, enclosing.line + 120), enclosing.qualified_name, 'graph:called-by');
+          else add(ref.path, Math.max(1, ref.line - 3), ref.line + 3, null, 'graph:called-by');
+        }
+      }
+      for (const path of [...imported, ...importers]) {
+        const file = this.db.get<{ lines: number }>('SELECT lines FROM idx_files WHERE ws = ? AND path = ?', this.ws, path);
+        if (file) add(path, 1, Math.min(file.lines, 60), null, 'graph:imports');
+      }
+    }
+    return hits.map((h, i) => ({ h, i })).sort((a, b) => b.h.relevance - a.h.relevance || a.i - b.i).slice(0, 40).map(({ h }) => h);
+  }
+
+  /**
+   * Dependency-aware expansion (§11.6): for each selected symbol, the signatures (not bodies) of the types its body
+   * mentions and the call sites of its direct callers. Appended after the ranked results and trimmed to `budget`.
+   */
+  private expansion(selected: SearchHit[], budget: number): SearchHit[] {
+    const out: SearchHit[] = [];
+    const covered = (path: string, line: number) => selected.some((s) => s.path === path && line >= s.startLine && line <= s.endLine) || out.some((o) => o.path === path && line >= o.startLine && line <= o.endLine);
+    let used = 0;
+    const push = (hit: Omit<SearchHit, 'tokens' | 'score'>) => {
+      const tokens = estimateTokens(hit.preview);
+      if (used + tokens > budget) return;
+      used += tokens;
+      out.push({ ...hit, score: 0, tokens });
+    };
+    for (const hit of selected) {
+      const body = this.sliceText(hit.path, hit.startLine, Math.min(hit.endLine, hit.startLine + 120));
+      for (const name of [...new Set(body.match(/\b[A-Z][A-Za-z0-9_]{2,}\b/g) ?? [])].slice(0, 12)) {
+        for (const def of this.db.all<{ path: string; line: number; qualified_name: string; signature: string }>(
+          `SELECT path, line, qualified_name, signature FROM idx_symbols WHERE ws = ? AND name = ? AND kind IN ('class', 'interface', 'type', 'enum', 'struct', 'trait') LIMIT 2`, this.ws, name)) {
+          if (covered(def.path, def.line)) continue;
+          push({ path: def.path, startLine: def.line, endLine: def.line, symbol: def.qualified_name, why: ['expand:type'], preview: `${String(def.line).padStart(5)}  ${def.signature}` });
+        }
+      }
+      const leaf = hit.symbol?.split('.').at(-1);
+      if (!leaf) continue;
+      for (const ref of this.db.all<{ path: string; line: number }>('SELECT path, line FROM idx_refs WHERE ws = ? AND name = ? ORDER BY path, line LIMIT 6', this.ws, leaf)) {
+        if (covered(ref.path, ref.line)) continue;
+        push({ path: ref.path, startLine: Math.max(1, ref.line - 1), endLine: ref.line + 1, symbol: null, why: ['expand:caller'], preview: this.slice(ref.path, Math.max(1, ref.line - 1), ref.line + 1) });
+      }
+    }
+    return out;
   }
 
   /** Domain map (§11.7): routes, DB tables, and config keys with their defining file:line. */
@@ -492,6 +865,33 @@ export class WorkspaceIndex {
       chunks: this.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM idx_chunks WHERE ws = ?', this.ws)!.n,
     };
   }
+}
+
+function embeddingUsage(inputTokens: number, source: 'provider' | 'estimate') {
+  return { inputTokens, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0, reasoningTokens: 0, source };
+}
+
+interface RetrieverList {
+  name: string;
+  weight: number;
+  hits: Array<{ key: string; path: string; start: number; end: number; symbol: string | null; body?: string; label?: string }>;
+}
+
+/** RRF(k=60) over retriever lists; overlapping slices of one file merge (dedupe, §13.2 step 3). Items keep each retriever's label in `why`. */
+function fuseRanked(lists: RetrieverList[]) {
+  const fused = new Map<string, { path: string; start: number; end: number; symbol: string | null; score: number; why: Set<string>; body?: string }>();
+  for (const list of lists) {
+    list.hits.forEach((h, rank) => {
+      const existing = [...fused.values()].find((f) => f.path === h.path && h.start <= f.end && h.end >= f.start);
+      const add = list.weight / (RRF_K + rank + 1);
+      if (existing) {
+        existing.score += add;
+        existing.why.add(h.label ?? list.name);
+        if (h.symbol && !existing.symbol) { existing.symbol = h.symbol; existing.start = h.start; existing.end = h.end; }
+      } else fused.set(h.key, { path: h.path, start: h.start, end: h.end, symbol: h.symbol, body: h.body, score: add, why: new Set([h.label ?? list.name]) });
+    });
+  }
+  return [...fused.values()].sort((a, b) => b.score - a.score);
 }
 
 const STOP = new Set(['the', 'and', 'for', 'with', 'that', 'this', 'from', 'are', 'was', 'not', 'but', 'fix', 'bug', 'test', 'tests', 'failing', 'make', 'should', 'when', 'into', 'all', 'any', 'can', 'its', 'has', 'have', 'does', 'how', 'where', 'what', 'which', 'pass', 'passes', 'suite', 'code']);

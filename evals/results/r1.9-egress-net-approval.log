@@ -1,0 +1,14 @@
+✔ isBlockedAddress covers private, loopback, link-local and metadata ranges (10.503046ms)
+✔ egress: allowlisted host works through the proxy, others are denied and reported, direct egress fails (F-SBX-3) (1168.601555ms)
+✔ egress: per-tool allowlist — a host allowed for tool A is denied for tool B (F-SBX-3, §16.5) (36.892446ms)
+✔ egress: proxy refuses non-web ports and IP-literal private targets without a sandbox (5.367214ms)
+✔ egress: a sentinel in a plain-http request body is blocked and reported (7.397621ms)
+✔ network approval class: unknown domain raises a `network` approval; once allows that call only; always persists per workspace (FR-18, F-SBX-3) (185.707691ms)
+ℹ tests 6
+ℹ suites 0
+ℹ pass 6
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 2273.162489

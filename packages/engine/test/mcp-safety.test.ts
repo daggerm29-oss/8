@@ -34,11 +34,12 @@ test('wrapUntrusted neutralizes forged tags; stableJson is key-order independent
 
 test('read-only results are cached by stable args; errors and non-read tools are not; large results page out', async () => {
   const home = mkdtempSync(join(tmpdir(), 'helix-mcp-cache-'));
-  const marker = join(home, 'marker.txt');
+  const dir = mkdtempSync(join(tmpdir(), 'helix-mcp-scope-'));
+  const marker = join(dir, 'marker.txt');
   const registry = new ToolRegistry();
   const mgr = new McpManager({ home, registry, config: {
-    fake: { command: process.execPath, args: [SERVER], env: { MARKER_FILE: marker }, trust: 'trusted', maxResultChars: 100 },
-    raw: { command: process.execPath, args: [SERVER], env: { MARKER_FILE: marker } },
+    fake: { command: process.execPath, args: ['--input-type=module', '-e', readFileSync(SERVER, 'utf8')], cwd: dir, env: { MARKER_FILE: marker }, trust: 'trusted', maxResultChars: 100 },
+    raw: { command: process.execPath, args: ['--input-type=module', '-e', readFileSync(SERVER, 'utf8')], cwd: dir, env: { MARKER_FILE: marker } },
   } });
   try {
     await mgr.start();
@@ -91,10 +92,11 @@ test('engine: after an untrusted MCP read, a preapproved network action is denie
   const repo = mkdtempSync(join(tmpdir(), 'helix-taint-repo-'));
   mkdirSync(join(repo, 'src'));
   writeFileSync(join(repo, 'src/a.js'), 'export const a = 1;\n');
-  const marker = join(home, 'marker.txt');
+  const dir = mkdtempSync(join(tmpdir(), 'helix-mcp-scope-'));
+  const marker = join(dir, 'marker.txt');
   const engine = new Engine({
     home, env: { GEMINI_API_KEY: fake.apiKey, HELIX_GEMINI_BASE_URL: fake.url }, indexing: false, retry: { baseDelayMs: 1, maxDelayMs: 2 },
-    mcpServers: { raw: { command: process.execPath, args: [SERVER], env: { MARKER_FILE: marker } } },
+    mcpServers: { raw: { command: process.execPath, args: ['--input-type=module', '-e', readFileSync(SERVER, 'utf8')], cwd: dir, env: { MARKER_FILE: marker } } },
   });
   try {
     await engine.mcpReady;

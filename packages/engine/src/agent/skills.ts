@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { LocalSandbox } from '../sandbox/sandbox.ts';
+import { enforceWrites, takeSnapshot, type DeniedWrite, type HookPermissions } from './hook-guard.ts';
 
 /**
  * Skills and hooks (F-AGT-5, §9.7). Skills: `skills/<name>/SKILL.md` or `.helix/skills/<name>/SKILL.md`
@@ -52,9 +53,10 @@ export function skillBody(root: string, name: string): { skill: Skill; body: str
   return { skill, body: parseFrontMatter(readFileSync(join(root, skill.file), 'utf8')).body.trim(), scripts };
 }
 
-export type HookEvent = 'pre_tool' | 'post_tool' | 'task_done';
-export interface Hook { event: HookEvent; match?: string; run: string; timeoutMs?: number }
-const EVENTS: HookEvent[] = ['pre_tool', 'post_tool', 'task_done'];
+export type HookEvent = 'pre_tool' | 'post_tool' | 'pre_commit' | 'session_start' | 'task_done';
+/** `permissions.write`: workspace-relative globs the hook may write; omitted means the hook may not write the workspace. */
+export interface Hook { event: HookEvent; match?: string; run: string; timeoutMs?: number; permissions?: HookPermissions }
+const EVENTS: HookEvent[] = ['pre_tool', 'post_tool', 'pre_commit', 'session_start', 'task_done'];
 
 export function loadHooks(root: string): Hook[] {
   const file = join(root, '.helix/hooks.json');
@@ -66,14 +68,25 @@ export function loadHooks(root: string): Hook[] {
     if (!hook || !EVENTS.includes(hook.event as HookEvent)) throw new Error(`.helix/hooks.json: hooks[${i}].event must be one of ${EVENTS.join(', ')}`);
     if (typeof hook.run !== 'string' || !hook.run.trim()) throw new Error(`.helix/hooks.json: hooks[${i}].run is required`);
     if (hook.match !== undefined) new RegExp(hook.match);
-    return { event: hook.event as HookEvent, run: hook.run, ...(hook.match ? { match: hook.match } : {}), ...(hook.timeoutMs ? { timeoutMs: Number(hook.timeoutMs) } : {}) };
+    const perms = hook.permissions as { write?: unknown } | undefined;
+    if (perms !== undefined && (typeof perms !== 'object' || perms === null || Array.isArray(perms))) throw new Error(`.helix/hooks.json: hooks[${i}].permissions must be an object`);
+    if (perms?.write !== undefined && (!Array.isArray(perms.write) || perms.write.some((g) => typeof g !== 'string' || !g || g.startsWith('/') || g.split('/').includes('..')))) {
+      throw new Error(`.helix/hooks.json: hooks[${i}].permissions.write must be an array of workspace-relative globs`);
+    }
+    return {
+      event: hook.event as HookEvent, run: hook.run, ...(hook.match ? { match: hook.match } : {}), ...(hook.timeoutMs ? { timeoutMs: Number(hook.timeoutMs) } : {}),
+      ...(perms ? { permissions: { ...(perms.write ? { write: perms.write as string[] } : {}) } } : {}),
+    };
   });
 }
 
-export interface HookRun { run: string; exitCode: number | null; output: string }
+export interface HookRun { run: string; exitCode: number | null; output: string; denied?: DeniedWrite[] }
+
+/** A hook run fails when it exits non-zero or wrote outside its declared permissions. */
+export const hookFailed = (r: HookRun): boolean => r.exitCode !== 0 || !!r.denied?.length;
 
 /** Run the hooks for an event (tool name matched against `match` as a full regex) inside the sandbox. */
-export async function runHooks(sandbox: LocalSandbox, hooks: Hook[], event: HookEvent, ctx: { tool?: string; args?: unknown; status?: string }, signal?: AbortSignal): Promise<HookRun[]> {
+export async function runHooks(sandbox: LocalSandbox, hooks: Hook[], event: HookEvent, ctx: { tool?: string; args?: unknown; status?: string; commitMessage?: string }, signal?: AbortSignal): Promise<HookRun[]> {
   const out: HookRun[] = [];
   for (const h of hooks) {
     if (h.event !== event) continue;
@@ -82,12 +95,26 @@ export async function runHooks(sandbox: LocalSandbox, hooks: Hook[], event: Hook
     if (ctx.tool !== undefined) env.HELIX_TOOL = ctx.tool;
     if (ctx.args !== undefined) env.HELIX_TOOL_ARGS = JSON.stringify(ctx.args);
     if (ctx.status !== undefined) env.HELIX_TASK_STATUS = ctx.status;
-    const r = await sandbox.exec(h.run, { env, timeoutMs: h.timeoutMs ?? 30_000, signal, maxOutputBytes: 16 * 1024 });
-    out.push({ run: h.run, exitCode: r.exitCode, output: `${r.stdout}${r.stderr ? `\n${r.stderr}` : ''}`.trim().slice(0, 4000) });
+    if (ctx.commitMessage !== undefined) env.HELIX_COMMIT_MESSAGE = ctx.commitMessage;
+    const snap = takeSnapshot(sandbox.root);
+    let r;
+    try {
+      r = await sandbox.exec(h.run, { env, timeoutMs: h.timeoutMs ?? 30_000, signal, maxOutputBytes: 16 * 1024 });
+    } catch (error) {
+      enforceWrites(snap, h.permissions);
+      throw error;
+    }
+    const denied = enforceWrites(snap, h.permissions);
+    out.push({ run: h.run, exitCode: r.exitCode, output: `${r.stdout}${r.stderr ? `\n${r.stderr}` : ''}`.trim().slice(0, 4000), ...(denied.length ? { denied } : {}) });
   }
   return out;
 }
 
+export const hookSummary = (r: HookRun) => ({ run: r.run, exitCode: r.exitCode, ...(r.denied?.length ? { denied: r.denied } : {}) });
+
 export function formatHookRuns(event: HookEvent, runs: HookRun[]): string {
-  return runs.map((r) => `[${event} hook \`${r.run}\` exit ${r.exitCode} — untrusted output]\n${r.output || '(no output)'}`).join('\n');
+  return runs.map((r) => {
+    const denied = r.denied?.length ? `\ndenied: hook wrote outside its declared permissions.write; rolled back: ${r.denied.map((d) => `${d.change} ${d.path}${d.restored ? '' : ' (not restorable)'}`).join(', ')}` : '';
+    return `[${event} hook \`${r.run}\` exit ${r.exitCode} — untrusted output]\n${r.output || '(no output)'}${denied}`;
+  }).join('\n');
 }
