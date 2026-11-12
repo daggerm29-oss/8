@@ -222,9 +222,9 @@ export function MonitorPanel() {
       ) : (
         <div className="empty-state">{t("no_tasks_in_this_workspace_8627d9")}</div>
       )}
-      {selected && <ActivityTree key={selected} task={selected} />}
+      {selected && <ActivityTree key={`activity:${selected}`} task={selected} />}
       <CheckpointInspector />
-      {selected && <TraceViewer key={selected} task={selected} />}
+      {selected && <TraceViewer key={`trace:${selected}`} task={selected} />}
     </section>
   );
 }
