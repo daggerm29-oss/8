@@ -176,7 +176,7 @@ test('hook: a repo hook cannot read the canary', async () => {
   assert.ok(!hasSecret(runs));
 });
 
-test('browser: Chrome runs only inside a sandbox and cannot read the canary', { skip: findChrome() ? false : 'no Chrome/Chromium on this host' }, async () => {
+test('browser: Chrome runs only inside a sandbox and cannot read the canary', { skip: findChrome() || process.env.HELIX_REDTEAM_REQUIRE_BROWSER === '1' ? false : 'no Chrome/Chromium on this host' }, async () => {
   const profileTag = `helix-chrome-`;
   const chromeOnHost = () => procs((c) => c.includes('--remote-debugging-port=9222') && c.includes(profileTag));
   const page = createServer((_q, s) => { s.setHeader('content-type', 'text/html'); s.end('<p>contained-page</p>'); });
@@ -188,6 +188,8 @@ test('browser: Chrome runs only inside a sandbox and cannot read the canary', { 
   const browser = new PreviewBrowser({ outDir: mkdtempSync(join(tmpdir(), 'helix-redteam-shots-')), allowTarget: (_h, p) => p === port });
   try {
     if (!sandboxProcAvailable()) {
+      // R1.7 acceptance needs Chrome actually running contained; CI sets this so the fail-closed path cannot pass there.
+      assert.notEqual(process.env.HELIX_REDTEAM_REQUIRE_BROWSER, '1', 'HELIX_REDTEAM_REQUIRE_BROWSER=1 but this sandbox cannot give Chrome a private /proc');
       // Fail closed: the sandbox cannot give Chrome a private /proc here, so it is refused and never started on the host.
       assert.equal(browser.available(), false);
       await assert.rejects(browser.console(`http://127.0.0.1:${port}/`), SandboxUnavailableError);
