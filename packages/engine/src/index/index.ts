@@ -10,6 +10,7 @@ import { extract, identifierTerms, isTestPath, langOf, type Lang } from './extra
 import { extractRefs } from './graph.ts';
 import { extractDomain, type ConfigKey, type DbTable, type Route } from './domain.ts';
 import { dot, embed, EMBED_DIM, EMBED_MODEL, fromBlob, toBlob } from './embed.ts';
+import { estimateTokens, isAmbiguous, localReranker, mergeAdjacent, type Reranker } from './retrieval.ts';
 
 const SKIP_DIRS = new Set(['node_modules', '.git', '.next', 'dist', 'build', 'out', 'coverage', '__pycache__', '.venv', 'venv', 'target', '.turbo', '.cache', 'vendor']);
 const SECRET_FILE = /(^|\/)(\.env(\.[\w-]+)?|.*\.pem|id_[a-z0-9]+|.*\.key|credentials\.json|.*secret.*\.json)$/i;
@@ -26,6 +27,26 @@ export interface SearchHit {
   score: number;
   why: string[];
   preview: string;
+  /** Estimated tokens of `preview` (packing budget unit). */
+  tokens: number;
+}
+
+/** Retrieval stages beyond first-stage fusion are opt-in so callers can measure each one (plan §15.3). */
+export interface SearchOptions {
+  limit?: number;
+  pathPrefix?: string;
+  /** Rerank the fused pool: 'auto' only when the top scores are close, 'always' forces it. Default 'never'. */
+  rerank?: 'never' | 'auto' | 'always';
+  /** Replaces the bundled local reranker (cross-encoder or Tier-S LLM). */
+  reranker?: Reranker;
+  rerankPool?: number;
+  /** Add a graph-neighborhood retriever seeded by these files (open files, recent edits) or, by default, the top first-stage hits. */
+  graph?: boolean;
+  seeds?: string[];
+  /** Append type signatures and 1-hop caller call sites for the top results, flagged `expand:*` in `why`. */
+  expand?: boolean;
+  /** Merge adjacent slices and stop adding results once this many tokens are packed. */
+  tokenBudget?: number;
 }
 
 export interface SymbolHit {
@@ -527,14 +548,14 @@ export class WorkspaceIndex {
     return this.db.all<{ path: string }>('SELECT DISTINCT i.path FROM idx_imports i JOIN idx_files f ON f.ws = i.ws AND f.path = i.path WHERE i.ws = ? AND i.resolved = ? AND f.is_test = 1', this.ws, path).map((r) => r.path);
   }
 
-  /** Hybrid retrieval: BM25 + symbol + path retrievers fused with RRF; deterministic query planning (§11.6). */
-  search(query: string, opts: { limit?: number; pathPrefix?: string } = {}): SearchHit[] {
+  /** Hybrid retrieval: parallel retrievers fused with RRF, optional rerank, graph neighborhood, expansion and packing (§11.6). */
+  search(query: string, opts: SearchOptions = {}): SearchHit[] {
     const limit = opts.limit ?? 10;
     const identifiers = [...new Set(query.match(/[A-Za-z_$][\w$]{2,}/g) ?? [])];
     const isIdentifierQuery = identifiers.some((i) => /[a-z][A-Z]|_|\$/.test(i)) || /[.:]{1,2}\w/.test(query);
     const terms = [...new Set(identifierTerms(query).split(' ').filter((t) => t.length > 2 && !STOP.has(t)))];
     const pathSeeds = [...new Set(query.match(/[\w./-]+\.\w{1,5}/g) ?? [])];
-    const lists: Array<{ name: string; weight: number; hits: Array<{ key: string; path: string; start: number; end: number; symbol: string | null; body?: string }> }> = [];
+    const lists: RetrieverList[] = [];
     const prefix = opts.pathPrefix ? `${opts.pathPrefix.replace(/\/$/, '')}/%` : '%';
 
     if (terms.length) {
@@ -554,33 +575,132 @@ export class WorkspaceIndex {
       lists.push({ name: 'vector', weight: isIdentifierQuery ? 0.5 : 1.0, hits: scored.map(({ r }) => ({ key: `${r.path}:${r.start_line}`, path: r.path, start: Number(r.start_line), end: Number(r.end_line), symbol: r.symbol || null })) });
     }
     if (identifiers.length) {
-      const hits: (typeof lists)[number]['hits'] = [];
+      const hits: RetrieverList['hits'] = [];
       for (const id of identifiers.slice(0, 8)) for (const s of this.findSymbol(id, 5)) if (s.path.startsWith(opts.pathPrefix ?? '')) hits.push({ key: `sym:${s.path}:${s.line}`, path: s.path, start: s.line, end: Math.min(s.endLine, s.line + 120), symbol: s.qualifiedName });
       lists.push({ name: 'symbol', weight: isIdentifierQuery ? 1.5 : 0.8, hits });
     }
     if (pathSeeds.length) {
-      const hits: (typeof lists)[number]['hits'] = [];
+      const hits: RetrieverList['hits'] = [];
       for (const seed of pathSeeds) for (const f of this.db.all<{ path: string; lines: number }>('SELECT path, lines FROM idx_files WHERE ws = ? AND path LIKE ? LIMIT 5', this.ws, `%${seed}`)) hits.push({ key: `path:${f.path}`, path: f.path, start: 1, end: Math.min(f.lines, 80), symbol: null });
       lists.push({ name: 'path', weight: 1.5, hits });
     }
 
-    // RRF fusion; overlapping slices in the same file merge their scores (dedupe, §13.2 step 3).
-    const fused = new Map<string, { path: string; start: number; end: number; symbol: string | null; score: number; why: Set<string>; body?: string }>();
-    for (const list of lists) {
-      list.hits.forEach((h, rank) => {
-        const existing = [...fused.values()].find((f) => f.path === h.path && h.start <= f.end && h.end >= f.start);
-        const add = list.weight / (RRF_K + rank + 1);
-        if (existing) {
-          existing.score += add;
-          existing.why.add(list.name);
-          if (h.symbol && !existing.symbol) { existing.symbol = h.symbol; existing.start = h.start; existing.end = h.end; }
-        } else fused.set(h.key, { ...h, score: add, why: new Set([list.name]) });
-      });
+    let ranked = fuseRanked(lists);
+    if (opts.graph && ranked.length) {
+      const seeds = opts.seeds?.length ? opts.seeds : [...new Set(ranked.slice(0, 3).map((f) => f.path))];
+      const hits = this.graphNeighborhood(seeds, terms, opts.pathPrefix ?? '');
+      if (hits.length) { lists.push({ name: 'graph', weight: 0.7, hits }); ranked = fuseRanked(lists); }
     }
-    return [...fused.values()]
-      .sort((a, b) => b.score - a.score)
-      .slice(0, limit)
-      .map((f) => ({ path: f.path, startLine: f.start, endLine: f.end, symbol: f.symbol, score: Number(f.score.toFixed(5)), why: [...f.why], preview: this.slice(f.path, f.start, Math.min(f.end, f.start + 40)) }));
+
+    const rerankMode = opts.rerank ?? 'never';
+    if (rerankMode !== 'never' && ranked.length > 1) {
+      const pool = ranked.slice(0, opts.rerankPool ?? 20);
+      if (rerankMode === 'always' || isAmbiguous(pool.map((f) => f.score))) {
+        const rerank = opts.reranker ?? localReranker(terms);
+        const texts = pool.map((f) => this.sliceText(f.path, f.start, Math.min(f.end, f.start + 80)));
+        const scores = rerank(query, pool.map((f, i) => ({ path: f.path, symbol: f.symbol, text: texts[i] })));
+        const top = pool[0].score;
+        pool.forEach((f, i) => { f.score = 0.4 * (f.score / top) + 0.6 * scores[i]; f.why.add('rerank'); });
+        ranked = [...pool].sort((a, b) => b.score - a.score).concat(ranked.slice(pool.length));
+      }
+    }
+
+    const packed = opts.tokenBudget === undefined ? ranked : mergeAdjacent(ranked);
+    const out: SearchHit[] = [];
+    let used = 0;
+    for (const f of packed) {
+      if (out.length >= limit) break;
+      const preview = this.slice(f.path, f.start, Math.min(f.end, f.start + 40));
+      const tokens = estimateTokens(preview);
+      if (opts.tokenBudget !== undefined && out.length && used + tokens > opts.tokenBudget) break;
+      used += tokens;
+      out.push({ path: f.path, startLine: f.start, endLine: f.end, symbol: f.symbol, score: Number(f.score.toFixed(5)), why: [...f.why], preview, tokens });
+    }
+    if (opts.expand) out.push(...this.expansion(out.slice(0, 3), opts.tokenBudget === undefined ? Infinity : Math.max(0, opts.tokenBudget - used)));
+    return out;
+  }
+
+  /** Raw (unnumbered) lines `start..end` of a file; reranker input. */
+  private sliceText(path: string, start: number, end: number): string {
+    const abs = join(this.root, path);
+    if (!existsSync(abs)) return '';
+    return readFileSync(abs, 'utf8').split('\n').slice(start - 1, end).join('\n');
+  }
+
+  /**
+   * Graph-neighborhood retriever (§11.6): what the seed files call (definitions they import), who calls them (callers
+   * that import them), and their import neighbors, most query-relevant first. Edges are the name-based call graph
+   * narrowed by import edges, as in `impact`.
+   */
+  private graphNeighborhood(seeds: string[], terms: string[], pathPrefix: string): RetrieverList['hits'] {
+    const hits: Array<RetrieverList['hits'][number] & { relevance: number }> = [];
+    const seen = new Set<string>(seeds);
+    const relevance = (text: string) => { const have = new Set(identifierTerms(text).split(' ')); return terms.filter((t) => have.has(t)).length; };
+    const add = (path: string, start: number, end: number, symbol: string | null, label: string) => {
+      const key = `graph:${path}:${start}`;
+      if (seen.has(key) || seeds.includes(path) || !path.startsWith(pathPrefix)) return;
+      seen.add(key);
+      hits.push({ key, path, start, end, symbol, label, relevance: relevance(`${symbol ?? ''} ${path}`) });
+    };
+    const symbolAt = (path: string, name: string) => this.db.all<{ line: number; end_line: number; qualified_name: string }>(
+      `SELECT line, end_line, qualified_name FROM idx_symbols WHERE ws = ? AND path = ? AND (name = ? OR qualified_name = ?) AND kind != 'heading' LIMIT 1`, this.ws, path, name, name);
+    for (const seed of seeds.slice(0, 5)) {
+      const imported = new Set(this.db.all<{ resolved: string }>('SELECT DISTINCT resolved FROM idx_imports WHERE ws = ? AND path = ? AND resolved IS NOT NULL', this.ws, seed).map((r) => r.resolved));
+      const importers = this.dependents(seed);
+      for (const { name } of this.db.all<{ name: string }>('SELECT DISTINCT name FROM idx_refs WHERE ws = ? AND path = ? LIMIT 60', this.ws, seed)) {
+        for (const def of this.db.all<{ path: string; line: number; end_line: number; qualified_name: string }>(
+          `SELECT path, line, end_line, qualified_name FROM idx_symbols WHERE ws = ? AND name = ? AND path != ? AND kind IN ('function', 'method', 'class') LIMIT 3`, this.ws, name, seed)) {
+          if (imported.has(def.path)) add(def.path, def.line, Math.min(def.end_line, def.line + 120), def.qualified_name, 'graph:calls');
+        }
+      }
+      const own = this.db.all<{ name: string }>(`SELECT DISTINCT name FROM idx_symbols WHERE ws = ? AND path = ? AND kind IN ('function', 'method', 'class') LIMIT 30`, this.ws, seed).map((r) => r.name);
+      for (const name of own) {
+        for (const ref of this.db.all<{ path: string; line: number; caller: string }>('SELECT path, line, caller FROM idx_refs WHERE ws = ? AND name = ? AND path != ? LIMIT 10', this.ws, name, seed)) {
+          if (!importers.includes(ref.path)) continue;
+          const enclosing = ref.caller ? symbolAt(ref.path, ref.caller)[0] : undefined;
+          if (enclosing) add(ref.path, enclosing.line, Math.min(enclosing.end_line, enclosing.line + 120), enclosing.qualified_name, 'graph:called-by');
+          else add(ref.path, Math.max(1, ref.line - 3), ref.line + 3, null, 'graph:called-by');
+        }
+      }
+      for (const path of [...imported, ...importers]) {
+        const file = this.db.get<{ lines: number }>('SELECT lines FROM idx_files WHERE ws = ? AND path = ?', this.ws, path);
+        if (file) add(path, 1, Math.min(file.lines, 60), null, 'graph:imports');
+      }
+    }
+    return hits.map((h, i) => ({ h, i })).sort((a, b) => b.h.relevance - a.h.relevance || a.i - b.i).slice(0, 40).map(({ h }) => h);
+  }
+
+  /**
+   * Dependency-aware expansion (§11.6): for each selected symbol, the signatures (not bodies) of the types its body
+   * mentions and the call sites of its direct callers. Appended after the ranked results and trimmed to `budget`.
+   */
+  private expansion(selected: SearchHit[], budget: number): SearchHit[] {
+    const out: SearchHit[] = [];
+    const covered = (path: string, line: number) => selected.some((s) => s.path === path && line >= s.startLine && line <= s.endLine) || out.some((o) => o.path === path && line >= o.startLine && line <= o.endLine);
+    let used = 0;
+    const push = (hit: Omit<SearchHit, 'tokens' | 'score'>) => {
+      const tokens = estimateTokens(hit.preview);
+      if (used + tokens > budget) return;
+      used += tokens;
+      out.push({ ...hit, score: 0, tokens });
+    };
+    for (const hit of selected) {
+      const body = this.sliceText(hit.path, hit.startLine, Math.min(hit.endLine, hit.startLine + 120));
+      for (const name of [...new Set(body.match(/\b[A-Z][A-Za-z0-9_]{2,}\b/g) ?? [])].slice(0, 12)) {
+        for (const def of this.db.all<{ path: string; line: number; qualified_name: string; signature: string }>(
+          `SELECT path, line, qualified_name, signature FROM idx_symbols WHERE ws = ? AND name = ? AND kind IN ('class', 'interface', 'type', 'enum', 'struct', 'trait') LIMIT 2`, this.ws, name)) {
+          if (covered(def.path, def.line)) continue;
+          push({ path: def.path, startLine: def.line, endLine: def.line, symbol: def.qualified_name, why: ['expand:type'], preview: `${String(def.line).padStart(5)}  ${def.signature}` });
+        }
+      }
+      const leaf = hit.symbol?.split('.').at(-1);
+      if (!leaf) continue;
+      for (const ref of this.db.all<{ path: string; line: number }>('SELECT path, line FROM idx_refs WHERE ws = ? AND name = ? ORDER BY path, line LIMIT 6', this.ws, leaf)) {
+        if (covered(ref.path, ref.line)) continue;
+        push({ path: ref.path, startLine: Math.max(1, ref.line - 1), endLine: ref.line + 1, symbol: null, why: ['expand:caller'], preview: this.slice(ref.path, Math.max(1, ref.line - 1), ref.line + 1) });
+      }
+    }
+    return out;
   }
 
   /** Domain map (§11.7): routes, DB tables, and config keys with their defining file:line. */
@@ -626,6 +746,29 @@ export class WorkspaceIndex {
       chunks: this.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM idx_chunks WHERE ws = ?', this.ws)!.n,
     };
   }
+}
+
+interface RetrieverList {
+  name: string;
+  weight: number;
+  hits: Array<{ key: string; path: string; start: number; end: number; symbol: string | null; body?: string; label?: string }>;
+}
+
+/** RRF(k=60) over retriever lists; overlapping slices of one file merge (dedupe, §13.2 step 3). Items keep each retriever's label in `why`. */
+function fuseRanked(lists: RetrieverList[]) {
+  const fused = new Map<string, { path: string; start: number; end: number; symbol: string | null; score: number; why: Set<string>; body?: string }>();
+  for (const list of lists) {
+    list.hits.forEach((h, rank) => {
+      const existing = [...fused.values()].find((f) => f.path === h.path && h.start <= f.end && h.end >= f.start);
+      const add = list.weight / (RRF_K + rank + 1);
+      if (existing) {
+        existing.score += add;
+        existing.why.add(h.label ?? list.name);
+        if (h.symbol && !existing.symbol) { existing.symbol = h.symbol; existing.start = h.start; existing.end = h.end; }
+      } else fused.set(h.key, { path: h.path, start: h.start, end: h.end, symbol: h.symbol, body: h.body, score: add, why: new Set([h.label ?? list.name]) });
+    });
+  }
+  return [...fused.values()].sort((a, b) => b.score - a.score);
 }
 
 const STOP = new Set(['the', 'and', 'for', 'with', 'that', 'this', 'from', 'are', 'was', 'not', 'but', 'fix', 'bug', 'test', 'tests', 'failing', 'make', 'should', 'when', 'into', 'all', 'any', 'can', 'its', 'has', 'have', 'does', 'how', 'where', 'what', 'which', 'pass', 'passes', 'suite', 'code']);
