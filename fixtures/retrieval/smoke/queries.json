@@ -1,0 +1,17 @@
+{
+  "description": "Smoke suite for the hybrid retrieval harness (plan §15.3). `relevant` lists the files a correct answer must surface.",
+  "queries": [
+    { "id": "q01", "query": "where is sales tax computed for an order", "relevant": ["src/tax.ts"] },
+    { "id": "q02", "query": "apply a discount code at checkout", "relevant": ["src/promotions.ts", "src/checkout.ts"] },
+    { "id": "q03", "query": "charge the customer's card", "relevant": ["src/payments/gateway.ts"] },
+    { "id": "q04", "query": "send the customer a receipt email", "relevant": ["src/notifications/email.ts"] },
+    { "id": "q05", "query": "verify the login session token", "relevant": ["src/auth/session.ts"] },
+    { "id": "q06", "query": "refund a payment", "relevant": ["src/payments/refunds.ts"] },
+    { "id": "q07", "query": "what happens when stock runs out during checkout", "relevant": ["src/inventory.ts", "src/checkout.ts"] },
+    { "id": "q08", "query": "shipping cost calculation", "relevant": ["src/shipping.ts"] },
+    { "id": "q09", "query": "how are passwords hashed", "relevant": ["src/auth/password.ts"] },
+    { "id": "q10", "query": "http handler for submitting an order", "relevant": ["src/api/routes.ts", "src/checkout.ts"] },
+    { "id": "q11", "query": "Order type fields", "relevant": ["src/types.ts"] },
+    { "id": "q12", "query": "totals before tax and shipping", "relevant": ["src/pricing.ts", "src/checkout.ts"] }
+  ]
+}

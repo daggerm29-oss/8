@@ -39,13 +39,13 @@ export const findSymbol: Tool = {
 export const codeSearch: Tool = {
   spec: {
     name: 'code_search',
-    description: 'Ranked semantic-ish code search over the index (BM25 + symbol + path, fused). Use natural language or identifiers, e.g. "where are discounts applied". Returns the best matching code slices with line numbers and why each matched.',
+    description: 'Ranked semantic-ish code search over the index (BM25 + vector + symbol + path + graph neighborhood, fused and reranked when ambiguous). Use natural language or identifiers, e.g. "where are discounts applied". Returns the best matching code slices with line numbers and why each matched, then type signatures and caller call sites for the top results (why: expand:*).',
     inputSchema: { type: 'object', properties: { query: { type: 'string', minLength: 2 }, path: { type: 'string', description: 'Optional directory prefix to restrict results' }, limit: { type: 'integer', minimum: 1, maximum: 20 } }, required: ['query'] },
   },
   async run(args, ctx) {
     const { index } = ctx;
     if (!index) return { content: 'code index unavailable for this task; use search', isError: true };
-    const hits = await retrieve(ctx, 'hybrid', String(args.query), () => { index.update(); return index.search(String(args.query), { limit: Number(args.limit ?? 6), pathPrefix: args.path ? String(args.path) : undefined }); }, (h) => h.length);
+    const hits = await retrieve(ctx, 'hybrid', String(args.query), () => { index.update(); return index.search(String(args.query), { limit: Number(args.limit ?? 6), pathPrefix: args.path ? String(args.path) : undefined, rerank: 'auto', graph: true, expand: true, tokenBudget: 4000 }); }, (h) => h.length);
     if (!hits.length) return { content: 'no results', summary: `code_search: 0` };
     return {
       content: hits.map((h) => `## ${h.path}:${h.startLine}-${h.endLine}${h.symbol ? ` (${h.symbol})` : ''} [${h.why.join('+')}]\n${h.preview}`).join('\n\n'),
