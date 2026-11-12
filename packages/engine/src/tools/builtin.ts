@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { ToolRegistry, type PreviewCapture, type Tool } from './registry.ts';
 import type { LocalSandbox } from '../sandbox/sandbox.ts';
 import { FileOpError } from '../sandbox/files.ts';
-import { codeSearch, domainMap, findSymbol, impactTool } from './index-tools.ts';
+import { codeSearch, domainMap, findSymbol, graphQueryTool, impactTool, structuralSearchTool } from './index-tools.ts';
 import { formatSnapshot } from '../preview/browser.ts';
 import { smokeCheck } from '../verify/testgen.ts';
 import { loadSkills, skillBody } from '../agent/skills.ts';
@@ -324,6 +324,6 @@ export const submitPlan: Tool = {
 
 export function builtinTools(): ToolRegistry {
   const reg = new ToolRegistry();
-  for (const t of [readFile, listDir, search, findSymbol, codeSearch, impactTool, domainMap, writeFile, editFile, runShell, startDevServerTool, previewScreenshot, previewConsole, previewSnapshot, exploreTool, proposeTest, useSkill, submitPlan]) reg.register(t);
+  for (const t of [readFile, listDir, search, findSymbol, codeSearch, impactTool, domainMap, structuralSearchTool, graphQueryTool, writeFile, editFile, runShell, startDevServerTool, previewScreenshot, previewConsole, previewSnapshot, exploreTool, proposeTest, useSkill, submitPlan]) reg.register(t);
   return reg;
 }

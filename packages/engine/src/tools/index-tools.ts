@@ -1,3 +1,5 @@
+import { GRAPH_OPS, type GraphOp } from '../index/index.ts';
+import type { Lang } from '../index/extract.ts';
 import { preciseReferences } from '../index/precise.ts';
 import type { Tool, ToolContext } from './registry.ts';
 
@@ -98,5 +100,45 @@ export const impactTool: Tool = {
       `tests: ${r.tests.join(', ') || '(none found)'}`,
     ];
     return { content: out.join('\n'), summary: `impact ${args.target}: ${r.callers.length} callers, ${r.affectedFiles.length} files, ${r.tests.length} tests` };
+  },
+};
+
+export const structuralSearchTool: Tool = {
+  spec: {
+    name: 'structural_search',
+    description: 'AST-pattern search over indexed files (ast-grep style). Matches code structure, not text, so comments, strings and look-alikes are ignored. Pattern is code with metavariables ($A one node, $$$ARGS many), or the shorthand call(fetch, _). Example: call(fetch, _) or $A.then($B). Returns path:line and captured nodes.',
+    inputSchema: { type: 'object', properties: { pattern: { type: 'string', minLength: 1 }, lang: { type: 'string', description: 'Optional language to restrict to, ts, js, py, go' }, path: { type: 'string', description: 'Optional directory prefix' }, limit: { type: 'integer', minimum: 1, maximum: 200 } }, required: ['pattern'] },
+  },
+  async run(args, ctx) {
+    const { index } = ctx;
+    if (!index) return { content: 'code index unavailable for this task; use search', isError: true };
+    const r = await retrieve(ctx, 'structural', String(args.pattern), () => { index.update(); return index.structural(String(args.pattern), { lang: args.lang ? (String(args.lang) as Lang) : undefined, pathPrefix: args.path ? String(args.path) : undefined, limit: Number(args.limit ?? 50) }); }, (x) => x.matches.length);
+    if (r.error) return { content: `invalid pattern: ${r.error}`, isError: true };
+    if (!r.matches.length) return { content: 'no matches', summary: `structural_search ${args.pattern}: 0` };
+    const lines = r.matches.map((m) => {
+      const caps = Object.entries(m.captures);
+      return `${m.path}:${m.line}${m.endLine > m.line ? `-${m.endLine}` : ''}  ${m.text.split('\n')[0].slice(0, 160)}${caps.length ? `\n    ${caps.map(([k, v]) => `${k}=${v.slice(0, 60)}`).join('  ')}` : ''}`;
+    });
+    return { content: lines.join('\n'), summary: `structural_search ${args.pattern}: ${r.matches.length}` };
+  },
+};
+
+export const graphQueryTool: Tool = {
+  spec: {
+    name: 'graph_query',
+    description: 'Deterministic code-graph query. op: definitions | references | callers | callees (target = symbol name), dependents (reverse import closure of a file), importers (files importing a file or module specifier), tests (tests covering a symbol or file). Use for exact sets, e.g. callers of X, tests covering F, files importing M.',
+    inputSchema: { type: 'object', properties: { op: { type: 'string', enum: [...GRAPH_OPS] }, target: { type: 'string', minLength: 1 }, depth: { type: 'integer', minimum: 1, maximum: 4 } }, required: ['op', 'target'] },
+  },
+  async run(args, ctx) {
+    const { index } = ctx;
+    if (!index) return { content: 'code index unavailable for this task; use search', isError: true };
+    const op = String(args.op) as GraphOp;
+    if (!GRAPH_OPS.includes(op)) return { content: `unknown op '${op}'; use one of ${GRAPH_OPS.join(', ')}`, isError: true };
+    const r = await retrieve(ctx, 'graph', `${op} ${args.target}`, () => { index.update(); return index.graphQuery({ op, target: String(args.target), depth: args.depth === undefined ? undefined : Number(args.depth) }); }, (x) => x.items.length);
+    if (!r.items.length) return { content: `no results for ${op} ${args.target}`, summary: `graph_query ${op} ${args.target}: 0` };
+    return {
+      content: `${op} ${r.target} (${r.precision}, ${r.items.length}):\n${r.items.slice(0, 100).map((i) => `  ${i.path}${i.line ? `:${i.line}` : ''}${i.symbol ? `  ${i.symbol}` : ''}`).join('\n')}`,
+      summary: `graph_query ${op} ${args.target}: ${r.items.length}`,
+    };
   },
 };
