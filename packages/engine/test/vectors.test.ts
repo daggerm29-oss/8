@@ -25,7 +25,7 @@ test('vectors: subword retrieval without BM25 overlap, content-addressed dedupe,
   const hits = idx.search('tokenization routine');
   assert.equal(hits[0]?.path, 'src/lexer.ts', JSON.stringify(hits.map((h) => [h.path, h.why])));
   assert.equal(hits[0].symbol, 'tokenizeSource');
-  assert.deepEqual(hits[0].why, ['vector'], 'no BM25 term overlap: only the vector retriever finds it');
+  assert.deepEqual(hits[0].why, ['vector:lexical'], 'no BM25 term overlap: only the (lexical, offline-fallback) vector retriever finds it');
 
   const shared = db.all<{ hash: string }>(`SELECT hash FROM idx_vectors WHERE ws = 'ws1' AND path IN ('src/a.ts', 'src/b.ts') AND symbol = 'clamp'`);
   assert.equal(shared.length, 2);

@@ -11,6 +11,8 @@ import { extractRefs } from './graph.ts';
 import { extractDomain, type ConfigKey, type DbTable, type Route } from './domain.ts';
 import { dot, embed, EMBED_DIM, EMBED_MODEL, fromBlob, toBlob } from './embed.ts';
 import { estimateTokens, isAmbiguous, localReranker, mergeAdjacent, type Reranker } from './retrieval.ts';
+import type { Embedder } from './embedders.ts';
+import { costOf, type Ledger } from '../models/ledger.ts';
 
 const SKIP_DIRS = new Set(['node_modules', '.git', '.next', 'dist', 'build', 'out', 'coverage', '__pycache__', '.venv', 'venv', 'target', '.turbo', '.cache', 'vendor']);
 const SECRET_FILE = /(^|\/)(\.env(\.[\w-]+)?|.*\.pem|id_[a-z0-9]+|.*\.key|credentials\.json|.*secret.*\.json)$/i;
@@ -47,7 +49,35 @@ export interface SearchOptions {
   expand?: boolean;
   /** Merge adjacent slices and stop adding results once this many tokens are packed. */
   tokenBudget?: number;
+  /** Query embedding from a semantic embedder (see `queryEmbedding`); adds the `vector` retriever over its vectors. */
+  semantic?: { model: string; vector: Float32Array };
 }
+
+export interface EmbedRunOptions {
+  /** Files the user has open: embedded first. */
+  openFiles?: string[];
+  maxChunks?: number;
+  batchSize?: number;
+  /** Each embedding call becomes one `embedder` ledger row (cost visible next to model spend). */
+  ledger?: Pick<Ledger, 'record'>;
+  task?: string;
+  agent?: string;
+}
+
+export interface EmbedRunResult {
+  model: string;
+  kind: Embedder['kind'];
+  pending: number;
+  embedded: number;
+  reused: number;
+  inputTokens: number;
+  costUsd: number | null;
+  /** Files in the order their chunks were embedded. */
+  order: string[];
+  error?: string;
+}
+
+export interface VectorHit { path: string; startLine: number; endLine: number; symbol: string; sim: number }
 
 export interface SymbolHit {
   name: string;
@@ -248,6 +278,7 @@ export class WorkspaceIndex {
     this.db.run('DELETE FROM idx_chunks WHERE ws = ? AND path = ?', this.ws, path);
     this.db.run('DELETE FROM idx_refs WHERE ws = ? AND path = ?', this.ws, path);
     this.db.run('DELETE FROM idx_vectors WHERE ws = ? AND path = ?', this.ws, path);
+    this.db.run('DELETE FROM idx_sem_vectors WHERE ws = ? AND path = ?', this.ws, path);
     for (const t of ['idx_routes', 'idx_tables', 'idx_config']) this.db.run(`DELETE FROM ${t} WHERE ws = ? AND path = ?`, this.ws, path);
   }
 
@@ -572,7 +603,12 @@ export class WorkspaceIndex {
         `SELECT v.path, v.start_line, v.end_line, v.symbol, e.vec FROM idx_vectors v JOIN idx_embeddings e ON e.hash = v.hash WHERE v.ws = ? AND v.path LIKE ? AND e.model = ?`, this.ws, prefix, EMBED_MODEL,
       );
       const scored = rows.map((r) => ({ r, sim: dot(q, fromBlob(r.vec)) })).filter((x) => x.sim >= VECTOR_MIN_SIM).sort((a, b) => b.sim - a.sim).slice(0, 50);
-      lists.push({ name: 'vector', weight: isIdentifierQuery ? 0.5 : 1.0, hits: scored.map(({ r }) => ({ key: `${r.path}:${r.start_line}`, path: r.path, start: Number(r.start_line), end: Number(r.end_line), symbol: r.symbol || null })) });
+      lists.push({ name: 'vector:lexical', weight: (isIdentifierQuery ? 0.5 : 1.0) * (opts.semantic ? 0.4 : 1), hits: scored.map(({ r }) => ({ key: `${r.path}:${r.start_line}`, path: r.path, start: Number(r.start_line), end: Number(r.end_line), symbol: r.symbol || null })) });
+    }
+    if (opts.semantic) {
+      const found = this.vectorSearch(opts.semantic.model, opts.semantic.vector, { limit: 30, pathPrefix: opts.pathPrefix });
+      const floor = Math.max(0.1, (found[0]?.sim ?? 0) * 0.6);
+      lists.push({ name: 'vector', weight: isIdentifierQuery ? 0.8 : 1.5, hits: found.filter((h) => h.sim >= floor).map((h) => ({ key: `${h.path}:${h.startLine}`, path: h.path, start: h.startLine, end: h.endLine, symbol: h.symbol || null })) });
     }
     if (identifiers.length) {
       const hits: RetrieverList['hits'] = [];
@@ -618,6 +654,89 @@ export class WorkspaceIndex {
     }
     if (opts.expand) out.push(...this.expansion(out.slice(0, 3), opts.tokenBudget === undefined ? Infinity : Math.max(0, opts.tokenBudget - used)));
     return out;
+  }
+
+  /** Query embedding for `search({ semantic })`; the call is a ledger row when a ledger is given. */
+  async queryEmbedding(embedder: Embedder, query: string, ledger?: Pick<Ledger, 'record'>, ctx: { task?: string; agent?: string } = {}): Promise<{ model: string; vector: Float32Array }> {
+    const started = performance.now();
+    const result = await embedder.embed([query], 'query');
+    ledger?.record({ ws: this.ws, task: ctx.task, agent: ctx.agent, role: 'embedder', provider: embedder.provider, model: embedder.id, usage: embeddingUsage(result.inputTokens, result.usageSource), latencyMs: performance.now() - started, status: 'ok' }, embedder.pricing);
+    return { model: embedder.id, vector: result.vectors[0] };
+  }
+
+  /** Cosine ranking of stored chunk vectors for one model (vectors are L2-normalized, so dot product). */
+  vectorSearch(model: string, query: Float32Array, opts: { limit?: number; pathPrefix?: string; minSim?: number } = {}): VectorHit[] {
+    const prefix = opts.pathPrefix ? `${opts.pathPrefix.replace(/\/$/, '')}/%` : '%';
+    const table = model === EMBED_MODEL ? 'idx_vectors' : 'idx_sem_vectors';
+    const rows = this.db.all<{ path: string; start_line: number; end_line: number; symbol: string; vec: Uint8Array }>(
+      `SELECT v.path, v.start_line, v.end_line, v.symbol, e.vec FROM ${table} v JOIN idx_embeddings e ON e.hash = v.hash WHERE v.ws = ? AND v.path LIKE ? AND e.model = ?`, this.ws, prefix, model);
+    return rows
+      .map((r) => ({ path: r.path, startLine: Number(r.start_line), endLine: Number(r.end_line), symbol: r.symbol, sim: dot(query, fromBlob(r.vec)) }))
+      .filter((h) => h.sim >= (opts.minSim ?? -1))
+      .sort((a, b) => b.sim - a.sim)
+      .slice(0, opts.limit ?? 50);
+  }
+
+  /** Chunks that still lack a vector for `model`; used to show embedding progress. */
+  pendingChunks(model: string): number {
+    return this.db.get<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM idx_chunks c WHERE c.ws = ? AND NOT EXISTS (SELECT 1 FROM idx_sem_vectors v WHERE v.ws = c.ws AND v.path = c.path AND v.start_line = c.start_line AND v.end_line = c.end_line AND v.model = ?)`, this.ws, model)!.n;
+  }
+
+  /**
+   * Lazy semantic embedding (§12.3). Pending chunks are ordered open files first, then recency x import fan-in
+   * (graph centrality). Identical chunk text is embedded once (content-hash dedupe). Every embedding call is one
+   * `embedder` ledger row. A failing backend stops the run and leaves search working on the other retrievers.
+   */
+  async embedPending(embedder: Embedder, opts: EmbedRunOptions = {}): Promise<EmbedRunResult> {
+    const result: EmbedRunResult = { model: embedder.id, kind: embedder.kind, pending: 0, embedded: 0, reused: 0, inputTokens: 0, costUsd: 0, order: [], };
+    const rows = this.db.all<{ path: string; start_line: number; end_line: number; symbol: string; body: string }>(
+      `SELECT c.path, c.start_line, c.end_line, c.symbol, c.body FROM idx_chunks c WHERE c.ws = ? AND NOT EXISTS (SELECT 1 FROM idx_sem_vectors v WHERE v.ws = c.ws AND v.path = c.path AND v.start_line = c.start_line AND v.end_line = c.end_line AND v.model = ?)`, this.ws, embedder.id);
+    result.pending = rows.length;
+    const open = new Set(opts.openFiles ?? []);
+    const fanIn = new Map(this.db.all<{ p: string; n: number }>('SELECT resolved AS p, COUNT(*) AS n FROM idx_imports WHERE ws = ? AND resolved IS NOT NULL GROUP BY resolved', this.ws).map((r) => [r.p, Number(r.n)]));
+    const priority = new Map<string, number>();
+    for (const path of new Set(rows.map((r) => r.path))) {
+      let ageDays = 0;
+      try { ageDays = Math.max(0, (Date.now() - statSync(join(this.root, path)).mtimeMs) / 86_400_000); } catch { /* deleted since indexing: lowest recency */ ageDays = 365; }
+      priority.set(path, open.has(path) ? Number.POSITIVE_INFINITY : (1 + (fanIn.get(path) ?? 0)) / (1 + ageDays));
+    }
+    const queue = rows
+      .sort((a, b) => (priority.get(b.path)! - priority.get(a.path)!) || a.path.localeCompare(b.path) || Number(a.start_line) - Number(b.start_line))
+      .slice(0, opts.maxChunks ?? rows.length);
+    const seenPaths = new Set<string>();
+    const batchSize = opts.batchSize ?? 32;
+    for (let i = 0; i < queue.length; i += batchSize) {
+      const batch = queue.slice(i, i + batchSize).map((r) => {
+        const text = `// ${r.path}\n// ${r.symbol}\n${r.body}`.slice(0, 2000);
+        return { r, text, hash: createHash('sha256').update(`${embedder.id}\0${r.symbol}\0${r.body}`).digest('hex') };
+      });
+      const missing = new Map<string, string>();
+      for (const b of batch) if (!missing.has(b.hash) && !this.db.get('SELECT 1 FROM idx_embeddings WHERE hash = ?', b.hash)) missing.set(b.hash, b.text);
+      if (missing.size) {
+        const started = performance.now();
+        const hashes = [...missing.keys()];
+        try {
+          const out = await embedder.embed([...missing.values()], 'document');
+          hashes.forEach((h, k) => this.db.run('INSERT OR REPLACE INTO idx_embeddings (hash, model, dim, vec) VALUES (?, ?, ?, ?)', h, embedder.id, embedder.dim, toBlob(out.vectors[k])));
+          const entry = opts.ledger?.record({ ws: this.ws, task: opts.task, agent: opts.agent, role: 'embedder', provider: embedder.provider, model: embedder.id, usage: embeddingUsage(out.inputTokens, out.usageSource), latencyMs: performance.now() - started, status: 'ok' }, embedder.pricing);
+          result.inputTokens += out.inputTokens;
+          const cost = entry ? entry.costUsd : costOf(embedder.pricing, embeddingUsage(out.inputTokens, out.usageSource));
+          result.costUsd = cost === null || result.costUsd === null ? null : result.costUsd + cost;
+          result.embedded += hashes.length;
+        } catch (e) {
+          result.error = e instanceof Error ? e.message : String(e);
+          opts.ledger?.record({ ws: this.ws, task: opts.task, agent: opts.agent, role: 'embedder', provider: embedder.provider, model: embedder.id, usage: embeddingUsage(0, 'estimate'), latencyMs: performance.now() - started, status: 'error', error: result.error }, embedder.pricing);
+          break;
+        }
+      }
+      result.reused += batch.length - [...new Set(batch.map((b) => b.hash))].filter((h) => missing.has(h)).length;
+      for (const b of batch) {
+        this.db.run('INSERT INTO idx_sem_vectors (ws, path, start_line, end_line, symbol, model, hash) VALUES (?, ?, ?, ?, ?, ?, ?)', this.ws, b.r.path, Number(b.r.start_line), Number(b.r.end_line), b.r.symbol, embedder.id, b.hash);
+        if (!seenPaths.has(b.r.path)) { seenPaths.add(b.r.path); result.order.push(b.r.path); }
+      }
+    }
+    return result;
   }
 
   /** Raw (unnumbered) lines `start..end` of a file; reranker input. */
@@ -746,6 +865,10 @@ export class WorkspaceIndex {
       chunks: this.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM idx_chunks WHERE ws = ?', this.ws)!.n,
     };
   }
+}
+
+function embeddingUsage(inputTokens: number, source: 'provider' | 'estimate') {
+  return { inputTokens, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 0, reasoningTokens: 0, source };
 }
 
 interface RetrieverList {

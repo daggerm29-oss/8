@@ -143,4 +143,8 @@ export const MIGRATIONS: string[] = [
   DROP TABLE egress_allow;
   ALTER TABLE egress_allow_v11 RENAME TO egress_allow;
   `,
+  /* v12: R1.13 semantic chunk vectors (F-IDX-6, §12.3). Vectors live in idx_embeddings keyed by sha256(model + chunk text); this maps chunks to them per model, so models coexist and a model change re-embeds lazily. */ `
+  CREATE TABLE idx_sem_vectors (ws TEXT NOT NULL, path TEXT NOT NULL, start_line INTEGER NOT NULL, end_line INTEGER NOT NULL, symbol TEXT NOT NULL, model TEXT NOT NULL, hash TEXT NOT NULL);
+  CREATE INDEX idx_sem_vectors_path ON idx_sem_vectors(ws, path, model);
+  `,
 ];
