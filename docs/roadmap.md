@@ -211,8 +211,9 @@ Codebase intelligence
 - [x] **R1.10 Indexer completion** (F-IDX-1, FR-8, FR-11, PERF-6, PERF-7) [§11.1–11.3, §12.1, §12.4] — file watcher, `.helixignore`, BLAKE3 content hashes and Merkle tree, docs indexing, tree-sitter for the top 20 languages of §12.4.
   - Accept [A-local]: `node --test test/indexer.test.ts test/treesitter.test.ts` → saving a file re-indexes it through the watcher without a manual call; `.helixignore` paths are absent; content hash is BLAKE3 and the Merkle root changes only along the edited path; Markdown docs indexed; tree-sitter parses one snippet in each of the 20 §12.4 languages with correct symbol ranges
   - Evidence: `cd packages/engine && node --test test/indexer.test.ts test/treesitter.test.ts` → 12/12 pass (watcher re-index on save, `.helixignore` absent, BLAKE3 vectors, Merkle root changes only along edited path, Markdown indexed, 20-language tree-sitter ranges); commit 594dd0d
-- [ ] **R1.11 Structural and graph queries** (FR-9) [§12.2, §11.5] — AST-pattern search tool and a general `graph.query`.
+- [x] **R1.11 Structural and graph queries** (FR-9) [§12.2, §11.5] — AST-pattern search tool and a general `graph.query`.
   - Accept [A-local]: `node --test test/structural-search.test.ts test/graph-query.test.ts` → AST pattern `call(fetch, _)` returns exactly the fixture call sites; `graph.query` answers "callers of X", "tests covering F", "files importing M" with expected sets
+  - Evidence: `cd packages/engine && node --test test/structural-search.test.ts test/graph-query.test.ts` → 9/9 pass (call(fetch, _) returns exactly the fixture call sites; callers of X, tests covering F/S, files importing M return expected sets); agent tools `structural_search` and `graph_query` registered; commit cf54e9d
 - [ ] **R1.12 Retrieval completion** (F-IDX-4, FR-9, PERF-5) [§11.6] — reranker, graph-neighborhood retriever, dependency expansion, packing; retrieval eval harness (Recall@k, MRR, tokens per recall point) from plan §15.3.
   - Accept [A-local]: `node evals/retrieval-eval.ts --suite fixtures/retrieval/smoke` → harness reports Recall@10, MRR, tokens per recall point; rerank, graph-neighborhood retriever and dependency expansion appear in `why`; smoke suite Recall@10 not lower than without them
 - [ ] **R1.13 Semantic embeddings** (F-IDX-6, FR-9) [§12.3] — a real semantic embedding model (bundled local model, or provider embeddings such as `gemini-embedding-2`) on AST-aligned chunks, lazy prioritization, embedding cost in the ledger. `helix-local-hash-v1` stays only as an offline fallback and is labeled lexical.
@@ -593,7 +594,7 @@ External exit gates (plan §12 M4; not build tasks, never simulated):
 | FR-6 | M1 (desktop), M4 (KMS) | Partial | RED | R1.37; R2.15; R4.4 | KMS (cloud) not built; keychains tested only via Linux shims |
 | FR-7 | M4 | Not started | DEF(M4) | M4 OAuth broker | Entire OAuth flow |
 | FR-8 | M1 | Partial | RED | R1.11 | M1 part (R1.10): Evidence: `node --test test/indexer.test.ts test/treesitter.test.ts` → 12/12; commit 594dd0d. Missing: precise call edges |
-| FR-9 | M1 | Partial | RED | R1.11; R1.12; R1.13 | No structural (AST pattern) query; no general `graph.query`; vector is not semantic |
+| FR-9 | M1 | Partial | RED | R1.11; R1.12; R1.13 | Structural and graph queries done (R1.11: Evidence: `node --test test/structural-search.test.ts test/graph-query.test.ts` → 9/9; commit cf54e9d). Missing: vector is not semantic (R1.13) |
 | FR-10 | M1 (import graph), M2 (call graph; plan §19, §11) | Partial (audit FV, residual gap) | FV | M2 Code graph v0; R2.2 | M1 part: impact queries on the import graph without an LLM (re-verify); M2: precision limited by heuristic graph outside TS |
 | FR-11 | M1 | Done | FV | R1.10 | Evidence: `node --test test/indexer.test.ts` → `.helixignore`, secret files absent; commit 594dd0d |
 | FR-12 | M1 | Partial | RED | R1.16 | No plan edit/approve API before execution found |
