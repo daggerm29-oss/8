@@ -1,5 +1,7 @@
-import { spawn, spawnSync, type ChildProcess, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess, type ChildProcessByStdio, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import type { Readable, Writable } from 'node:stream';
 import { StringDecoder } from 'node:string_decoder';
+import { createInterface } from 'node:readline';
 import { chmodSync, constants, copyFileSync, createReadStream, createWriteStream, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statfsSync, statSync, writeFileSync } from 'node:fs';
 import { cgroupUnavailableReason, DEFAULT_LIMITS, SandboxCgroup, type SandboxLimits } from './cgroup.ts';
 import { engineIdentity, removeSandboxRecord, writeSandboxRecord } from './reaper.ts';
@@ -228,22 +230,28 @@ mount -t overlay helix-ws -o userxattr,lowerdir="$WS",upperdir="$Q/u",workdir="$
 : > "$Q/.ready"
 exec sleep infinity`;
 
-/** Idle re-mount: drop the (already synced) upper layer and shrink the tmpfs to the quota left. Exit 3 when busy. */
+/**
+ * Idle re-mount: drop the (already synced) upper layer and mount a fresh tmpfs of the quota left. Namespaces of commands
+ * that just exited can pin the old mounts briefly; after 200 ms they are detached lazily (no sandbox process is live).
+ */
 const QUOTA_REMOUNT_SCRIPT = `Q="$1"; LV="$2"; WS="$3"; SIZE="$4"
-umount "$WS" 2>/dev/null || exit 3
-rm -rf "$Q/u" "$Q/w"
-mount -o remount,size="$SIZE" "$Q"
+i=0; until umount "$WS" 2>/dev/null; do i=$((i+1)); [ $i -ge 20 ] && { umount -l "$WS" || exit 3; break; }; sleep 0.01; done
+set -e
+umount -l "$Q"
+mount -t tmpfs -o size="$SIZE",mode=700 helix-quota "$Q"
 mkdir "$Q/u" "$Q/w"
+: > "$Q/.ready"
 mount -t overlay helix-ws -o userxattr,lowerdir="$LV",upperdir="$Q/u",workdir="$Q/w" "$WS"`;
 
 /**
  * Copies the overlay upper layer onto the real workspace (run inside the holder namespace). Whiteouts (0:0 char devices)
  * delete; upper directories drop lower entries the merged view no longer lists (opaque dirs); files and symlinks changed
- * since the last sync (ctime) are copied in place. Args: upper, merged (workspace path), lower view, since (ms).
+ * since the last sync (ctime) are copied in place. Long-lived worker: args upper, merged (workspace path), lower view;
+ * each stdin line is a "since" time in ms, answered with "ok" or "err <message>".
  */
 const QUOTA_SYNC_SOURCE = `'use strict';
 const fs = require('fs'); const p = require('path');
-const [U, M, L, since] = process.argv.slice(2); const t = Number(since);
+const [U, M, L] = process.argv.slice(2); let t = 0;
 const kind = (s) => s.isDirectory() ? 'd' : s.isSymbolicLink() ? 'l' : s.isFile() ? 'f' : 'o';
 const lst = (x) => { try { return fs.lstatSync(x); } catch { return null; } };
 function walk(rel) {
@@ -269,7 +277,10 @@ function walk(rel) {
     }
   }
 }
-walk('.');`;
+require('readline').createInterface({ input: process.stdin }).on('line', (line) => {
+  t = Number(line);
+  try { walk('.'); process.stdout.write('ok\\n'); } catch (e) { process.stdout.write('err ' + String(e && e.message).replace(/\\s+/g, ' ') + '\\n'); }
+});`;
 
 const mountProbes = new Map<string, boolean>();
 
@@ -383,7 +394,7 @@ export class LocalSandbox {
   private diskTimer: NodeJS.Timeout | null = null;
   private diskHits = 0;
   /** Hard disk quota (R1.8a): holder namespace with the workspace overlay on a size-limited tmpfs. */
-  private readonly quota: { base: string; baseline: number; holder: ChildProcess | null; lastSync: number; syncing: Promise<void>; busy: boolean; timer: NodeJS.Timeout | null } | null = null;
+  private readonly quota: { base: string; baseline: number; holder: ChildProcess | null; worker: { child: ChildProcessByStdio<Writable, Readable, null>; waiting: ((ok: boolean) => void)[] } | null; lastSync: number; syncing: Promise<void>; busy: boolean; timer: NodeJS.Timeout | null } | null = null;
   private readonly hardQuotaReason: string | null = null;
   private suspended = false;
   private readonly idleSuspendMs: number;
@@ -447,18 +458,18 @@ export class LocalSandbox {
     this.limits = { ...DEFAULT_LIMITS, ...opts.limits };
     this.idleSuspendMs = opts.idleSuspendMs ?? 0;
     if (!this.wsl) this.cg = SandboxCgroup.create(`${engineIdentity().replace(':', '_')}-${id}`, this.limits);
-    if (opts.limits?.diskBytes && !this.wsl) this.diskWatch = { baseline: duBytes([this.root, this.scratch]) };
     if (process.env.HELIX_DISK_QUOTA === 'hard') {
       if (this.provider === 'local-unshare') {
         const base = mkdtempSync(join(tmpdir(), 'helix-quota-'));
         mkdirSync(join(base, 'q'));
         mkdirSync(join(base, 'lv'));
         writeFileSync(join(base, 'sync.cjs'), QUOTA_SYNC_SOURCE);
-        this.quota = { base, baseline: duBytes([this.root]), holder: null, lastSync: 0, syncing: Promise.resolve(), busy: false, timer: null };
+        this.quota = { base, baseline: duBytes([this.root]), holder: null, worker: null, lastSync: 0, syncing: Promise.resolve(), busy: false, timer: null };
       } else {
         this.hardQuotaReason = `hard overlay disk quota is implemented for local-unshare only (backend ${this.provider}); the sampled quota applies`;
       }
     }
+    if (opts.limits?.diskBytes && !this.wsl) this.diskWatch = { baseline: duBytes(this.watchedDirs()) };
     writeSandboxRecord({ id, owner: engineIdentity(), createdAt: new Date().toISOString(), cgroup: this.cg?.path ?? null, containerCli: this.container?.cli ?? null, dirs: [this.scratch, this.newRoot, this.ctlDir, this.quota?.base].filter((d): d is string => !!d) });
   }
 
@@ -473,6 +484,8 @@ export class LocalSandbox {
     if (!this.cg) throw new SandboxUnavailableError(`suspend needs a delegated cgroup v2 subtree: ${cgroupUnavailableReason() ?? 'unavailable'}`);
     await this.cg.freeze();
     this.suspended = true;
+    // The host copy of the workspace reflects the frozen state (hard quota keeps edits in the overlay until synced).
+    await this.syncQuota();
   }
 
   /** Resume a suspended sandbox (also done implicitly by every exec/stdio/pty call). */
@@ -519,6 +532,7 @@ export class LocalSandbox {
     child.stdin.on('error', () => { /* tar exited early */ });
     createReadStream(path).pipe(child.stdin);
     const code = await new Promise<number | null>((res) => child.once('close', res));
+    await this.quotaSettled();
     if (code !== 0) throw new Error(`restore of ${this.id} failed (tar exit ${code})`);
   }
 
@@ -542,7 +556,7 @@ export class LocalSandbox {
    */
   private watchDisk(): void {
     if (!this.diskWatch || this.diskTimer) return;
-    const dirs = [this.root, this.scratch];
+    const dirs = this.watchedDirs();
     const free = () => {
       const seen = new Set<number>();
       let n = 0;
@@ -586,6 +600,11 @@ export class LocalSandbox {
     this.diskTimer = timer;
   }
 
+  /** Sampled-quota scope: workspace + /tmp, or only /tmp when the hard quota already caps the workspace layer. */
+  private watchedDirs(): string[] {
+    return this.quota ? [this.scratch] : [this.root, this.scratch];
+  }
+
   /** Shell prefix: per-file size limit (bash `ulimit -f` counts 1 KiB blocks). */
   private limitPrefix(): string {
     // Under the hard quota the tmpfs returns ENOSPC at the byte; RLIMIT_FSIZE would pre-empt it with SIGXFSZ.
@@ -614,6 +633,12 @@ export class LocalSandbox {
     }
     q.holder = h;
     q.lastSync = 0;
+    const child = spawn('nsenter', ['-t', String(h.pid), '-U', '-m', '--', process.execPath, join(q.base, 'sync.cjs'), join(qdir, 'u'), this.root, join(q.base, 'lv')], { stdio: ['pipe', 'pipe', 'ignore'] });
+    const worker = { child, waiting: [] as ((ok: boolean) => void)[] };
+    createInterface({ input: child.stdout }).on('line', (l) => worker.waiting.shift()?.(l === 'ok'));
+    child.once('close', () => { for (const w of worker.waiting.splice(0)) w(false); if (q.worker === worker) q.worker = null; });
+    child.stdin.on('error', () => { /* worker gone */ });
+    q.worker = worker;
     return h.pid;
   }
 
@@ -641,9 +666,10 @@ export class LocalSandbox {
       if (this.destroyed) return;
       q.busy = true;
       const started = Date.now() - 2;
-      const code = await run('nsenter', ['-t', pid, '-U', '-m', '--', process.execPath, join(q.base, 'sync.cjs'), join(q.base, 'q', 'u'), this.root, join(q.base, 'lv'), String(q.lastSync)]);
-      if (code === 0) q.lastSync = started;
-      if (code === 0 && !this.processes.size && !this.destroyed) {
+      const w = q.worker;
+      const ok = !!w && await new Promise<boolean>((res) => { w.waiting.push(res); w.child.stdin.write(`${q.lastSync}\n`); });
+      if (ok) q.lastSync = started;
+      if (ok && !this.processes.size && !this.destroyed) {
         const lv = join(q.base, 'lv');
         if (await run('nsenter', ['-t', pid, '-U', '-m', '--', 'bash', '-c', QUOTA_REMOUNT_SCRIPT, 'helix', join(q.base, 'q'), lv, this.root, String(this.quotaSize())]) === 0) q.lastSync = 0;
       }
@@ -652,14 +678,14 @@ export class LocalSandbox {
     return q.syncing;
   }
 
-  /** While commands run under the hard quota, sync their edits to the host every second (dev servers, PTYs, MCP servers). */
+  /** While commands run under the hard quota, sync their edits to the host every 200 ms (dev servers, PTYs, MCP servers). */
   private watchQuotaSync(): void {
     const q = this.quota;
     if (!q || q.timer) return;
     q.timer = setInterval(() => {
       if (this.destroyed || !this.processes.size) { clearInterval(q.timer!); q.timer = null; return; }
       if (!q.busy) void this.syncQuota();
-    }, 1000);
+    }, 200);
     q.timer.unref();
   }
 
@@ -1063,6 +1089,7 @@ export class LocalSandbox {
     if (this.diskTimer) clearInterval(this.diskTimer);
     if (this.quota) {
       if (this.quota.timer) clearInterval(this.quota.timer);
+      this.quota.worker?.child.kill('SIGKILL');
       try { if (this.quota.holder?.pid && this.quota.holder.exitCode === null) process.kill(this.quota.holder.pid, 'SIGKILL'); } catch { /* gone */ }
     }
     if (this.suspended) { this.cg?.thaw(); this.suspended = false; }

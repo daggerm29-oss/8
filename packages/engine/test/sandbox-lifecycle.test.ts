@@ -63,6 +63,7 @@ test('fork bomb is stopped by the PID limit', async () => {
 });
 
 test('disk filler is stopped by the quota', async () => {
+  if (process.env.HELIX_DISK_QUOTA === 'hard') return hardDiskQuota();
   const ws = newWs();
   const sbx = new LocalSandbox(`life-disk-${process.pid}`, ws, { limits: { diskBytes: 32 * MiB } });
   try {
@@ -80,6 +81,46 @@ test('disk filler is stopped by the quota', async () => {
     sbx.destroy();
   }
 });
+
+/** R1.8a: the writable layer sits on a size-limited filesystem, so fillers get ENOSPC at the byte, not after a sample. */
+async function hardDiskQuota(): Promise<void> {
+  const ws = newWs();
+  writeFileSync(join(ws, 'keep.txt'), 'base\n');
+  const quota = 32 * MiB;
+  const sbx = new LocalSandbox(`life-hdisk-${process.pid}`, ws, { limits: { diskBytes: quota } });
+  const hostBytes = (re: RegExp) => readdirSync(ws).filter((n) => re.test(n)).reduce((n, f) => n + statSync(join(ws, f)).size, 0);
+  try {
+    const info = sbx.info().limits!;
+    assert.ok(info.enforced.diskHard, `hard disk quota is not enforced on this host: ${info.reason ?? 'unknown'}`);
+    const edit = await sbx.exec('echo edited >> keep.txt && mkdir -p src && echo "export const x = 1;" > src/x.ts && rm -f gone.txt; echo ok');
+    assert.match(edit.stdout, /ok/);
+    assert.equal(readFileSync(join(ws, 'keep.txt'), 'utf8'), 'base\nedited\n', 'an edit below the quota reaches the host repo');
+    assert.equal(readFileSync(join(ws, 'src', 'x.ts'), 'utf8'), 'export const x = 1;\n', 'a new file below the quota reaches the host repo');
+
+    const one = await sbx.exec('dd if=/dev/zero of=big bs=1M count=200 2>&1; echo "dd=$?"', { timeoutMs: 30_000 });
+    assert.match(one.stdout, /No space left on device/, `single-file filler gets ENOSPC (${one.stdout})`);
+    const rate = /copied, ([\d.]+) s/.exec(one.stdout);
+    assert.ok(rate && quota / Number(rate[1]) >= 500e6, `filler wrote at >= 500 MB/s (${one.stdout.trim().split('\n').at(-2)})`);
+    assert.ok(statSync(join(ws, 'big')).size <= quota + MiB, `single file ≤ 1 MiB beyond the quota on the host (${statSync(join(ws, 'big')).size} bytes)`);
+    await sbx.exec('rm big');
+    assert.equal(existsSync(join(ws, 'big')), false, 'deleting in the sandbox deletes on the host');
+
+    const many = await sbx.exec('i=0; while :; do head -c 4194304 /dev/zero > f$i || exit 9; i=$((i+1)); done', { timeoutMs: 30_000 });
+    assert.equal(many.timedOut, false);
+    assert.equal(many.exitCode, 9, 'multi-file filler stopped by a failed write');
+    assert.match(many.stderr, /No space left on device/, `multi-file filler gets ENOSPC (${many.stderr})`);
+    const written = hostBytes(/^f\d+$/);
+    assert.ok(written <= quota + MiB, `multi-file filler ≤ 1 MiB beyond the quota (${written} bytes)`);
+    assert.ok(written >= quota - 2 * MiB, `the quota, not an earlier limit, stopped it (${written} bytes)`);
+
+    await sbx.exec('rm -f f*');
+    const after = await sbx.exec('echo again > after.txt && echo ok');
+    assert.match(after.stdout, /ok/, 'space freed in the sandbox can be written again');
+    assert.equal(readFileSync(join(ws, 'after.txt'), 'utf8'), 'again\n');
+  } finally {
+    sbx.destroy();
+  }
+}
 
 test('snapshot → suspend → resume restores files and processes', async () => {
   const ws = newWs();
