@@ -141,6 +141,9 @@ export const Methods = {
   checkpointList: 'checkpoint.list',
   checkpointRestore: 'checkpoint.restore',
   artifactList: 'artifact.list',
+  planGet: 'plan.get',
+  planUpdate: 'plan.update',
+  planApprove: 'plan.approve',
   diagnosticsParse: 'diagnostics.parse',
   /* M1 — workbench (F-UI-1) */
   checkpointDiff: 'checkpoint.diff',

@@ -6,6 +6,7 @@ import { useWorkbench, type Task } from "./state";
 import { CheckpointInspector } from "./checkpoint-inspector";
 import { ActivityTree } from './activity-tree';
 import { TraceViewer } from './trace-viewer';
+import { PlanReviewPanel } from './plan-review-panel';
 
 type Message = {
   role: string;
@@ -26,6 +27,11 @@ export function AgentPanel() {
   const approvals = useRpc<
     { id: string; tool: string; args: unknown; status: string }[]
   >("agent.approvals.list", { task: selected }, !!selected);
+  const planArtifacts = useRpc<{ id: string }[]>(
+    "artifact.list",
+    { task: selected, kind: "plan" },
+    !!selected,
+  );
   const submit = async () => {
     if (!workspace || !goal.trim() || busy) return;
     setBusy(true);
@@ -85,6 +91,9 @@ export function AgentPanel() {
               ))}
             </article>
           ))}
+        {selected && !!planArtifacts.data?.length && (
+          <PlanReviewPanel key={selected} task={selected} />
+        )}
         {approvals.data
           ?.filter((approval) => approval.status === "pending")
           .map((approval) => (

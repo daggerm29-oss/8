@@ -38,6 +38,15 @@ import { globalRedactor } from '../util/redact.ts';
 import { unifiedDiff, type FileDiff } from '../util/diff.ts';
 
 import { taskActivity } from './activity.ts';
+import { applyPlanEdit, approvedPlanPrompt, type PlanEdit } from './plan-review.ts';
+
+export interface PlanReview {
+  task: string;
+  status: TaskStatus;
+  plan: { id: string; revision: number; data: Record<string, unknown> } | null;
+  approved: boolean;
+  executionTask: string | null;
+}
 
 export const MAX_VERIFY_ATTEMPTS = 3;
 const TASK_RETRY_DELAYS_MS = [5_000, 15_000, 30_000, 60_000];
@@ -851,6 +860,56 @@ export class TaskRuntime {
     return this.o.db.all<{ id: string; kind: string; title: string; data_json: string; at: string }>(
       `SELECT id, kind, title, data_json, at FROM artifacts WHERE task = ? ${kind ? 'AND kind = ?' : ''} ORDER BY rowid`, ...(kind ? [task, kind] : [task]),
     ).map((r) => ({ id: r.id, kind: r.kind, title: r.title, data: parseJson(r.data_json, null), at: r.at }));
+  }
+
+  /** Latest plan revision of a Plan Mode task plus its review state (FR-12, F-AGT-2). */
+  planGet(task: string): PlanReview {
+    const t = this.row(task);
+    if (t.policy_profile !== 'plan') throw new Error(`task ${task} is not a Plan Mode task`);
+    const plans = this.artifacts(task, 'plan');
+    const latest = plans.at(-1);
+    const approval = this.artifacts(task, 'plan_approval').at(-1);
+    const approved = Boolean(latest && approval && (approval.data as { planId: string }).planId === latest.id);
+    return {
+      task, status: t.status, plan: latest ? { id: latest.id, revision: plans.length, data: latest.data as Record<string, unknown> } : null,
+      approved, executionTask: approved ? (approval!.data as { executionTask: string }).executionTask : null,
+    };
+  }
+
+  /** Saves a user edit as a new plan revision. Editing is only possible before approval; it invalidates nothing because approval binds to a revision. */
+  planUpdate(task: string, edit: PlanEdit, planId?: string): PlanReview {
+    const current = this.planGet(task);
+    if (!current.plan) throw new Error('no plan has been submitted yet');
+    if (current.approved) throw new Error('plan is already approved; start a new Plan Mode task to change it');
+    if (planId && planId !== current.plan.id) throw new Error('plan changed since you loaded it; reload the latest revision');
+    const next = applyPlanEdit(current.plan.data, edit);
+    const id = this.saveArtifact(task, 'plan', String(next.goal).slice(0, 120), { ...next, revisionOf: current.plan.id, editedBy: 'user' });
+    this.publish(task, this.row(task).ws, 'plan.updated', { planId: id, revisionOf: current.plan.id, steps: (next.steps as unknown[]).length, by: 'user' }, 'audit');
+    return this.planGet(task);
+  }
+
+  /**
+   * Approves the latest plan revision and starts the execution task. This is the only path from a Plan Mode
+   * task to write-class tools: the plan task itself stays on the read-only `plan` policy profile.
+   */
+  planApprove(task: string, p: { planId?: string; policyProfile?: 'headless' | 'interactive'; preapprove?: string[]; by?: string } = {}): PlanReview & { executionTask: string } {
+    const t = this.row(task);
+    const current = this.planGet(task);
+    if (current.approved) return current as PlanReview & { executionTask: string };
+    if (t.status !== 'done' || !current.plan) throw new Error('the plan is not ready: wait for the Plan Mode task to submit a plan');
+    if (p.planId && p.planId !== current.plan.id) throw new Error('plan changed since you reviewed it; review the latest revision before approving');
+    const profile = p.policyProfile ?? 'interactive';
+    if (profile !== 'interactive' && profile !== 'headless') throw new Error(`execution profile must be interactive or headless (got ${String(profile)})`);
+    const data = applyPlanEdit(current.plan.data, {});
+    const exec = this.create({
+      workspacePath: this.wsPath(t.ws), goal: approvedPlanPrompt(data), title: String(data.goal).slice(0, 80), provider: t.provider, model: t.model,
+      policyProfile: profile, preapprove: p.preapprove, verifyCommand: t.verify_command ?? undefined, maxSteps: t.max_steps, start: false,
+    });
+    this.saveArtifact(exec.id, 'approved_plan', String(data.goal).slice(0, 120), { ...data, planTask: task, planId: current.plan.id });
+    this.saveArtifact(task, 'plan_approval', 'Plan approval', { planId: current.plan.id, executionTask: exec.id, by: p.by ?? 'user', at: new Date().toISOString() });
+    this.publish(task, t.ws, 'plan.approved', { planId: current.plan.id, executionTask: exec.id, policyProfile: profile, by: p.by ?? 'user' }, 'audit');
+    this.start(exec.id);
+    return this.planGet(task) as PlanReview & { executionTask: string };
   }
 
   /** Shadow checkpoints for a task, oldest first (F-GIT-2, §20.3). */

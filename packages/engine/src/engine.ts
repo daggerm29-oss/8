@@ -28,6 +28,7 @@ import { ReplayAdapter, exportBundle, type SessionBundle } from './replay/bundle
 import { builtinTools } from './tools/builtin.ts';
 import { McpManager, type McpServerConfig, type McpServerStatus } from './mcp/manager.ts';
 import { TaskRuntime } from './agent/runtime.ts';
+import type { PlanEdit } from './agent/plan-review.ts';
 import { LocalSandbox, SandboxUnavailableError, availableBackends, mountNsAvailable, sandboxStatus, unshareAvailable } from './sandbox/sandbox.ts';
 import { localOsTool } from './sandbox/localos.ts';
 import { containerRuntime } from './sandbox/container.ts';
@@ -99,7 +100,7 @@ function compactionFrom(env: NodeJS.ProcessEnv, opts?: CompactionOptions): Compa
   };
 }
 
-const TOPICS = ['task.*', 'agent.**', 'tool.*', 'model.*', 'verify.*', 'approval.*', 'ledger.*', 'budget.*', 'context.*', 'artifact.*', 'checkpoint.*', 'workspace.*', 'egress.*', 'preview.*', 'secret.*', 'sandbox.*', 'policy.*', 'git.*', 'deploy.*', 'mcp.*'];
+const TOPICS = ['task.*', 'agent.**', 'tool.*', 'model.*', 'verify.*', 'approval.*', 'ledger.*', 'budget.*', 'context.*', 'artifact.*', 'plan.*', 'checkpoint.*', 'workspace.*', 'egress.*', 'preview.*', 'secret.*', 'sandbox.*', 'policy.*', 'git.*', 'deploy.*', 'mcp.*'];
 
 /** Helix Engine (§6.2): composition root for storage, bus, gateway, tools, sandbox, and the task runtime. */
 export class Engine {
@@ -352,6 +353,9 @@ export class Engine {
       return this.runtime.reverifyArtifact(p.id);
     }));
     peer.handle(Methods.artifactList, guard<{ task: string; kind?: string }>((p) => this.runtime.artifacts(p.task, p.kind)));
+    peer.handle(Methods.planGet, guard<{ task: string }>((p) => this.runtime.planGet(p.task)));
+    peer.handle(Methods.planUpdate, guard<{ task: string; planId?: string; edit: PlanEdit }>((p) => this.runtime.planUpdate(p.task, p.edit ?? {}, p.planId)));
+    peer.handle(Methods.planApprove, guard<{ task: string; planId?: string; policyProfile?: 'headless' | 'interactive'; preapprove?: string[] }>((p) => this.runtime.planApprove(p.task, p)));
     peer.handle(Methods.diagnosticsParse, guard<{ command: string; output: string }>((p) => parseDiagnostics(p.command, p.output)));
     peer.handle(Methods.checkpointDiff, guard<{ task: string; checkpoint?: string }>((p) => this.runtime.diff(p.task, p.checkpoint)));
     peer.handle(Methods.approvalList, guard<{ task?: string }>((p) => this.runtime.approvalList(p.task)));

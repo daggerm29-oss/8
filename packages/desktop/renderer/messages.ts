@@ -345,5 +345,20 @@ export const messages = {
   "provider_472590": "Provider",
   "model_5e2c61": "Model",
   "ok_565339": "OK",
-  "unset_8d2dd4": "Unset"
+  "unset_8d2dd4": "Unset",
+  "plan_review_649e8b": "Plan review",
+  "revision_e330d8": "Revision ",
+  "approved_execution_task_e28335": "Approved. Execution task ",
+  "_is_running_92039f": " is running. ",
+  "nothing_can_write_files_until_you_approve_thi_8b741a": "Nothing can write files until you approve this plan.",
+  "description_of_step_08c51c": "Description of step ",
+  "files_it_may_write_comma_separated_81ee79": "Files it may write (comma separated)",
+  "files_written_by_step_21de41": "Files written by step ",
+  "remove_step_2d8ce3": "Remove step ",
+  "risks_bb6857": "Risks",
+  "open_questions_5e0a96": "Open questions",
+  "add_step_9289d4": "Add step ",
+  "save_edits_259560": "Save edits ",
+  "approve_and_run_84dbea": "Approve and run ",
+  "save_your_edits_before_approving_76076f": "Save your edits before approving."
 } as const;

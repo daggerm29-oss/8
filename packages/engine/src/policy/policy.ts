@@ -101,6 +101,7 @@ export function evaluate(input: { tool: string; args: unknown; profile: PolicyPr
   if (verdict === 'ask' && pre.has(`tool:${input.tool}`)) verdict = 'allow';
   if (verdict === 'ask' && !taintGate && DYNAMIC_CLASS.get(input.tool)?.autoAllow) verdict = 'allow';
   if (verdict === 'ask' && !taintGate && (pre.has(actionClass) || pre.has('all'))) verdict = 'allow';
+  if (input.profile === 'plan' && verdict === 'deny' && actionClass !== 'read') reason = `${reason}; Plan Mode is read-only until the user approves the plan (plan.approve)`;
   if (verdict === 'ask' && taintGate) reason = `${reason}; the task has read untrusted tool output, so '${actionClass}' actions need confirmation`;
   if (verdict === 'ask' && input.profile === 'headless') return { verdict: 'deny', actionClass, reason: `${reason}; headless mode denies '${actionClass}' unless preapproved (--allow ${taintGate ? `tool:${input.tool}` : actionClass})` };
   return { verdict, actionClass, reason };

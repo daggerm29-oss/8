@@ -732,6 +732,38 @@ td:first-child button {
   border: 1px solid var(--border);
   margin-top: 14px;
 }
+.plan-review {
+  padding: 12px;
+  border: 1px solid var(--border);
+  margin-top: 14px;
+}
+.plan-review header {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.plan-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-left: 18px;
+}
+.plan-steps li label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+.plan-steps textarea,
+.plan-steps input {
+  width: 100%;
+  font: inherit;
+}
+.plan-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
 .approval pre {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
