@@ -15,16 +15,16 @@
 
 > These are **checklist completion** numbers (ticked items with recorded evidence ÷ all items). They are not a measure of product quality or release readiness; human launch gates in `docs/roadmap.md` are not counted.
 
-**Overall checklist completion: 40%** (78/197 roadmap items)  
+**Overall checklist completion: 40%** (79/198 roadmap items)  
 **Current milestone:** M1 MVP, grounded single agent  
-**Next task:** R1.8a Hard per-sandbox disk quota (F-SBX-5) [§16.4]
+**Next task:** R1.8b Hard disk quota on `local-container` (F-SBX-5) [§16.4]
 
 **Execution-order exception:** user-authorized M1 work; M0 remains unfinished (R0.8 CI pipeline (plan §15.1, §15.7) [§35.6]). No acceptance criterion or gate is waived.
 
 | Milestone | Progress | Items | Status |
 | --- | --- | --- | --- |
 | M0 Foundations | ██████████ 96% | 22/23 | Unfinished (execution postponed) |
-| M1 MVP, grounded single agent | ████░░░░░░ 43% | 34/80 | In progress |
+| M1 MVP, grounded single agent | ████░░░░░░ 43% | 35/81 | In progress |
 | M2 Precision and efficiency | █████░░░░░ 45% | 22/49 | Partly built early |
 | M3 Parallel and background | ░░░░░░░░░░ 0% | 0/20 | Not started |
 | M4 Team and ecosystem | ░░░░░░░░░░ 0% | 0/16 | Not started |
@@ -37,7 +37,7 @@
 - Branch helix/session-2026-11-10-m1-workbench, draft PR #23 (https://github.com/daggerm29-oss/8/pull/23). PR #19 (M3) parked, untouched.
 - R1.1–R1.6 complete (see roadmap evidence). R1.7 + R1.8 COMPLETE via CI run 43143536991 at e803082 (red-team 8/8 with real contained Chrome; lifecycle 6/6 with delegated cgroup memory controller).
 - CI at e803082 fails only at the R1.4 packaged crash e2e (`crash.spec.ts` "reopened window reattaches"), which skips the red-team regression and scope steps; investigate before marking the PR ready.
-- Next: R1.8a hard overlay-size disk quota (`test/sandbox-lifecycle.test.ts`, `HELIX_DISK_QUOTA=hard`), then R1.9, R1.10. R0.8 still postponed; do not start M2+.
+- R1.8a COMPLETE (50bde71): hard overlay-on-tmpfs disk quota for local-unshare (IMPL-ADR-035). Added R1.8b (same for local-container, CI default). Next: R1.9 per-tool egress + network approvals (`test/egress.test.ts test/net-approval.test.ts`), then R1.10. R0.8 still postponed; do not start M2+.
 
 ## Ideas parking lot (one line each, max 15 — do not implement)
 
