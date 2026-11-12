@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { connectVia } from './net-helpers.ts';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WebSocket } from 'ws';
@@ -73,6 +74,42 @@ test('egress: allowlisted host works through the proxy, others are denied and re
   } finally {
     unsub();
     sbx.destroy();
+    await engine.close();
+  }
+});
+
+test('egress: per-tool allowlist — a host allowed for tool A is denied for tool B (F-SBX-3, §16.5)', { timeout: 30_000 }, async () => {
+  const home = mkdtempSync(join(tmpdir(), 'helix-home-'));
+  const root = realpathSync(ws());
+  const engine = new Engine({ home, env: {}, recover: false, mcp: false, indexing: false });
+  const denied: Array<{ host: string; tool?: string; reason: string }> = [];
+  const unsub = engine.bus.subscribe('egress.*', (e) => { if (e.topic === 'egress.denied') denied.push(e.data as never); });
+  const dir = mkdtempSync(join(tmpdir(), 'helix-pertool-'));
+  const closeA = await engine.egress.listen(join(dir, 'a.sock'), { sandboxId: 'mcp-a', root, ws: 'engine', tool: 'mcp:alpha' });
+  const closeB = await engine.egress.listen(join(dir, 'b.sock'), { sandboxId: 'mcp-b', root, ws: 'engine', tool: 'mcp:beta' });
+  const { port, token } = await engine.serve({ ui: false });
+  const sock = await new Promise<WebSocket>((resolve, reject) => {
+    const s = new WebSocket(`ws://127.0.0.1:${port}/`);
+    s.once('open', () => resolve(s));
+    s.once('error', reject);
+  });
+  const peer = new RpcPeer(wsTransport(sock));
+  try {
+    await peer.request(Methods.initialize, { clientName: 't', clientVersion: '0', protocolVersion: PROTOCOL_VERSION, token });
+    assert.deepEqual(await peer.request(Methods.egressAllow, { host: 'tool-a.invalid', tool: 'mcp:alpha' }), { ok: true, host: 'tool-a.invalid', tool: 'mcp:alpha' });
+    await assert.rejects(peer.request(Methods.egressAllow, { host: 'x.invalid', tool: 'bad tool' }), /mcp:<server>/);
+    assert.match(await connectVia(join(dir, 'a.sock'), 'tool-a.invalid:443'), /502/, 'tool A: allowed, so the proxy dials upstream');
+    assert.match(await connectVia(join(dir, 'b.sock'), 'tool-a.invalid:443'), /403/, 'tool B: same host is denied');
+    engine.bus.flush();
+    assert.deepEqual(denied.map((d) => [d.host, d.tool, d.reason]), [['tool-a.invalid', 'mcp:beta', 'host not on allowlist']]);
+    const list = await peer.request(Methods.egressList, { workspacePath: root }) as { workspace: unknown[]; tools: Array<{ host: string; tool: string }> };
+    assert.deepEqual(list.workspace, []);
+    assert.deepEqual(list.tools.map((t) => [t.tool, t.host]), [['mcp:alpha', 'tool-a.invalid']]);
+  } finally {
+    unsub();
+    sock.close();
+    closeA();
+    closeB();
     await engine.close();
   }
 });
