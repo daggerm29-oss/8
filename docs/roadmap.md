@@ -203,8 +203,9 @@ Sandbox
 - [ ] **R1.8b Hard disk quota on `local-container`** (F-SBX-5) [§16.4] — the same overlay-on-size-limited-filesystem writable layer for the container backend (CI default), e.g. an overlay volume whose upper dir sits on a tmpfs inside podman's rootless user/mount namespace (IMPL-ADR-035).
   - Accept [A-local]: on a host where `local-container` is the default backend (CI ubuntu-24.04), `HELIX_DISK_QUOTA=hard node --test test/sandbox-lifecycle.test.ts` → the disk filler test passes as in R1.8a (`info().limits.enforced.diskHard` true)
   - Blocked: needs a host where rootless podman/docker works (CI ubuntu-24.04); the v0 VM has no container runtime and its locked /proc overmounts make crun/runc fail (see R1.7). A-local parts pass (`HELIX_DISK_QUOTA=hard node --test test/sandbox-lifecycle.test.ts` on local-unshare → disk 3/3; on local-container `info().limits.reason` states that only the sampled quota applies)
-- [ ] **R1.9 Per-tool egress and network approvals** (F-SBX-3, FR-18) [§16.5, §10.5] — allowlists per workspace and per tool; per-domain network approval class with one-click allow.
+- [x] **R1.9 Per-tool egress and network approvals** (F-SBX-3, FR-18) [§16.5, §10.5] — allowlists per workspace and per tool; per-domain network approval class with one-click allow.
   - Accept [A-local]: `node --test test/egress.test.ts test/net-approval.test.ts` → a host allowed for tool A is denied for tool B; an unknown domain raises a `network` approval; approve-once allows that call only; approve-always persists per workspace
+  - Evidence: node --test test/egress.test.ts test/net-approval.test.ts → 6/6 pass (tool A host 502-dialed, tool B 403 + net.denied{tool}; unknown domain → `network` approval; once → only that call; always → persisted workspace allow); commit 18616d4; artifact evals/results/r1.9-egress-net-approval.log
 
 Codebase intelligence
 - [ ] **R1.10 Indexer completion** (F-IDX-1, FR-8, FR-11, PERF-6, PERF-7) [§11.1–11.3, §12.1, §12.4] — file watcher, `.helixignore`, BLAKE3 content hashes and Merkle tree, docs indexing, tree-sitter for the top 20 languages of §12.4.
@@ -600,7 +601,7 @@ External exit gates (plan §12 M4; not build tasks, never simulated):
 | FR-15 | M1 (Explore), M3 (general) | Not started | DEF(M3) | M1 T6; M3 General subagents + DAG | General subagents not on `main` |
 | FR-16 | M3 | Not started | DEF(M3) | M3 Write leases + worktrees; R3.3 | Not on `main`; two open defects |
 | FR-17 | M1 | Partial | RED | R1.29 | Not a shadow git object store (see F-GIT-2) |
-| FR-18 | M1 | Partial | RED | R1.9; R1.20 | No per-domain network approval class, no deploy class; push is hard-denied rather than approvable |
+| FR-18 | M1 | Partial | RED | R1.9; R1.20 | No deploy class; push is hard-denied rather than approvable (network-domain class done: R1.9 evidence, commit 18616d4) |
 | FR-19 | M1 | Done | RED | R0.2; R1.7 | Evidence: `node --test test/redteam-containment.test.ts (CI ubuntu-24.04, HELIX_REDTEAM_REQUIRE_BROWSER=1, CI run 43143536991) → 8/8`; commit e803082 (MCP stdio network denied + scoped credentials; agent shell/tools fail closed, R0.2 66ff487) |
 | FR-20 | M1 | Partial | RED | R1.21 | Framework detection limited; no HMR passthrough verification; no persisted recipe |
 | FR-21 | M1 | Not started | MISS | R1.22 | Multi-tab, sessions, presets, emulation |
@@ -651,7 +652,7 @@ External exit gates (plan §12 M4; not build tasks, never simulated):
 | F-ORC-5 | M3 (local/cloud), M4 (issue triggers) | Not started | DEF(M3) | M3 workers; M3 Schedules and triggers; R3.5; R4.2 | All |
 | F-SBX-1 | M0 (local), M3 (cloud) | Partial | RED | R0.1; R0.2; M3 Cloud sandbox provider | M0 part: Evidence: `local-container`, `local-unshare` and `local-os` (bwrap) pass the conformance suite, fail closed otherwise (R0.1 commit 81b44e1; R0.2: `HELIX_SANDBOX_BACKENDS=local-container,local-unshare,local-os node --test test/sandbox-conformance.test.ts` → 24/24, commit 66ff487); still missing: Seatbelt run on macOS (A-host, R1.37), gVisor on a host with runsc; M3: cloud backends |
 | F-SBX-2 | M1 | Partial | RED | R1.7 | Host-home canary unreadable from all 8 tools (Evidence: `node --test test/redteam-containment.test.ts (CI ubuntu-24.04, HELIX_REDTEAM_REQUIRE_BROWSER=1, CI run 43143536991) → 8/8`; commit e803082); remaining: non-allowlisted hosts unreachable from every tool (per-tool egress R1.9) and full §15.5 red-team suite (R1.40) |
-| F-SBX-3 | M1 | Partial (audit FV, residual gap) | FV | R1.9 | Per-tool allowlist |
+| F-SBX-3 | M1 | Done | FV | R1.9 | Evidence: node --test test/egress.test.ts test/net-approval.test.ts → 6/6 pass (direct bypass fails, per-tool allowlist, denied host → net.denied + one-click allow/approval); commit 18616d4 |
 | F-SBX-4 | M2 | Partial | RED | R2.9 | MCP path (MCP not sandboxed); memory-dump test; persisted bindings |
 | F-SBX-5 | M1 | Partial | RED | R1.8; R1.8a; R1.8b | M1 limits/lifecycle pass on CI (R1.8, commit e803082); hard overlay quota on local-unshare (R1.8a: `HELIX_DISK_QUOTA=hard node --test test/sandbox-lifecycle.test.ts` → disk 3/3; commit 50bde71); remaining: hard quota on local-container (R1.8b), PERF-9 warm-start benchmark (R1.38), hydrate from deps cache |
 | F-PRV-1 | M1 | Partial | RED | R1.21 | Framework fixture set, persisted recipe |
@@ -738,5 +739,5 @@ External exit gates (plan §12 M4; not build tasks, never simulated):
 | PERF-12 | M1 | Not started | NI | R1.38; G1.4 | No benchmark; blocker: No fixture |
 | PERF-13 | M1 | Partial | NI | R1.3; R1.38; G1.4 | Local packaged Electron engine→panel event-stream latency p95 = 34 ms ≤ 50 ms across 128 samples (`cd packages/desktop && npx playwright test e2e/monitor.spec.ts` → 1/1; commit 6cfeda8; artifact `evals/results/r1-3-packaged-monitor-2026-11-11.json`); reference-hardware benchmark and ±10% CI regression gate remain R1.38/G1.4 |
 
-Totals: **154 IDs**: Done 21, Partial 83, Not started 50. The rejected items X19–X21 are not numbered requirements; task R1.46 keeps their enforcement tested.
+Totals: **154 IDs**: Done 22, Partial 82, Not started 50. The rejected items X19–X21 are not numbered requirements; task R1.46 keeps their enforcement tested.
 
