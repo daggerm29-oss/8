@@ -15,6 +15,7 @@ interface TsNode {
   type: string;
   text: string;
   startIndex: number;
+  endIndex: number;
   startPosition: { row: number };
   endPosition: { row: number };
   parent: TsNode | null;
@@ -58,6 +59,16 @@ try {
 
 export function treeSitterAvailable(lang: Lang): boolean {
   return parsers.has(lang);
+}
+
+export type SyntaxNode = TsNode;
+
+/** Parses `text` and passes the root node to `fn`; the tree is freed afterwards. Null when no grammar is available. */
+export function withTree<T>(lang: Lang, text: string, fn: (root: SyntaxNode) => T): T | null {
+  const parser = parsers.get(lang);
+  const tree = parser?.parse(text);
+  if (!tree) return null;
+  try { return fn(tree.rootNode); } finally { tree.delete(); }
 }
 
 type Kind = ExtractedSymbol['kind'];

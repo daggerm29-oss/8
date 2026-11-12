@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync, watch as fsWatch, type FSWatcher } from 'node:fs';
 import { blake3Hex, merkleTree } from './hash.ts';
 import { HelixIgnore } from './ignore.ts';
+import { structuralSearch, type StructuralMatch } from './structural.ts';
 import { dirname, join, normalize, relative } from 'node:path';
 import type { Db } from '../storage/db.ts';
 import { extract, identifierTerms, isTestPath, langOf, type Lang } from './extract.ts';
@@ -70,6 +71,11 @@ export interface PlanImpactReport {
   riskTerms: Array<{ term: string; value: number; weight: number; contribution: number }>;
   precision: 'heuristic';
 }
+
+export type GraphOp = 'definitions' | 'references' | 'callers' | 'callees' | 'dependents' | 'importers' | 'tests';
+export const GRAPH_OPS: readonly GraphOp[] = ['definitions', 'references', 'callers', 'callees', 'dependents', 'importers', 'tests'];
+export interface GraphItem { path: string; line?: number; symbol?: string; depth?: number }
+export interface GraphResult { op: GraphOp; target: string; items: GraphItem[]; precision: 'heuristic' }
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -440,6 +446,80 @@ export class WorkspaceIndex {
       `SELECT qualified_name AS q FROM idx_symbols WHERE ws = ? AND path = ? AND kind != 'heading' AND line <= ? AND end_line >= ? ORDER BY end_line - line ASC LIMIT 1`,
       this.ws, path, line, line,
     )?.q ?? '';
+  }
+
+  /** AST-pattern search over indexed files (FR-9, §12.2). */
+  structural(pattern: string, opts: { lang?: Lang; pathPrefix?: string; limit?: number } = {}): { matches: StructuralMatch[]; error?: string } {
+    const rows = this.db.all<{ path: string; lang: string }>('SELECT path, lang FROM idx_files WHERE ws = ? ORDER BY path', this.ws)
+      .filter((r) => !opts.pathPrefix || r.path.startsWith(opts.pathPrefix));
+    const files = function* (root: string) {
+      for (const r of rows) {
+        let text: string;
+        try { text = readFileSync(join(root, r.path), 'utf8'); } catch { continue; }
+        yield { path: r.path, lang: r.lang as Lang, text };
+      }
+    };
+    return structuralSearch(files(this.root), pattern, opts);
+  }
+
+  /**
+   * General graph query (FR-9, §11.5): deterministic lookups over definitions, call edges, import edges and test
+   * edges. `target` is a symbol name for definitions/references/callers/callees/tests and a file path (or, for
+   * `importers`, a module specifier) for dependents/importers/tests.
+   */
+  graphQuery(q: { op: GraphOp; target: string; depth?: number }): GraphResult {
+    const depth = Math.min(Math.max(q.depth ?? 1, 1), 4);
+    const items: GraphItem[] = [];
+    const exactDefs = () => this.findSymbol(q.target, 40).filter((h) => h.name === q.target || h.qualifiedName === q.target || h.qualifiedName.endsWith(`.${q.target}`));
+    const isFile = this.db.get<{ n: number }>('SELECT COUNT(*) AS n FROM idx_files WHERE ws = ? AND path = ?', this.ws, q.target)!.n > 0;
+    switch (q.op) {
+      case 'definitions':
+        for (const d of exactDefs()) items.push({ path: d.path, line: d.line, symbol: d.qualifiedName });
+        break;
+      case 'references':
+        for (const r of this.db.all<{ path: string; line: number; caller: string }>('SELECT path, line, caller FROM idx_refs WHERE ws = ? AND name = ? ORDER BY path, line LIMIT 500', this.ws, q.target.split('.').at(-1)!)) items.push({ path: r.path, line: r.line, symbol: r.caller || undefined });
+        break;
+      case 'callers':
+        for (const c of this.impact(q.target, { depth }).callers) items.push({ path: c.path, line: c.line, symbol: c.caller || undefined, depth: c.depth });
+        break;
+      case 'callees': {
+        const seen = new Set<string>();
+        for (const d of exactDefs()) {
+          for (const r of this.db.all<{ name: string }>('SELECT DISTINCT name FROM idx_refs WHERE ws = ? AND path = ? AND caller = ? ORDER BY name', this.ws, d.path, d.qualifiedName)) {
+            if (seen.has(r.name)) continue;
+            seen.add(r.name);
+            const def = this.findSymbol(r.name, 5).find((h) => h.name === r.name);
+            if (def) items.push({ path: def.path, line: def.line, symbol: def.qualifiedName });
+          }
+        }
+        break;
+      }
+      case 'dependents': {
+        const seen = new Set<string>([q.target]);
+        let frontier = [q.target];
+        for (let d = 1; d <= depth && frontier.length; d++) {
+          const next: string[] = [];
+          for (const f of frontier) for (const p of this.dependents(f)) if (!seen.has(p)) { seen.add(p); next.push(p); items.push({ path: p, depth: d }); }
+          frontier = next;
+        }
+        break;
+      }
+      case 'importers':
+        for (const r of this.db.all<{ path: string }>('SELECT DISTINCT path FROM idx_imports WHERE ws = ? AND (resolved = ? OR spec = ?) ORDER BY path', this.ws, q.target, q.target)) items.push({ path: r.path });
+        break;
+      case 'tests': {
+        const paths = new Set<string>();
+        const files = isFile ? [q.target] : exactDefs().map((d) => d.path);
+        for (const f of files) for (const t of this.coveringTests(f)) paths.add(t);
+        if (!isFile) {
+          const name = q.target.split('.').at(-1)!;
+          for (const r of this.db.all<{ path: string }>('SELECT DISTINCT r.path FROM idx_refs r JOIN idx_files f ON f.ws = r.ws AND f.path = r.path WHERE r.ws = ? AND r.name = ? AND f.is_test = 1', this.ws, name)) paths.add(r.path);
+        }
+        for (const p of [...paths].sort()) items.push({ path: p });
+        break;
+      }
+    }
+    return { op: q.op, target: q.target, items, precision: 'heuristic' };
   }
 
   /** Test files that import a file (static `tests` edges heuristic, §11.5). */
