@@ -6,7 +6,7 @@ import { chmodSync, constants, copyFileSync, createReadStream, createWriteStream
 import { cgroupUnavailableReason, DEFAULT_LIMITS, SandboxCgroup, type SandboxLimits } from './cgroup.ts';
 import { engineIdentity, removeSandboxRecord, writeSandboxRecord } from './reaper.ts';
 import { helixHome } from '../util/log.ts';
-import { FORWARDER_SOURCE, SANDBOX_PROXY_PORT, type EgressProxy } from './egress.ts';
+import { FORWARDER_SOURCE, SANDBOX_PROXY_PORT, type EgressContext, type EgressProxy } from './egress.ts';
 
 const SYSTEM_CA_BUNDLES = ['/etc/ssl/certs/ca-certificates.crt', '/etc/pki/tls/certs/ca-bundle.crt', '/etc/ssl/cert.pem'];
 import { tmpdir } from 'node:os';
@@ -400,7 +400,7 @@ export class LocalSandbox {
   private readonly idleSuspendMs: number;
   private idleTimer: NodeJS.Timeout | null = null;
 
-  constructor(id: string, root: string, opts: { lightMode?: boolean; roPaths?: string[]; egress?: EgressProxy; wsl?: WslConfig | null; backend?: SandboxBackend; trace?: SpanRunner; limits?: SandboxLimits; idleSuspendMs?: number } = {}) {
+  constructor(id: string, root: string, opts: { lightMode?: boolean; roPaths?: string[]; egress?: EgressProxy; egressScope?: Pick<EgressContext, 'ws' | 'tool' | 'task'>; wsl?: WslConfig | null; backend?: SandboxBackend; trace?: SpanRunner; limits?: SandboxLimits; idleSuspendMs?: number } = {}) {
     this.id = id;
     this.trace = opts.trace;
     this.root = realpathSync(resolve(root));
@@ -451,7 +451,7 @@ export class LocalSandbox {
       const system = SYSTEM_CA_BUNDLES.find((p) => existsSync(p));
       writeFileSync(join(this.hostBridgeDir, 'helix-ca.pem'), ca);
       writeFileSync(join(this.hostBridgeDir, 'ca-bundle.pem'), `${system ? readFileSync(system, 'utf8') : ''}\n${ca}`);
-      this.egressReady = opts.egress.listen(join(this.hostBridgeDir, 'egress.sock'), { sandboxId: id, root: this.root }).catch(() => null);
+      this.egressReady = opts.egress.listen(join(this.hostBridgeDir, 'egress.sock'), { ...opts.egressScope, sandboxId: id, root: this.root }).catch(() => null);
     } else {
       this.egressReady = Promise.resolve(null);
     }

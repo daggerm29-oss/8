@@ -137,4 +137,10 @@ export const MIGRATIONS: string[] = [
   CREATE UNIQUE INDEX activity_lease_workspace ON activity_leases(ws) WHERE state = 'held';
   CREATE INDEX activity_leases_task ON activity_leases(task);
   `,
+  /* v11: R1.9 per-tool egress allowlists (F-SBX-3); tool '' = the whole workspace, 'mcp:<server>' = that tool only. */ `
+  CREATE TABLE egress_allow_v11 (ws TEXT NOT NULL, tool TEXT NOT NULL DEFAULT '', host TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY (ws, tool, host));
+  INSERT INTO egress_allow_v11 (ws, tool, host, at) SELECT ws, '', host, at FROM egress_allow;
+  DROP TABLE egress_allow;
+  ALTER TABLE egress_allow_v11 RENAME TO egress_allow;
+  `,
 ];

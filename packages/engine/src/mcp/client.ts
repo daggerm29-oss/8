@@ -6,6 +6,7 @@ import { dirname, isAbsolute, join, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { DEFAULT_RO_PATHS, LocalSandbox, SandboxUnavailableError } from '../sandbox/sandbox.ts';
 import { hostPathDenylist, isDeniedHostPath } from '../vault/vault.ts';
+import type { EgressProxy } from '../sandbox/egress.ts';
 
 const PACKAGE_MARKERS = ['package.json', 'pyproject.toml', 'setup.py', 'Cargo.toml', 'go.mod'];
 const within = (path: string, dir: string) => path === dir || path.startsWith(dir.endsWith(sep) ? dir : dir + sep);
@@ -67,6 +68,10 @@ export interface McpStdioOptions {
   requestTimeoutMs?: number;
   /** stderr lines from the server (logged, never parsed as protocol). */
   onStderr?: (line: string) => void;
+  /** Engine egress proxy; the server's HTTP(S) goes through it under its own per-tool allowlist (F-SBX-3). */
+  egress?: EgressProxy;
+  /** Per-tool allowlist identity, `mcp:<server>`. */
+  tool?: string;
 }
 
 export class McpStdioClient {
@@ -95,7 +100,7 @@ export class McpStdioClient {
     if (this.sandbox) throw new Error('MCP client is already connected');
     const root = this.o.cwd ?? (this.ownedRoot = mkdtempSync(join(tmpdir(), 'helix-mcp-root-')));
     const roPaths = serverPackageRoots(this.o.command, this.o.args, root);
-    this.sandbox = new LocalSandbox(`mcp-${randomUUID()}`, root, { roPaths });
+    this.sandbox = new LocalSandbox(`mcp-${randomUUID()}`, root, { roPaths, egress: this.o.egress, egressScope: { ws: 'engine', tool: this.o.tool } });
     if (this.sandbox.isolation !== 'full') throw new SandboxUnavailableError('MCP stdio requires full per-server filesystem and network isolation');
     const quote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
     const command = 'exec ' + [this.o.command, ...(this.o.args ?? [])].map(quote).join(' ');

@@ -918,7 +918,7 @@ export class TaskRuntime {
    */
   sandboxFor(root: string, prefix: string, labels: Record<string, string> = {}, extra: { roPaths?: string[] } = {}): LocalSandbox {
     const trust = this.workspaceTrust(root);
-    const sandbox = new LocalSandbox(prefixedId(prefix), root, { lightMode: !!trust?.lightMode, egress: this.o.egress, roPaths: extra.roPaths, trace: (name, attrs, fn) => this.o.tracer.withSpan(name, attrs, fn) });
+    const sandbox = new LocalSandbox(prefixedId(prefix), root, { lightMode: !!trust?.lightMode, egress: this.o.egress, egressScope: labels.task ? { task: labels.task } : undefined, roPaths: extra.roPaths, trace: (name, attrs, fn) => this.o.tracer.withSpan(name, attrs, fn) });
     if (sandbox.isolation === 'light') {
       const ws = this.workspace(root);
       const info = sandbox.info();

@@ -37,10 +37,18 @@ export interface EgressContext {
   sandboxId: string;
   /** Real workspace root of the sandbox. */
   root: string;
+  /** Policy scope when it is not the workspace of `root` (MCP servers use `engine`). */
+  ws?: string;
+  /** Tool whose process owns this sandbox (`mcp:<server>`), for per-tool allowlists (§16.5). */
+  tool?: string;
+  /** Task the sandbox works for; its profile decides whether an unknown host raises a `network` approval. */
+  task?: string;
 }
 
 export interface EgressPolicy {
   isAllowed(host: string, ctx: EgressContext): boolean;
+  /** Host not on any allowlist: ask the user (true = allow this connection, false = user denied, null = nobody to ask). */
+  ask?(info: { host: string; port: number; method: string }, ctx: EgressContext): Promise<boolean | null>;
   onDenied(info: { host: string; port: number; method: string; reason: string }, ctx: EgressContext): void;
   /** A sentinel was sent somewhere its secret may not go; the request was blocked. */
   onExfil?(info: { secret: string; host: string; where: string }, ctx: EgressContext): void;
@@ -205,8 +213,8 @@ export class EgressProxy {
   listen(socketPath: string, ctx: EgressContext): Promise<() => void> {
     rmSync(socketPath, { force: true });
     const sockets = new Set<Socket>();
-    const server = createServer((req, res) => this.forward(req, res, ctx));
-    server.on('connect', (req: IncomingMessage, client: Socket, head: Buffer) => this.tunnel(req, client, head, ctx));
+    const server = createServer((req, res) => { this.forward(req, res, ctx).catch(() => res.destroy()); });
+    server.on('connect', (req: IncomingMessage, client: Socket, head: Buffer) => { this.tunnel(req, client, head, ctx).catch(() => client.destroy()); });
     server.on('connection', (s: Socket) => { sockets.add(s); s.on('close', () => sockets.delete(s)); });
     server.on('clientError', (_e, s) => s.destroy());
     this.servers.add(server);
@@ -223,19 +231,28 @@ export class EgressProxy {
     });
   }
 
-  private check(host: string, port: number, method: string, ctx: EgressContext): string | null {
+  private async check(host: string, port: number, method: string, ctx: EgressContext): Promise<string | null> {
     let reason: string | null = null;
     if (!host) reason = 'bad target';
     else if (isIP(host) && isBlockedAddress(host)) reason = 'private address';
     else if (port !== 443 && port !== 80) reason = `port ${port} not allowed`;
-    else if (!this.policy.isAllowed(host, ctx) && !this.intercepts(host, ctx.root)) reason = 'host not on allowlist';
+    else if (!this.policy.isAllowed(host, ctx) && !this.intercepts(host, ctx.root)) {
+      reason = 'host not on allowlist';
+      if (this.policy.ask && !isIP(host)) {
+        const approved = await this.policy.ask({ host, port, method }, ctx).catch(() => false);
+        if (approved === true) return null;
+        if (approved === false) reason = 'network approval denied';
+      }
+    }
     if (reason) this.policy.onDenied({ host, port, method, reason }, ctx);
     return reason;
   }
 
-  private tunnel(req: IncomingMessage, client: Socket, head: Buffer, ctx: EgressContext): void {
+  private async tunnel(req: IncomingMessage, client: Socket, head: Buffer, ctx: EgressContext): Promise<void> {
     const { host, port } = splitHostPort(req.url ?? '', 443);
-    const denied = this.check(host, port, 'CONNECT', ctx);
+    client.on('error', () => client.destroy());
+    const denied = await this.check(host, port, 'CONNECT', ctx);
+    if (client.destroyed) return;
     if (denied) {
       client.end(`HTTP/1.1 403 Forbidden\r\nX-Helix-Egress: denied\r\nContent-Type: text/plain\r\n\r\nhelix egress denied: ${host} (${denied})\n`);
       return;
@@ -254,13 +271,14 @@ export class EgressProxy {
     client.on('close', fail);
   }
 
-  private forward(req: IncomingMessage, res: ServerResponse, ctx: EgressContext): void {
+  private async forward(req: IncomingMessage, res: ServerResponse, ctx: EgressContext): Promise<void> {
     let url: URL;
     try { url = new URL(req.url ?? ''); } catch { res.writeHead(400).end('absolute URL required\n'); return; }
     if (url.protocol !== 'http:') { res.writeHead(400).end('only http:// via forward proxy; use CONNECT for https\n'); return; }
     const host = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
     const port = url.port ? Number(url.port) : 80;
-    const denied = this.check(host, port, req.method ?? 'GET', ctx);
+    const denied = await this.check(host, port, req.method ?? 'GET', ctx);
+    if (res.destroyed) return;
     if (denied) { res.writeHead(403, { 'X-Helix-Egress': 'denied', 'Content-Type': 'text/plain' }).end(`helix egress denied: ${host} (${denied})\n`); return; }
     const leaked = this.bindingsFor(ctx.root).find((b) => (req.url ?? '').includes(b.sentinel) || req.rawHeaders.some((h) => h.includes(b.sentinel)));
     if (leaked) {

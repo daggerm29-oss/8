@@ -6,6 +6,7 @@ import type { ToolRegistry } from '../tools/registry.ts';
 import { registerToolClass, unregisterToolClass } from '../policy/policy.ts';
 import { McpStdioClient, type McpCallResult, type McpToolInfo } from './client.ts';
 import { McpHttpClient } from './http.ts';
+import type { EgressProxy } from '../sandbox/egress.ts';
 
 type McpClient = McpStdioClient | McpHttpClient;
 
@@ -141,7 +142,9 @@ export class McpManager {
 
   private readonly o: { home: string; registry: ToolRegistry; logger?: { info: (m: string, d?: Record<string, unknown>) => void; warn: (m: string, d?: Record<string, unknown>) => void }; config?: Record<string, McpServerConfig>; toolSearchThreshold?: number;
     /** Receives §26.5 audit records (server add, remove, trust change). Details never include headers, env values, or command arguments. */
-    audit?: (topic: string, data: Record<string, unknown>) => void };
+    audit?: (topic: string, data: Record<string, unknown>) => void;
+    /** Stdio servers egress through this proxy with tool identity `mcp:<server>` (§16.5 per-tool allowlist). */
+    egress?: EgressProxy };
   /** Registry names each connected server contributed, so removal and reconnect can unregister exactly those. */
   private readonly serverTools = new Map<string, string[]>();
 
@@ -284,7 +287,7 @@ export class McpManager {
     const client: McpClient = c.url
       ? new McpHttpClient({ url: c.url, headers: c.headers, requestTimeoutMs: c.timeoutMs })
       : new McpStdioClient({
-        command: c.command!, args: c.args, env: c.env, cwd: c.cwd, requestTimeoutMs: c.timeoutMs,
+        command: c.command!, args: c.args, env: c.env, cwd: c.cwd, requestTimeoutMs: c.timeoutMs, egress: this.o.egress, tool: `mcp:${name}`,
         onStderr: (line) => this.o.logger?.info('mcp stderr', { server: name, line: line.slice(0, 500) }),
       });
     try {

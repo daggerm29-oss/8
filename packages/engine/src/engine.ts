@@ -31,6 +31,7 @@ import { LocalSandbox, SandboxUnavailableError, availableBackends, mountNsAvaila
 import { localOsTool } from './sandbox/localos.ts';
 import { containerRuntime } from './sandbox/container.ts';
 import { DEFAULT_EGRESS_ALLOWLIST, EgressProxy, type UpstreamOverride } from './sandbox/egress.ts';
+import { NetPolicy, normalizeHost } from './sandbox/net-policy.ts';
 import { DevServers } from './preview/devserver.ts';
 import { PreviewBrowser } from './preview/browser.ts';
 import { elementContext, mapElementToSource, parseLoc } from './preview/locate.ts';
@@ -62,6 +63,8 @@ export interface EngineOptions {
   adapters?: ProviderAdapter[];
   /** Test seam for the masking proxy (F-SBX-4): where intercepted requests really go. */
   egressUpstream?: UpstreamOverride;
+  /** How long a `network` approval waits before it is denied (default 5 min). */
+  netApprovalTimeoutMs?: number;
   retry?: { maxRetries?: number; baseDelayMs?: number; maxDelayMs?: number };
   taskRetryScale?: number;
   /** Resume interrupted tasks on open (default true). */
@@ -110,6 +113,7 @@ export class Engine {
   readonly mcp: McpManager;
   /** Allowlisting HTTP/CONNECT proxy shared by every sandbox (F-SBX-3). */
   readonly egress: EgressProxy;
+  readonly net: NetPolicy;
   /** Managed workspace dev servers (F-PRV-1). */
   readonly devServers: DevServers;
   /** Lazily launched headless Chrome for agent browser tools (F-PRV-5). */
@@ -138,11 +142,14 @@ export class Engine {
     this.ledger = new Ledger(this.db, this.bus);
     this.replay = new ReplayAdapter();
     this.gateway = new ModelGateway({ adapters: [...(opts.adapters ?? [new GeminiAdapter(), new OpenAIAdapter()]), this.replay], vault: this.vault, ledger: this.ledger, tracer: this.tracer, logger: this.logger, retry: opts.retry });
+    this.net = new NetPolicy({ db: this.db, bus: this.bus, workspaceId: (root) => this.runtime.workspaceFor(root).id, timeoutMs: opts.netApprovalTimeoutMs });
     this.egress = new EgressProxy({
-      isAllowed: (host, ctx) => DEFAULT_EGRESS_ALLOWLIST.includes(host) || !!this.db.get('SELECT 1 AS ok FROM egress_allow WHERE ws = ? AND host = ?', this.runtime.workspaceFor(ctx.root).id, host),
+      isAllowed: (host, ctx) => this.net.isAllowed(host, ctx),
+      ask: (info, ctx) => this.net.ask(info, ctx),
       onDenied: (info, ctx) => {
-        this.bus.publish({ topic: 'egress.denied', ws: this.runtime.workspaceFor(ctx.root).id, data: { ...info, sandbox: ctx.sandboxId }, persist: 'audit' });
-        this.logger.warn('egress.denied', { ...info, sandbox: ctx.sandboxId });
+        const attribution = { sandbox: ctx.sandboxId, ...(ctx.tool ? { tool: ctx.tool } : {}), ...(ctx.task ? { task: ctx.task } : {}) };
+        this.bus.publish({ topic: 'egress.denied', ws: this.net.scope(ctx), data: { ...info, ...attribution }, persist: 'audit' });
+        this.logger.warn('egress.denied', { ...info, ...attribution });
       },
       onInject: (info, ctx) => {
         this.bus.publish({ topic: 'secret.used', ws: this.runtime.workspaceFor(ctx.root).id, data: { name: info.secret, host: info.host, where: info.where, uses: info.uses, sandbox: ctx.sandboxId }, persist: 'audit' });
@@ -160,7 +167,7 @@ export class Engine {
     });
     this.browser = new PreviewBrowser({ outDir: join(this.home, 'screenshots'), allowTarget: (_host, port) => this.devServers.hostPorts().includes(port) });
     const tools = builtinTools();
-    this.mcp = new McpManager({ home: this.home, registry: tools, logger: this.logger, config: opts.mcpServers, toolSearchThreshold: opts.mcpToolSearchThreshold, audit: (topic, data) => this.bus.publish({ topic, ws: 'engine', data, persist: 'audit' }) });
+    this.mcp = new McpManager({ home: this.home, registry: tools, logger: this.logger, config: opts.mcpServers, toolSearchThreshold: opts.mcpToolSearchThreshold, egress: this.egress, audit: (topic, data) => this.bus.publish({ topic, ws: 'engine', data, persist: 'audit' }) });
     this.mcpReady = opts.mcp === false ? Promise.resolve([]) : this.mcp.start();
     this.runtime = new TaskRuntime({ db: this.db, bus: this.bus, gateway: this.gateway, ledger: this.ledger, tools, tracer: this.tracer, engineId: this.id, blobs: this.blobs, logger: this.logger, egress: this.egress, devServers: this.devServers, browser: this.browser, taskRetryScale: opts.taskRetryScale, helixHome: this.home, replay: this.replay, indexing: opts.indexing, compaction: compactionFrom(env, opts.compaction),
       depGate: env.HELIX_DEP_GATE === 'off' ? undefined : new DepGate({ osvUrl: env.HELIX_OSV_URL, npmRegistryUrl: env.HELIX_NPM_REGISTRY_URL, pypiUrl: env.HELIX_PYPI_URL }) });
@@ -233,6 +240,7 @@ export class Engine {
     peer.handle(Methods.taskWait, guard<{ id: string; timeoutMs?: number }>((p) => this.runtime.wait(p.id, p.timeoutMs)));
     peer.handle(Methods.taskTranscript, guard<{ id: string }>((p) => this.runtime.transcript(p.id)));
     peer.handle(Methods.approvalRespond, guard<{ approvalId: string; approved: boolean; always?: boolean }>((p) => {
+      if (this.net.has(p.approvalId)) return { ...this.net.decide(p.approvalId, !p.approved ? 'deny' : p.always ? 'always' : 'once'), alwaysAllowed: null };
       let alwaysAllowed: { server: string; tool: string } | null = null;
       if (p.approved && p.always) {
         const tool = this.runtime.approvalTool(p.approvalId);
@@ -434,13 +442,11 @@ export class Engine {
       this.bus.publish({ topic: 'vault.key_deleted', ws: 'engine', data: { provider: p.provider, store: this.vault.keychain.kind }, persist: 'audit' });
       return { ok: true, provider: p.provider, source: this.vault.keySource(p.provider) };
     }));
-    peer.handle(Methods.egressAllow, guard<{ workspacePath: string; host: string }>((p) => {
-      const host = typeof p.host === 'string' ? p.host.trim().toLowerCase() : '';
-      if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(host) || host.length > 253) throw new Error('host must be a DNS name like example.com');
-      const ws = this.runtime.workspaceFor(this.knownWorkspace(p.workspacePath));
-      this.db.run('INSERT OR IGNORE INTO egress_allow (ws, host, at) VALUES (?, ?, ?)', ws.id, host, new Date().toISOString());
-      this.bus.publish({ topic: 'egress.allowed', ws: ws.id, data: { host, by: 'user' }, persist: 'audit' });
-      return { ok: true, host };
+    peer.handle(Methods.egressAllow, guard<{ workspacePath?: string; host: string; tool?: string }>((p) => {
+      const host = normalizeHost(p.host);
+      const tool = typeof p.tool === 'string' ? p.tool : undefined;
+      if (tool?.startsWith('mcp:') && !p.workspacePath) return this.net.allow('engine', host, { tool });
+      return this.net.allow(this.runtime.workspaceFor(this.knownWorkspace(String(p.workspacePath))).id, host, { tool });
     }));
     peer.handle(Methods.secretsBind, guard<{ workspacePath: string; name: string; injectHosts: string[]; value?: string }>((p) => {
       const root = this.knownWorkspace(p.workspacePath);
@@ -455,7 +461,8 @@ export class Engine {
     peer.handle(Methods.secretsList, guard<{ workspacePath: string }>((p) => this.egress.bindingsFor(this.knownWorkspace(p.workspacePath)).map((b) => ({ name: b.name, injectHosts: b.injectHosts }))));
     peer.handle(Methods.egressList, guard<{ workspacePath: string }>((p) => {
       const ws = this.runtime.workspaceFor(this.knownWorkspace(p.workspacePath));
-      return { defaults: DEFAULT_EGRESS_ALLOWLIST, workspace: this.db.all<{ host: string; at: string }>('SELECT host, at FROM egress_allow WHERE ws = ? ORDER BY host', ws.id) };
+      const rows = this.net.list(ws.id);
+      return { defaults: DEFAULT_EGRESS_ALLOWLIST, workspace: rows.filter((r) => !r.tool), tools: [...rows.filter((r) => r.tool), ...this.net.list('engine')] };
     }));
 
     peer.handle(Methods.previewStart, guard<{ workspacePath: string }>((p) => this.devServers.start(this.knownWorkspace(p.workspacePath))));
@@ -647,6 +654,7 @@ export class Engine {
     this.terminals.clear();
     await this.devServers.closeAll();
     await this.browser.close();
+    this.net.close();
     this.egress.close();
     for (const c of this.wss?.clients ?? []) c.terminate();
     this.wss?.close();
