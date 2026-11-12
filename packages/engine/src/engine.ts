@@ -38,7 +38,8 @@ import { PreviewBrowser } from './preview/browser.ts';
 import { elementContext, mapElementToSource, parseLoc } from './preview/locate.ts';
 import { listWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile } from './workspace/files.ts';
 import { gitCommit, gitDiff, gitStageAll, gitStatus } from './workspace/git.ts';
-import { WorkspaceIndex } from './index/index.ts';
+import { WorkspaceIndex, type GraphOp } from './index/index.ts';
+import type { Lang } from './index/extract.ts';
 import { parseDiagnostics } from './diagnostics/parsers.ts';
 import { DepGate } from './policy/depgate.ts';
 import { listProblems, recordTerminalProblems } from './workspace/problems.ts';
@@ -112,6 +113,7 @@ export class Engine {
   readonly gateway: ModelGateway;
   readonly replay: ReplayAdapter;
   readonly runtime: TaskRuntime;
+  private readonly embedder?: Embedder;
   readonly blobs: BlobStore;
   readonly mcp: McpManager;
   /** Allowlisting HTTP/CONNECT proxy shared by every sandbox (F-SBX-3). */
@@ -172,7 +174,8 @@ export class Engine {
     const tools = builtinTools();
     this.mcp = new McpManager({ home: this.home, registry: tools, logger: this.logger, config: opts.mcpServers, toolSearchThreshold: opts.mcpToolSearchThreshold, egress: this.egress, audit: (topic, data) => this.bus.publish({ topic, ws: 'engine', data, persist: 'audit' }) });
     this.mcpReady = opts.mcp === false ? Promise.resolve([]) : this.mcp.start();
-    this.runtime = new TaskRuntime({ db: this.db, bus: this.bus, gateway: this.gateway, ledger: this.ledger, tools, tracer: this.tracer, engineId: this.id, blobs: this.blobs, logger: this.logger, egress: this.egress, devServers: this.devServers, browser: this.browser, taskRetryScale: opts.taskRetryScale, helixHome: this.home, replay: this.replay, indexing: opts.indexing, embedder: opts.embedder ?? embedderFromEnv(env), compaction: compactionFrom(env, opts.compaction),
+    this.embedder = opts.embedder ?? embedderFromEnv(env);
+    this.runtime = new TaskRuntime({ db: this.db, bus: this.bus, gateway: this.gateway, ledger: this.ledger, tools, tracer: this.tracer, engineId: this.id, blobs: this.blobs, logger: this.logger, egress: this.egress, devServers: this.devServers, browser: this.browser, taskRetryScale: opts.taskRetryScale, helixHome: this.home, replay: this.replay, indexing: opts.indexing, embedder: this.embedder, compaction: compactionFrom(env, opts.compaction),
       depGate: env.HELIX_DEP_GATE === 'off' ? undefined : new DepGate({ osvUrl: env.HELIX_OSV_URL, npmRegistryUrl: env.HELIX_NPM_REGISTRY_URL, pypiUrl: env.HELIX_PYPI_URL }) });
 
     const now = new Date().toISOString();
@@ -314,10 +317,21 @@ export class Engine {
       const idx = this.index(p.workspacePath);
       return { ...idx.update(), ...idx.counts(), generation: idx.generation() };
     }));
-    peer.handle(Methods.indexSearch, guard<{ workspacePath: string; query: string; limit?: number }>((p) => {
+    peer.handle(Methods.indexSearch, guard<{ workspacePath: string; query: string; limit?: number }>(async (p) => {
       const idx = this.index(p.workspacePath);
       idx.update();
-      return idx.search(p.query, { limit: p.limit });
+      const semantic = this.embedder ? await idx.queryEmbedding(this.embedder, p.query, this.ledger).catch(() => undefined) : undefined;
+      return idx.search(p.query, { limit: p.limit, rerank: 'auto', graph: true, expand: true, tokenBudget: 4000, semantic });
+    }));
+    peer.handle(Methods.indexStructural, guard<{ workspacePath: string; pattern: string; lang?: Lang; path?: string; limit?: number }>((p) => {
+      const idx = this.index(p.workspacePath);
+      idx.update();
+      return idx.structural(p.pattern, { lang: p.lang, pathPrefix: p.path, limit: p.limit });
+    }));
+    peer.handle(Methods.indexGraph, guard<{ workspacePath: string; op: GraphOp; target: string; depth?: number }>((p) => {
+      const idx = this.index(p.workspacePath);
+      idx.update();
+      return idx.graphQuery({ op: p.op, target: p.target, depth: p.depth });
     }));
     peer.handle(Methods.indexSymbols, guard<{ workspacePath: string; name: string }>((p) => {
       const idx = this.index(p.workspacePath);
