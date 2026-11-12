@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync, watch as fsWatch, type FSWatcher } from 'node:fs';
+import { blake3Hex, merkleTree } from './hash.ts';
+import { HelixIgnore } from './ignore.ts';
 import { dirname, join, normalize, relative } from 'node:path';
 import type { Db } from '../storage/db.ts';
 import { extract, identifierTerms, isTestPath, langOf, type Lang } from './extract.ts';
@@ -124,12 +126,64 @@ export class WorkspaceIndex {
       };
       walk(this.root);
     }
-    return files.filter((f) => !f.split('/').some((seg) => SKIP_DIRS.has(seg)) && !SECRET_FILE.test(f) && langOf(f) !== null);
+    return this.indexable(files);
   }
 
-  update(): IndexStats {
+  /** Drops skip-dirs, secret files, unknown languages, and `.helixignore` paths (FR-11). */
+  private indexable(files: string[]): string[] {
+    const ignore = HelixIgnore.load(this.root);
+    return files.filter((f) => !f.split('/').some((seg) => SKIP_DIRS.has(seg)) && !SECRET_FILE.test(f) && langOf(f) !== null && !ignore.ignores(f));
+  }
+
+  /** Merkle tree over the indexed files: directory path ('' is the root) → BLAKE3 hash. */
+  merkle(): Map<string, string> {
+    return merkleTree(this.db.all<{ path: string; hash: string }>('SELECT path, hash FROM idx_files WHERE ws = ?', this.ws));
+  }
+
+  merkleRoot(): string {
+    return this.merkle().get('') ?? '';
+  }
+
+  /**
+   * File watcher (F-IDX-1): re-indexes only the saved paths after a short debounce. A change to `.helixignore`
+   * triggers a full pass. Returns a handle whose `close()` stops watching.
+   */
+  watch(onUpdate?: (stats: IndexStats) => void, debounceMs = 25): { close(): void } {
+    const pending = new Set<string>();
+    let timer: NodeJS.Timeout | undefined;
+    let full = false;
+    const flush = () => {
+      timer = undefined;
+      const paths = [...pending];
+      pending.clear();
+      const wasFull = full;
+      full = false;
+      try {
+        const stats = wasFull ? this.update() : this.update(paths);
+        if (stats.indexed || stats.removed) onUpdate?.(stats);
+      } catch { /* a racing delete or rename is picked up by the next event */ }
+    };
+    let watcher: FSWatcher;
+    try {
+      watcher = fsWatch(this.root, { recursive: true }, (_event, name) => {
+        if (!name) return;
+        const rel = String(name).split('\\').join('/');
+        if (rel === '.helixignore') full = true;
+        else if (rel === '.git' || rel.startsWith('.git/') || rel.split('/').some((s) => SKIP_DIRS.has(s))) return;
+        else pending.add(rel);
+        timer ??= setTimeout(flush, debounceMs);
+      });
+    } catch {
+      return { close() {} };
+    }
+    return { close: () => { if (timer) clearTimeout(timer); watcher.close(); } };
+  }
+
+  /** Re-indexes the workspace, or only `paths` (workspace-relative) when given. */
+  update(paths?: string[]): IndexStats {
     const started = performance.now();
-    const files = this.listFiles();
+    const subset = paths ? new Set(paths) : null;
+    const files = subset ? this.indexable([...subset]) : this.listFiles();
     const known = new Map(this.db.all<{ path: string; hash: string }>('SELECT path, hash FROM idx_files WHERE ws = ?', this.ws).map((r) => [r.path, r.hash]));
     const stats: IndexStats = { files: files.length, indexed: 0, removed: 0, unchanged: 0, symbols: 0, durationMs: 0 };
     const present = new Set<string>();
@@ -142,11 +196,11 @@ export class WorkspaceIndex {
       const buf = readFileSync(abs);
       if (buf.subarray(0, 8000).includes(0)) continue;
       present.add(path);
-      const hash = createHash('sha256').update(buf).digest('hex');
+      const hash = blake3Hex(buf);
       if (known.get(path) === hash) { stats.unchanged++; continue; }
       work.push({ path, hash, text: buf.toString('utf8'), lang: langOf(path)!, size: st.size });
     }
-    const removed = [...known.keys()].filter((p) => !present.has(p));
+    const removed = [...known.keys()].filter((p) => !present.has(p) && (!subset || subset.has(p)));
     if (work.length || removed.length) {
       this.db.transaction(() => {
         for (const p of [...removed, ...work.map((w) => w.path)]) this.drop(p);

@@ -149,6 +149,9 @@ importers:
       '@helix/provider-openai':
         specifier: workspace:*
         version: link:../providers/openai
+      '@noble/hashes':
+        specifier: 1.8.0
+        version: 1.8.0
       '@vscode/tree-sitter-wasm':
         specifier: 0.3.1
         version: 0.3.1

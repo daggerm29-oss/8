@@ -17,6 +17,7 @@
     "@helix/protocol": "workspace:*",
     "@helix/provider-gemini": "workspace:*",
     "@helix/provider-openai": "workspace:*",
+    "@noble/hashes": "1.8.0",
     "@vscode/tree-sitter-wasm": "0.3.1",
     "@xterm/xterm": "^5.5.0",
     "tree-sitter-wasms": "0.1.13",
