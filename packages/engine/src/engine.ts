@@ -100,7 +100,7 @@ function compactionFrom(env: NodeJS.ProcessEnv, opts?: CompactionOptions): Compa
   };
 }
 
-const TOPICS = ['task.*', 'agent.**', 'tool.*', 'model.*', 'verify.*', 'approval.*', 'ledger.*', 'budget.*', 'context.*', 'artifact.*', 'plan.*', 'checkpoint.*', 'workspace.*', 'egress.*', 'preview.*', 'secret.*', 'sandbox.*', 'policy.*', 'git.*', 'deploy.*', 'mcp.*'];
+const TOPICS = ['task.*', 'agent.**', 'tool.*', 'model.*', 'verify.*', 'approval.*', 'ledger.*', 'budget.*', 'context.*', 'artifact.*', 'plan.*', 'gate.*', 'gates.*', 'checkpoint.*', 'workspace.*', 'egress.*', 'preview.*', 'secret.*', 'sandbox.*', 'policy.*', 'git.*', 'deploy.*', 'mcp.*'];
 
 /** Helix Engine (§6.2): composition root for storage, bus, gateway, tools, sandbox, and the task runtime. */
 export class Engine {
@@ -353,6 +353,9 @@ export class Engine {
       return this.runtime.reverifyArtifact(p.id);
     }));
     peer.handle(Methods.artifactList, guard<{ task: string; kind?: string }>((p) => this.runtime.artifacts(p.task, p.kind)));
+    peer.handle(Methods.gatesInfer, guard<{ workspacePath: string }>((p) => this.runtime.gatesInfer(p.workspacePath)));
+    peer.handle(Methods.gatesConfirm, guard<{ workspacePath: string; gates?: unknown }>((p) => this.runtime.gatesConfirm(p.workspacePath, p.gates === undefined ? undefined : { gates: p.gates })));
+    peer.handle(Methods.gateWaive, guard<{ task: string; reason: string }>((p) => this.runtime.gateWaive(p.task, p.reason)));
     peer.handle(Methods.planGet, guard<{ task: string }>((p) => this.runtime.planGet(p.task)));
     peer.handle(Methods.planUpdate, guard<{ task: string; planId?: string; edit: PlanEdit }>((p) => this.runtime.planUpdate(p.task, p.edit ?? {}, p.planId)));
     peer.handle(Methods.planApprove, guard<{ task: string; planId?: string; policyProfile?: 'headless' | 'interactive'; preapprove?: string[] }>((p) => this.runtime.planApprove(p.task, p)));

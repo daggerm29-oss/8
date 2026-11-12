@@ -360,5 +360,11 @@ export const messages = {
   "add_step_9289d4": "Add step ",
   "save_edits_259560": "Save edits ",
   "approve_and_run_84dbea": "Approve and run ",
-  "save_your_edits_before_approving_76076f": "Save your edits before approving."
+  "save_your_edits_before_approving_76076f": "Save your edits before approving.",
+  "gate_waiver_a9c7c7": "Gate waiver",
+  "waived_by_43d2e4": "Waived by ",
+  "_required_gates_are_still_red_f14510": " Required gates are still red ",
+  "why_is_it_acceptable_to_finish_anyway_this_is_8c6ce0": "Why is it acceptable to finish anyway? This is written to the audit log.",
+  "waiver_reason_f0ff7a": "Waiver reason",
+  "waive_and_mark_done_daddd6": "Waive and mark done "
 } as const;

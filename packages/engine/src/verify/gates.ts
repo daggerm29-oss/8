@@ -1,5 +1,5 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
 export type GateKind = 'typecheck' | 'lint' | 'test' | 'build' | 'custom';
 
@@ -140,6 +140,24 @@ export function resolveGates(root: string, verifyCommand: string | null | undefi
     return { source: gates.length ? 'inferred' : 'none', gates };
   }
   return { source: 'none', gates: [] };
+}
+
+/** Tool name under which inferred gates are confirmed (approval card, `--allow tool:gates.confirm`, RPC). */
+export const GATES_CONFIRM_TOOL = 'gates.confirm';
+
+/**
+ * Persists confirmed gates as `.helix/verify.json` (F-AGT-4). Once written the project's gates come from
+ * config, so inference never runs unconfirmed again.
+ */
+export function writeConfirmedGates(root: string, gates: Gate[]): string {
+  const path = join(root, VERIFY_CONFIG_PATH);
+  mkdirSync(dirname(path), { recursive: true });
+  const body = gates.map((g) => ({
+    name: g.name, kind: g.kind, command: g.command, required: g.required, timeoutMs: g.timeoutMs,
+    ...(g.parser ? { parser: g.parser } : {}), ...(g.fallback ? { fallback: g.fallback } : {}), ...(g.allowPreexisting ? { allowPreexisting: true } : {}),
+  }));
+  writeFileSync(path, JSON.stringify({ gates: body }, null, 2) + '\n');
+  return path;
 }
 
 export function describeGates(cfg: GateConfig): string {

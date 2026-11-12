@@ -7,6 +7,7 @@ import { CheckpointInspector } from "./checkpoint-inspector";
 import { ActivityTree } from './activity-tree';
 import { TraceViewer } from './trace-viewer';
 import { PlanReviewPanel } from './plan-review-panel';
+import { GateWaiverPanel } from './gate-waiver-panel';
 
 type Message = {
   role: string;
@@ -94,6 +95,7 @@ export function AgentPanel() {
         {selected && !!planArtifacts.data?.length && (
           <PlanReviewPanel key={selected} task={selected} />
         )}
+        {selected && <GateWaiverPanel key={"waiver-" + selected} task={selected} />}
         {approvals.data
           ?.filter((approval) => approval.status === "pending")
           .map((approval) => (

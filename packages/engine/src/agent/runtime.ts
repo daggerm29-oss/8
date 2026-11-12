@@ -5,7 +5,8 @@ import { WorkspaceIndex } from '../index/index.ts';
 import { loadInstructions } from '../context/instructions.ts';
 import { assembleContext, type ComposedContext } from '../context/assembler.ts';
 import { formatDiagnostics, parseDiagnostics, type Diagnostic } from '../diagnostics/parsers.ts';
-import { describeGates, diagnosticKey, expandGateCommand, resolveGates, TESTS_PLACEHOLDER, type Gate } from '../verify/gates.ts';
+import { describeGates, diagnosticKey, expandGateCommand, GATES_CONFIRM_TOOL, parseGateConfig, resolveGates, TESTS_PLACEHOLDER, writeConfirmedGates, type Gate, type GateConfig } from '../verify/gates.ts';
+import { classifyRetryDiff, minimalityNote, patchesForPrompt, type DiagnosticSite, type RetryDiffReport } from '../verify/retry-diff.ts';
 import { isTestPath } from '../index/extract.ts';
 
 interface BaselineArtifact { gates: Array<{ name: string; command: string; passed: boolean; keys: string[] }> }
@@ -862,6 +863,124 @@ export class TaskRuntime {
     ).map((r) => ({ id: r.id, kind: r.kind, title: r.title, data: parseJson(r.data_json, null), at: r.at }));
   }
 
+  /** Gates a workspace would use for `auto` verification, and whether the user has confirmed them (F-AGT-4). */
+  gatesInfer(workspacePath: string): { source: GateConfig['source']; gates: Gate[]; confirmed: boolean } {
+    const ws = this.workspace(workspacePath);
+    const cfg = resolveGates(ws.path, 'auto');
+    return { source: cfg.source, gates: cfg.gates, confirmed: cfg.source === 'config' };
+  }
+
+  /**
+   * Confirms gates for a workspace: the inferred set, or the user's edited set, becomes `.helix/verify.json`.
+   * Audited as `gates.confirmed`.
+   */
+  gatesConfirm(workspacePath: string, edited?: unknown, by = 'user'): { path: string; gates: Gate[] } {
+    const ws = this.workspace(workspacePath);
+    const gates = edited === undefined ? resolveGates(ws.path, 'auto').gates : parseGateConfig(edited);
+    if (!gates.length) throw new Error('no verification gates could be inferred; supply gates explicitly');
+    const path = writeConfirmedGates(ws.path, gates);
+    this.o.bus.publish({ topic: 'gates.confirmed', ws: ws.id, data: { gates: gates.map((g) => ({ name: g.name, kind: g.kind, command: g.command, required: g.required })), by, path }, persist: 'audit' });
+    return { path, gates };
+  }
+
+  /** Inferred gates run only after the user confirms them: an approval card interactively, a preapproval headlessly. */
+  private async confirmInferredGates(t: TaskRow, gates: Gate[], root: string, signal: AbortSignal): Promise<boolean> {
+    if (!gates.length) return true;
+    const pre = new Set(parseJson<string[]>(t.preapprove_json, []));
+    const preapproved = pre.has('all') || pre.has(`tool:${GATES_CONFIRM_TOOL}`);
+    let approved = preapproved;
+    if (!preapproved) {
+      if (t.policy_profile === 'headless') {
+        this.setStatus(t.id, 'failed', { error: `inferred verification gates need confirmation (${gates.map((g) => g.command).join('; ')}): call ${GATES_CONFIRM_TOOL} for this workspace or preapprove tool:${GATES_CONFIRM_TOOL}` });
+        return false;
+      }
+      approved = await this.ask(t, { type: 'tool_call', id: prefixedId('call'), name: GATES_CONFIRM_TOOL, args: { gates: gates.map((g) => ({ name: g.name, kind: g.kind, command: g.command, required: g.required })) } }, 'exec', signal);
+      if (signal.aborted) return false;
+    }
+    if (!approved) {
+      this.setStatus(t.id, 'failed', { error: 'inferred verification gates were not confirmed, so the task cannot be verified' });
+      return false;
+    }
+    const written = writeConfirmedGates(root, gates);
+    this.publish(t.id, t.ws, 'gates.confirmed', { gates: gates.map((g) => ({ name: g.name, kind: g.kind, command: g.command, required: g.required })), by: preapproved ? 'preapproval' : 'user', path: written }, 'audit');
+    return true;
+  }
+
+  /**
+   * User waiver of the required gates a task could not turn green (F-AGT-4). The only way a task with a red
+   * required gate reaches `done`; it needs a reason and is written to the audit log as `gate.waived`.
+   */
+  gateWaive(task: string, reason: unknown, by = 'user'): TaskSummary {
+    const t = this.row(task);
+    const failure = this.artifacts(task, 'gate_failure').at(-1);
+    if (t.status !== 'failed' || !failure) throw new Error('only a task that ended with required gates still red can be waived');
+    const why = typeof reason === 'string' ? reason.trim() : '';
+    if (!why) throw new Error('a waiver needs a reason');
+    const gates = (failure.data as { gates: Array<{ name: string }> }).gates.map((g) => g.name);
+    this.saveArtifact(task, 'gate_waiver', 'Gate waiver', { gates, reason: why, by, at: new Date().toISOString() });
+    this.publish(task, t.ws, 'gate.waived', { gates, reason: why, by }, 'audit');
+    this.o.db.run('UPDATE tasks SET error = NULL WHERE id = ?', task);
+    this.setStatus(task, 'done', { result: `verification waived by ${by}: ${why} (gates: ${gates.join(', ')})` });
+    return this.summary(task);
+  }
+
+  private preimages(task: string): Map<string, string | null> {
+    type Ref = Parameters<BlobStore['getText']>[0] | null;
+    const out = new Map<string, string | null>();
+    const seen = new Set<string>();
+    for (const c of this.o.db.all<{ files_json: string }>('SELECT files_json FROM checkpoints WHERE task = ? ORDER BY rowid', task)) {
+      for (const f of parseJson<Array<{ path: string; before: Ref }>>(c.files_json, [])) {
+        if (seen.has(f.path)) continue;
+        seen.add(f.path);
+        out.set(f.path, f.before === null ? null : this.o.blobs ? this.o.blobs.getText(f.before) : String(f.before));
+      }
+    }
+    return out;
+  }
+
+  private readCurrent(root: string, path: string): string | null {
+    const abs = join(root, path);
+    return abs.startsWith(`${root}/`) && existsSync(abs) ? readFileSync(abs, 'utf8') : null;
+  }
+
+  /** After a red verification: remember what the files looked like and where the diagnostics pointed (§9.5). */
+  private saveRetrySnapshot(t: TaskRow, root: string, diagnostics: Diagnostic[], index?: WorkspaceIndex): void {
+    const files: Record<string, string | null> = {};
+    for (const path of this.changeset(t.id)) {
+      const content = this.readCurrent(root, path);
+      if (content === null || content.length <= 262_144) files[path] = content;
+    }
+    const sites: DiagnosticSite[] = diagnostics.map((d) => ({ file: d.file, line: d.line }));
+    const neighbours = new Set<string>();
+    for (const file of new Set(sites.flatMap((s) => (s.file ? [s.file] : [])))) {
+      for (const op of ['dependents', 'importers'] as const) {
+        try {
+          for (const item of index?.graphQuery({ op, target: file }).items ?? []) neighbours.add(item.path);
+        } catch { /* graph neighbourhood is best effort */ }
+      }
+    }
+    this.saveArtifact(t.id, 'retry_snapshot', 'Retry snapshot', { attempt: t.verify_attempts + 1, files, sites, neighbours: [...neighbours] });
+  }
+
+  /** Compares the files now with the last red snapshot and audits how much of the retry the diagnostics justify. */
+  private retryDiff(t: TaskRow, root: string): RetryDiffReport | null {
+    const snap = this.artifacts(t.id, 'retry_snapshot').at(-1);
+    if (!snap) return null;
+    const data = snap.data as { attempt: number; files: Record<string, string | null>; sites: DiagnosticSite[]; neighbours: string[] };
+    const pre = this.preimages(t.id);
+    const before = new Map<string, string | null>();
+    const after = new Map<string, string | null>();
+    for (const path of new Set([...Object.keys(data.files), ...this.changeset(t.id)])) {
+      before.set(path, path in data.files ? data.files[path] : pre.get(path) ?? null);
+      after.set(path, this.readCurrent(root, path));
+    }
+    const report = classifyRetryDiff(before, after, data.sites, new Set(data.neighbours));
+    this.publish(t.id, t.ws, 'verify.retry_diff', {
+      attempt: t.verify_attempts + 1, sinceAttempt: data.attempt, judged: report.judged, files: report.files, related: report.related, unrelated: report.unrelated, hunks: report.hunks,
+    }, 'audit');
+    return report;
+  }
+
   /** Latest plan revision of a Plan Mode task plus its review state (FR-12, F-AGT-2). */
   planGet(task: string): PlanReview {
     const t = this.row(task);
@@ -1500,19 +1619,22 @@ export class TaskRuntime {
       this.addMessage(t.id, null, { role: 'user', parts: [{ type: 'text', text: '[plan-mode] You have not submitted a plan. Call submit_plan now with the plan grounded in the files you inspected.' }] });
       return false;
     }
-    let gates: Gate[];
+    let config: GateConfig;
     try {
-      gates = resolveGates(sandbox.root, t.verify_command).gates;
+      config = resolveGates(sandbox.root, t.verify_command);
     } catch (error) {
       this.setStatus(t.id, 'failed', { error: (error as Error).message });
       return true;
     }
+    if (config.source === 'inferred' && !(await this.confirmInferredGates(t, config.gates, sandbox.root, signal))) return true;
+    const gates: Gate[] = config.gates;
     if (!gates.length) {
       this.setStatus(t.id, 'done', { result: finalText || '(no summary)' });
       return true;
     }
     this.setStatus(t.id, 'verifying');
     const attempt = t.verify_attempts + 1;
+    const retry = attempt > 1 ? this.retryDiff(t, sandbox.root) : null;
     const results: Array<{ gate: Gate; command: string; exitCode: number | null; signal: string | null; passed: boolean; output: string; diagnostics: Diagnostic[]; preexisting: Set<Diagnostic>; onlyPreexisting: boolean; durationMs: number }> = [];
     const baseline = (this.artifacts(t.id, 'baseline').at(-1)?.data as BaselineArtifact | undefined) ?? null;
     const selection = gates.some((g) => g.command.includes(TESTS_PLACEHOLDER)) ? this.selectTests(t.id, sandbox.root, index) : null;
@@ -1560,6 +1682,7 @@ export class TaskRuntime {
       return true;
     }
     if (attempt >= MAX_VERIFY_ATTEMPTS) {
+      this.saveArtifact(t.id, 'gate_failure', `Gates still red after ${attempt} attempts`, { attempt, gates: failed.map((x) => ({ name: x.gate.name, command: x.command, exitCode: x.exitCode })) });
       this.setStatus(t.id, 'failed', { error: `verification failed ${attempt} times: ${failed.map((x) => `\`${x.gate.command}\` exit ${x.exitCode}`).join('; ')}` });
       return true;
     }
@@ -1572,7 +1695,11 @@ export class TaskRuntime {
       const body = x.diagnostics.length ? `Diagnostics (${x.diagnostics.length}):\n${list}\n\nLog tail:\n${tail}` : x.output.trim().slice(-6000 / failed.length);
       return `Gate '${x.gate.name}' (${x.gate.kind}): \`${x.command}\` exited with ${x.exitCode ?? x.signal}.\n\n${body}`;
     });
-    this.addMessage(t.id, null, { role: 'user', parts: [{ type: 'text', text: `Verification failed (attempt ${attempt}/${MAX_VERIFY_ATTEMPTS}).\n\n${sections.join('\n\n---\n\n')}\n\nFix the remaining problems, then finish with a summary.` }] });
+    this.saveRetrySnapshot(t, sandbox.root, allDiagnostics, index);
+    const changes = patchesForPrompt(retry ? retry.patches : this.diff(t.id));
+    const changesSection = changes ? `\n\n${retry ? 'Your changes since the last failed verification (minimal diff)' : 'Your changes so far (minimal diff since the start of the task)'}:\n${changes}` : '';
+    const note = retry ? minimalityNote(retry) : '';
+    this.addMessage(t.id, null, { role: 'user', parts: [{ type: 'text', text: `Verification failed (attempt ${attempt}/${MAX_VERIFY_ATTEMPTS}).\n\n${sections.join('\n\n---\n\n')}${changesSection}${note ? `\n\n${note}` : ''}\n\nFix the remaining problems, then finish with a summary.` }] });
     this.setStatus(t.id, 'running');
     return false;
   }
