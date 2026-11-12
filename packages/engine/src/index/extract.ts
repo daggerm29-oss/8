@@ -1,12 +1,13 @@
 /**
- * Symbol + import extractor (F-IDX-1, §12.1). Symbols for TS/JS/Python/Go/Rust/Java come from tree-sitter
+ * Symbol + import extractor (F-IDX-1, §12.1). Symbols for the 20 §12.4 languages come from tree-sitter
  * (`treesitter.ts`); other languages, or a missing WASM runtime, use the heuristic line-oriented regexes below
  * (IMPL-ADR-014), with ranges from brace matching or indentation. Imports always use the regexes. Both produce
  * the §11.3 symbol model; callers never depend on how symbols were found.
  */
 import { treeSitterSymbols } from './treesitter.ts';
 
-export type Lang = 'ts' | 'js' | 'py' | 'go' | 'rs' | 'java' | 'kt' | 'md' | 'json' | 'yaml' | 'css' | 'html' | 'sh' | 'text';
+export type Lang = 'ts' | 'js' | 'py' | 'go' | 'rs' | 'java' | 'kt' | 'cs' | 'rb' | 'php' | 'swift' | 'c' | 'cpp' | 'scala' | 'dart' | 'lua' | 'ex' | 'zig' | 'ml'
+  | 'md' | 'json' | 'yaml' | 'css' | 'html' | 'sh' | 'text';
 
 export interface ExtractedSymbol {
   kind: 'function' | 'class' | 'method' | 'interface' | 'type' | 'enum' | 'const' | 'struct' | 'trait' | 'heading';
@@ -25,7 +26,9 @@ export interface Extraction {
 }
 
 const EXT: Record<string, Lang> = {
-  ts: 'ts', tsx: 'ts', mts: 'ts', cts: 'ts', js: 'js', jsx: 'js', mjs: 'js', cjs: 'js', py: 'py', go: 'go', rs: 'rs', java: 'java', kt: 'kt',
+  ts: 'ts', tsx: 'ts', mts: 'ts', cts: 'ts', js: 'js', jsx: 'js', mjs: 'js', cjs: 'js', py: 'py', go: 'go', rs: 'rs', java: 'java', kt: 'kt', kts: 'kt',
+  cs: 'cs', rb: 'rb', php: 'php', swift: 'swift', c: 'c', h: 'c', cpp: 'cpp', cc: 'cpp', cxx: 'cpp', hpp: 'cpp', hh: 'cpp', scala: 'scala', sc: 'scala',
+  dart: 'dart', lua: 'lua', ex: 'ex', exs: 'ex', zig: 'zig', ml: 'ml', mli: 'ml',
   md: 'md', mdx: 'md', json: 'json', yaml: 'yaml', yml: 'yaml', toml: 'yaml', css: 'css', scss: 'css', html: 'html', sh: 'sh', bash: 'sh', sql: 'text', prisma: 'text', txt: 'text',
 };
 
