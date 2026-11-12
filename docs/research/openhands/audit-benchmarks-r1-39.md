@@ -1,6 +1,6 @@
 # OpenHands Benchmarks Audit for R1.39 (Helix Task Suite)
 
-Read-only research. Not approved for implementation. Does not override `plan.md` > `architecture.md` > `docs/roadmap.md` > `AGENTS.md`.
+Read-only research. No HTS implementation or dataset download is approved. Does not override `plan.md` > `architecture.md` > `docs/roadmap.md` > `AGENTS.md`. User decisions Q4-Q7 are recorded in section 8 and in `../openhands-reuse-handoff.md` section 5.
 
 - Repo: `OpenHands/benchmarks` @ `60b3548cea8b41276ac0d44ea36a01b82936bbe4` (2026-11-09), MIT, "Copyright (c) 2025 All Hands AI".
 - Target: R1.39 (roadmap l.281-282): `node evals/hts/validate.mjs` -> >= 300 tasks, >= 30 OSS repos (TS, Python, Go, Rust, Java), hidden acceptance tests that fail before and pass on the reference solution, browser assertions for UI tasks, HTS-lite of 30 tasks.
@@ -70,11 +70,14 @@ Rough gap to R1.39: >= 300 validated tasks is the dominant cost, not code. Seedi
 3. Evaluate Multi-SWE-bench and SWE-bench Multilingual as optional seed sources **after** licence review and a contamination decision.
 4. Author UI/browser tasks natively (nothing upstream).
 
-## 8. Open questions for the user
+## 8. User decisions (Q4-Q7, 2026-11-12) - supersede the earlier open questions
 
-- Q5: May seed tasks be derived from public datasets (subject to licence review), or must HTS be fully authored in-house?
-- Q6: Contamination policy: require post-cutoff commits / synthetic mutations, or accept public SWE-bench-style tasks?
-- Q7: Per-repo task container strategy: lightweight shared base images vs per-task images?
+- **Q4 APPROVED and completed:** this bounded read-only audit. No implementation.
+- **Q5 APPROVED:** public datasets may seed HTS, subject to licence and provenance verification. Not all 300 tasks must be in-house. Maintain a **per-task licence manifest** covering dataset, original repository, commit, task text, tests and any copied code. **Exclude unverified and `license:other` sources until individually reviewed** (this currently excludes Multi-SWE-bench, SWE-bench Verified/Pro, SWE-Gym and terminal-bench per section 5, until reviewed one by one; SWE-bench Multilingual has an `mit` dataset card but its underlying repositories still need per-task licence records).
+- **Q6 APPROVED, hybrid contamination policy:** (1) public benchmark-derived tasks, marked potentially contaminated; (2) post-training-cutoff commits when a model's cutoff is known and verifiable; (3) private Helix-authored tasks and synthetic mutations with hidden tests. Post-cutoff is not a zero-contamination guarantee. Keep a separate high-confidence held-out set for evaluating actual Helix performance. Record provenance, commit date, task creation date, source category and contamination classification. Public tasks must not be the sole evidence of Helix performance.
+- **Q7 APPROVED, shared base images:** lightweight immutable base images grouped by language/toolchain; cached repo-specific dependency layers where practical; fresh disposable workspace/container per attempt; the agent never receives hidden grader tests; grader runs in a separate clean environment; custom images only for genuine requirements that cannot fit the shared base.
+
+Constraints: do not download datasets yet; do not implement the HTS harness; no changes to product code, plan, architecture, roadmap, checkboxes or PR #23.
 
 ## 9. Not investigated
 

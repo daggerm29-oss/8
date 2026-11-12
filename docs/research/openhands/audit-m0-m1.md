@@ -1,6 +1,6 @@
 # Helix × OpenHands — M0/M1 Architecture Reuse Audit
 
-> Research artifact only. It does not change scope, tasks, checkboxes or product code. Nothing here is approved for implementation (see the decision register in `../openhands-reuse-handoff.md`).
+> Research artifact only. It does not change scope, tasks, checkboxes or product code. User decisions Q1-Q7 are recorded in section G below and in the decision log of `../openhands-reuse-handoff.md` (O1/O2 approved as design inputs only; O3 isolated investigation only; O4 rejected; no code implementation approved).
 > Authority is unchanged: `plan.md` > `architecture.md` > `docs/roadmap.md` > `AGENTS.md`.
 
 ## 0. Revisions examined (pinned)
@@ -55,7 +55,7 @@ Effort saved/complexity/maintenance are relative to building the same Helix task
 | O11 | F-MCP-1/3, R1.31, R1.32 | MCP client/permissions | sdk `mcp/{client,tool,config,oauth}.py` on `fastmcp>=4.1.6,<5` | `mcp/{client,http,manager}.ts`, sandboxed stdio servers (R1.7) | F (Python). For R1.31 the relevant reuse candidate is the official TS MCP SDK, not OpenHands | None from OpenHands | — | — | MIT | **Retain Helix**; evaluate official TS SDK separately (needs user approval: new dependency) |
 | O12 | F-SBX-4, SEC-6 | Secrets | sdk `secret/secrets.py`, `conversation/secret_registry.py` (output masking `<secret-hidden>`); agent-server `_secret_redaction.py` (export-time) | sentinel substitution + TLS-terminating injection (IMPL-ADR-031) | E (+O3) | None beyond O3 | — | — | MIT | **Retain Helix** (secret never enters sandbox; upstream masks after exposure) |
 | O13 | FR-33, F-UI-1/2, R1.1–R1.6 (done) | Desktop UI | Agent Canvas `src/components/features/{diff-viewer,terminal,browser,...}`, Electron `electron/main.mjs` (`contextIsolation:true`, `nodeIntegration:false`, l.358-401; no `sandbox:true` found) | `packages/desktop` React 19 + Monaco + FlexLayout, sandboxed renderer, MessagePort IPC allowlist | E | None (already built and evidenced) | — | — | MIT | **Retain Helix**. Possible UX reference only for R1.28 commit list/diff drawer |
-| O14 | R1.39 (HTS), G1.1 | Eval harness | Not in the four repos; OpenHands benchmarks live in a separate repo (not inspected) | `evals/*` | — | Unknown | — | — | — | **Needs investigation** (out of the four named repos) |
+| O14 | R1.39 (HTS), G1.1 | Eval harness | Not in the four repos; separate repo `OpenHands/benchmarks` @ `60b3548cea8b41276ac0d44ea36a01b82936bbe4`, now audited in `audit-benchmarks-r1-39.md` | `evals/*` | D (methodology only) | Native Node harness; no upstream code reused | — | — | MIT (harness); dataset licences vary, see that report | **Audited (Q4). Methodology reference only; policy Q5-Q7 approved.** |
 | O15 | R0.8 (postponed) | CI | Upstream workflows | `.github/workflows/ci.yml` | — | None | — | — | — | **No action.** R0.8 stays postponed per user decision; Accept unchanged |
 | O16 | F-TRM-1, R1.27 | Terminal | tools `terminal/` (tmux / subprocess / Windows backends, 4.8 k lines) | PTY in sandbox (`sandbox.ts`), xterm in desktop | E | None | — | — | MIT | **Retain Helix** (PTY already contained) |
 | O17 | F-MDL-*, F-TOK-* | LLM layer, cost | sdk `llm/` on litellm, `llm/router/` (random/multimodal), `conversation_stats.py` | `models/{gateway,router,roles,ledger}.ts`, protocol adapters, reconciliation | F | None | — | — | MIT | **Retain Helix** (ledger attribution/reconciliation exceeds upstream) |
@@ -175,8 +175,24 @@ Ordered by the prompt's priorities; every item maps to an existing task and neve
 1. **O1 → R1.30, then R1.36** (high savings for the hardest-to-get-right part, manageable risk).
 2. **O2 → R1.17** (low risk, small).
 3. **O3 → regression test under the current task rules** (only if the failing test reproduces; otherwise reject).
-4. **O4 → R1.19** (only if the changeset design chooses a patch tool).
+4. ~~O4 → R1.19~~ **Rejected by user (Q3); native atomic changeset retained.**
 5. **O5/O6 → R1.14/R1.23** idea-level borrowing only.
 6. Everything else native (E/F). R0.8 untouched and postponed.
 
 Implementation packets with exact steps, files, tests and rollback are in `../openhands-reuse-handoff.md` §4.
+
+## G. User decisions (Q1-Q7, 2026-11-12)
+
+Authoritative copy with full conditions: `../openhands-reuse-handoff.md` section 5 "Decision log". Summary:
+
+| Q | Status | Effect on this audit |
+|---|---|---|
+| Q1 | APPROVED | O1 (R1.30/R1.36) and O2 (R1.17) are design inputs. Adapt algorithms and test cases into existing TypeScript; no second runtime, no unnecessary dependencies; preserve all security policies; uncertain parsing fails toward approval; loop detector supports minimal-diff retries. Implementation not started. |
+| Q2 | PARKED; isolated investigation approved | O3 split-chunk leak: reproduce in isolation without touching product code or PR #23; if reproducible, report evidence and propose a narrow fix for approval. Not yet investigated. |
+| Q3 | NOT APPROVED | O4 `apply_patch` tool rejected; R1.19 keeps the native atomic changeset design. |
+| Q4 | APPROVED, completed | See `audit-benchmarks-r1-39.md`. |
+| Q5 | APPROVED | Public datasets as HTS seeds with a per-task licence manifest; exclude unverified and `license:other` sources until individually reviewed. |
+| Q6 | APPROVED (hybrid) | Three contamination categories plus a separate high-confidence held-out set; record provenance and classification. |
+| Q7 | APPROVED | Shared immutable base images by language/toolchain, fresh disposable environment per attempt, hidden tests never visible to the agent, separate clean grader. |
+
+Sections A, B and E above were written before these decisions; where they say "Recommended" or "needs approval", the table here and the handoff decision log take precedence. Pinned SHAs in section 0 and licensing warnings are unchanged.

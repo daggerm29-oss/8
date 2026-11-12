@@ -1,14 +1,14 @@
 # OpenHands Reuse — Persistent Research Handoff
 
 > **Read this first in every new session.** Branch: `research/openhands-reuse-audit` (docs only, based on `main`). Full report: `docs/research/openhands/audit-m0-m1.md`.
-> Research-only artifact. It never overrides `plan.md` > `architecture.md` > `docs/roadmap.md` > `AGENTS.md`. **No item here is approved for implementation.** Do not touch PR #23, product code, plan/architecture/roadmap/AGENTS, or checkboxes from this branch.
+> Research-only artifact. It never overrides `plan.md` > `architecture.md` > `docs/roadmap.md` > `AGENTS.md`. **Only O1/O2 are approved, and only as design inputs for their roadmap tasks (see §5 Decision log); no code implementation is approved yet.** Do not touch PR #23, product code, plan/architecture/roadmap/AGENTS, or checkboxes from this branch.
 
 ## 1. Executive summary
 
 - **Helix state (PR #23 head `71616a64d39a0839a28a3911ca728a8619f0d850`, draft, branch `helix/session-2026-11-10-m1-workbench`):** TS/Node 24 Engine (JSON-RPC, SQLite, event bus + audit chain, policy, tool registry, transcript-derived agent runtime, fail-closed sandboxes with egress proxy, credential sentinels, cgroups, hard quota on local-unshare) + Electron/React workbench. Dashboard 41% (81/198, tasks only). M0: all done except **R0.8 CI, postponed by user decision** (Accept unchanged; do not reopen). M1: T1–T7, R1.1–R1.10 done incl. R1.8a; open R1.8b, R1.11 (wip) … R1.47, gates G1.1–G1.6.
 - **OpenHands topology (verified):** Python core in `software-agent-sdk` (sdk, tools, agent-server, workspaces, TS client); `OpenHands/OpenHands` is now Agent Canvas (React + Electron client, ACP agents); `sandbox-server` = extracted FastAPI control plane; `automation` = cron/webhooks. All MIT.
-- **Conclusion:** do **not** integrate the OpenHands SDK/agent server/workspaces (second orchestration engine, Python runtime, weaker containment). Borrow a few self-contained algorithms + test vectors into TS behind existing Helix interfaces: **O1 shell AST rails (R1.30/R1.36)**, **O2 loop detector (R1.17)**, **O3 split-chunk stream masking (regression, needs repro)**, **O4 V4A patch parser (R1.19, optional, cookbook provenance)**. Everything else stays native.
-- **Unresolved questions for the user:** (Q1) approve O1/O2 as design inputs for R1.30/R1.36/R1.17? (Q2) may a regression test for O3 be added on PR #23 under the current task rules, or keep it parked? (Q3) is an `apply_patch`-style tool wanted in R1.19's changeset design? (Q4) should OpenHands' separate benchmarks repo be audited for R1.39 (HTS)?
+- **Conclusion:** do **not** integrate the OpenHands SDK/agent server/workspaces (second orchestration engine, Python runtime, weaker containment). Borrow a few self-contained algorithms + test vectors into TS behind existing Helix interfaces: **O1 shell AST rails (R1.30/R1.36)**, **O2 loop detector (R1.17)**, **O3 split-chunk stream masking (isolated repro first, parked)**. **O4 V4A / `apply_patch` parser is NOT approved (Q3); R1.19 keeps Helix's native atomic changeset.** Everything else stays native.
+- **Decisions:** all seven questions (Q1–Q7) are answered; see §5 "Decision log". Nothing is open except the user-gated next steps in §6. The benchmarks audit (R1.39) is complete: `docs/research/openhands/audit-benchmarks-r1-39.md`.
 
 ## 2. Pinned source references
 
@@ -59,16 +59,13 @@
 3. Tests inside `test/gates.test.ts` (fake provider) for each predicate + bounds.
 - Risk: false positives on legitimate polling; thresholds configurable. Rollback: remove call site.
 
-### P-O3 Stream redaction (only if reproduced)
-1. Write failing test: register a secret, feed PTY `onData` two chunks splitting it; assert UI stream never contains the value.
-2. If it fails: add `StreamRedactor` (hold back `maxLen-1` chars, flush on close) in `util/redact.ts`; use at `sandbox.ts:1056` and exec stdout/stderr emitters. If it passes: mark O3 Rejected.
-- Must follow AGENTS.md (one-line `docs/decisions.md` bug row). Needs user OK because it is outside the next roadmap task.
+### P-O3 Stream redaction (Q2: parked on PR #23; investigate in isolation first)
+1. Investigation only, outside Helix product code and PR #23: write an isolated reproduction test (separate scratch location, not committed to PR #23) that registers a secret and feeds PTY `onData` / exec output as two chunks splitting it; check whether the UI-bound stream ever contains the value.
+2. If NOT reproducible: mark O3 Rejected and record the evidence here.
+3. If reproducible: report the evidence and propose a narrowly scoped security fix (candidate: `StreamRedactor` holding back `maxLen-1` chars, flush on close, in `util/redact.ts`, used at `sandbox.ts:1056` and exec emitters) **for user approval. Do not apply any fix without approval.** A fix must follow AGENTS.md (one-line `docs/decisions.md` bug row).
 
-### P-O4 V4A patch parser (optional) → R1.19
-1. Pin openai-cookbook SHA, verify licence; port parser from the original, use OpenHands tests as extra vectors.
-2. Output → Helix changeset ops (create/edit/rename/delete) + hunks; checkpoint preimages per R0.6.
-3. Accept: `node --test test/changeset.test.ts` per roadmap.
-- Rollback: tool is additive; remove registration.
+### P-O4 V4A patch parser — **NOT APPROVED (Q3). Do not implement.**
+Kept only as a record of what was evaluated. The user declined adding an OpenAI-style `apply_patch` tool; R1.19 keeps Helix's native atomic changeset design (changeset ops + per-hunk accept/reject + checkpoint preimages per R0.6). Do not reopen without a new explicit user decision.
 
 ### P-O5 / P-O6 (idea-level only)
 - R1.14: add `CLAUDE.md`, `GEMINI.md` (case-insensitive) and native `.cursor/rules/*.mdc` front-matter (`description`, `globs`, `alwaysApply`) — upstream has no `.mdc` code to reuse.
@@ -78,10 +75,10 @@
 
 | Key | Status | Note |
 |---|---|---|
-| O1 Shell AST rails | **Recommended** | Highest value; no new dependency |
-| O2 Loop detector | **Recommended** | Small |
-| O3 Stream masking | **Needs further investigation** | Reproduce first |
-| O4 V4A parser | **Needs further investigation** | Depends on R1.19 design; provenance |
+| O1 Shell AST rails | **Approved as design input (Q1)** | R1.30/R1.36; fail toward `ask`; no new dependency; implementation not started |
+| O2 Loop detector | **Approved as design input (Q1)** | R1.17; must support minimal-diff retries; implementation not started |
+| O3 Stream masking | **Approved for isolated investigation only (Q2)** | Parked on PR #23; report evidence, propose fix for approval |
+| O4 V4A parser | **Rejected by user (Q3)** | Native atomic changeset retained |
 | O5 Instruction discovery | Recommended (idea only) | — |
 | O6 Browser/rrweb | Needs further investigation | rrweb = new dep |
 | O7 Hooks | Already implemented adequately in Helix | Upstream runs hooks on host |
@@ -91,22 +88,31 @@
 | O11 MCP (OpenHands) | Rejected | Python/fastmcp; consider official TS SDK separately |
 | O12 Secrets | Already implemented adequately in Helix | + O3 |
 | O13 Desktop UI | Already implemented adequately in Helix | — |
-| O14 Benchmarks for HTS | Needs further investigation | Separate repo |
+| O14 Benchmarks for HTS | **Audited (Q4); policy approved (Q5–Q7)** | Methodology reference only; no Python runtime; harness not implemented; no datasets downloaded |
 | O15 CI (R0.8) | No action | Stays postponed |
 | O16 Terminal | Already implemented adequately in Helix | — |
 | O17 LLM/ledger | Rejected | litellm; Helix ledger stronger |
 
-### Approvals (user, 2026-11-12)
+### Decision log (user decisions, all seven answered)
 
-- **Q1 APPROVED:** O1 and O2 are approved as design inputs for R1.30, R1.36 and R1.17. Adapt the algorithms and test cases into Helix TypeScript; no second agent runtime, no unnecessary dependencies; preserve all existing security policies; uncertain shell parsing fails toward `ask`; the loop detector must support minimal-diff retries (a retry that differs only slightly from the prior attempt must not be flagged as a loop, and retries should be steered toward minimal diffs). Execution still happens on the Helix branch when the roadmap reaches those tasks, never from this research branch.
-- **Q4 APPROVED and completed:** see `docs/research/openhands/audit-benchmarks-r1-39.md` (OpenHands/benchmarks @ `60b3548cea8b41276ac0d44ea36a01b82936bbe4`). Verdict: methodology reference only; do not adopt its Python runtime. Open questions Q5-Q7 are in that file.
-- Q2, Q3 still unanswered. O3, O4 remain "needs investigation".
+| Q | Decision | Status | Exact conditions |
+|---|---|---|---|
+| Q1 | O1 + O2 as design inputs for R1.30, R1.36, R1.17 | **APPROVED** | Adapt useful algorithms and test cases into Helix's existing TypeScript architecture. No second agent runtime. No unnecessary dependencies. Preserve all existing security policies. Uncertain shell parsing fails toward approval (`ask`), never allow. Loop detector must support minimal-diff retries (a slightly different retry must not be flagged as a loop; retries steered toward minimal diffs). Implementation happens on the Helix branch when the roadmap reaches those tasks; **not started**. |
+| Q2 | O3 split-chunk secret leak | **KEEP PARKED on PR #23; investigation approved** | First investigate with an isolated reproduction test, without modifying Helix product code or PR #23. If reproducible: report evidence and propose a narrowly scoped security fix **for user approval**. Not yet investigated. |
+| Q3 | OpenAI-style `apply_patch` tool in R1.19 | **NOT APPROVED** | Preserve Helix's native atomic changeset design. |
+| Q4 | Bounded read-only audit of OpenHands/benchmarks for R1.39 | **APPROVED and COMPLETED** | Report: `docs/research/openhands/audit-benchmarks-r1-39.md` (repo @ `60b3548cea8b41276ac0d44ea36a01b82936bbe4`, MIT). Methodology reference only; no implementation. |
+| Q5 | Public datasets as HTS seed material | **APPROVED** | Subject to licence and provenance verification. Do not restrict all 300 tasks to in-house authoring. Maintain a per-task licence manifest covering dataset, original repository, commit, task text, tests and any copied code. **Exclude unverified and `license:other` sources until individually reviewed.** |
+| Q6 | Contamination policy | **APPROVED: HYBRID** | Three categories: (1) public benchmark-derived tasks, marked potentially contaminated; (2) post-training-cutoff repo commits when a model's cutoff is known and verifiable; (3) private Helix-authored tasks and synthetic mutations with hidden tests. Post-cutoff does not guarantee zero contamination. Keep a separate high-confidence held-out set for evaluating actual Helix performance. Record task provenance, commit date, task creation date, source category and contamination classification. Public benchmark tasks must not be the sole evidence of Helix performance. |
+| Q7 | Task environment strategy | **APPROVED: SHARED BASE IMAGES** | Lightweight immutable base images grouped by language/toolchain; reuse cached repo-specific dependency layers where practical; fresh disposable workspace/container per task attempt; the agent never receives hidden grader tests; grader runs in a separate clean environment; custom images only for genuine environment needs that cannot fit the shared base. |
 
-Approved for implementation as design input: **O1, O2** (not started). Everything else: none.
+Standing constraints from the user: no datasets downloaded yet; HTS harness not implemented; no changes to product code, plan, architecture, roadmap, checkboxes or PR #23 from this branch.
+
+Approved as design input: **O1, O2** (not started). Approved for isolated investigation: **O3**. Rejected: **O4**. No code implementation is approved.
 
 ## 6. Session handoff
 
 - **Session 1 (2026-11-12) completed:** Helix governance docs (AGENTS.md, decisions.md, roadmap M0/M1 task list + key Accept lines, progress dashboard); Helix source spot-checks (`policy/policy.ts`, `policy/depgate.ts`, `context/instructions.ts`, `context/compaction.ts`, `agent/runtime.ts` hooks l.1226-1253, `util/redact.ts`, `sandbox/sandbox.ts:1056`, `index/treesitter.ts`); OpenHands at the SHAs in §2: repo topology/licences, SDK modules (hooks, skills, condenser, security, stuck detector, secret registry, critic list), tools (browser_use, file_editor, apply_patch, terminal sizes), docker workspace flags, sandbox-server sandbox services list, Agent Canvas Electron flags/features.
-- **Not yet investigated:** OpenHands benchmarks repo (R1.39); `critic/` internals (possible R1.17 input, LLM-based → likely reject); `delegate`/`subagent` vs R1.47; `file_editor` provenance; MCP OAuth (`mcp/oauth.py`) vs later M4; rrweb licence/version; openai-cookbook SHA/licence.
-- **Next recommended task:** user answers Q1–Q4 (§1). If O1 approved, execute P-O1 when the roadmap reaches R1.30 (current next task per dashboard: R1.8b; R1.11 has WIP on PR #23).
-- **Needs user approval:** O1, O2 as design inputs; O3 regression test placement; O4 tool choice; any new dependency (rrweb, MCP TS SDK).
+- **Session 2 (2026-11-12) completed:** benchmarks audit (OpenHands/benchmarks @ `60b3548cea8b41276ac0d44ea36a01b82936bbe4`): repo structure, benchmark list, infer/score separation and hidden-test method, licence metadata check, reuse/effort table (`audit-benchmarks-r1-39.md`). Recorded decisions Q1–Q7 in all three research docs.
+- **Not yet investigated:** O3 isolated reproduction (Q2); `critic/` internals (LLM-based, likely reject for R1.17); `delegate`/`subagent` vs R1.47; `file_editor` provenance; MCP OAuth (`mcp/oauth.py`) vs later M4; rrweb licence/version; Harbor internals; individual upstream repo licences and the Multi-SWE-bench dataset card text; actual per-language task counts (no datasets downloaded).
+- **Next steps (all user-gated, in roadmap order):** (a) when asked, run the O3 isolated reproduction and report evidence; (b) execute P-O2 at R1.17 and P-O1 at R1.30/R1.36 on the Helix branch when the roadmap reaches them (current next task per dashboard: R1.8b; R1.11 has WIP on PR #23); (c) when R1.39 is reached, design the HTS task schema, per-task licence manifest and `validate.mjs` natively under the Q5–Q7 policy.
+- **Still needs user approval:** any O3 fix; any new dependency (rrweb, MCP TS SDK); any dataset download; any HTS harness implementation; each source dataset's licence review.
