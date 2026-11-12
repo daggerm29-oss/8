@@ -15,7 +15,7 @@
 
 > These are **checklist completion** numbers (ticked items with recorded evidence ÷ all items). They are not a measure of product quality or release readiness; human launch gates in `docs/roadmap.md` are not counted.
 
-**Overall checklist completion: 39%** (76/196 roadmap items)  
+**Overall checklist completion: 39%** (76/197 roadmap items)  
 **Current milestone:** M1 MVP, grounded single agent  
 **Next task:** R1.7 Whole-toolchain containment completion (F-SBX-2, FR-19, FR-27, F-MCP-1, SEC-1) [§16.3]
 
@@ -24,7 +24,7 @@
 | Milestone | Progress | Items | Status |
 | --- | --- | --- | --- |
 | M0 Foundations | ██████████ 96% | 22/23 | Unfinished (execution postponed) |
-| M1 MVP, grounded single agent | ████░░░░░░ 41% | 32/79 | In progress |
+| M1 MVP, grounded single agent | ████░░░░░░ 40% | 32/80 | In progress |
 | M2 Precision and efficiency | █████░░░░░ 45% | 22/49 | Partly built early |
 | M3 Parallel and background | ░░░░░░░░░░ 0% | 0/20 | Not started |
 | M4 Team and ecosystem | ░░░░░░░░░░ 0% | 0/16 | Not started |

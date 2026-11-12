@@ -42,6 +42,7 @@ import { DepGate } from './policy/depgate.ts';
 import { listProblems, recordTerminalProblems } from './workspace/problems.ts';
 import { desktopAsset } from './workspace/desktop-assets.ts';
 import { getWorkbenchSettings, setWorkbenchSettings, searchWorkbench } from './workspace/workbench.ts';
+import { startReaper } from './sandbox/reaper.ts';
 
 export const ENGINE_VERSION = '0.1.0';
 
@@ -118,6 +119,7 @@ export class Engine {
   /** Resolves once configured MCP servers are connected (or failed) and their tools are registered. */
   readonly mcpReady: Promise<McpServerStatus[]>;
   private heartbeat?: NodeJS.Timeout;
+  private stopReaper?: () => void;
   private wss?: WebSocketServer;
   private http?: Server;
   private closed = false;
@@ -174,9 +176,13 @@ export class Engine {
     }
   }
 
-  /** Sandbox reaper (§16.4): sandboxes owned by engines that are gone are marked destroyed. */
+  /**
+   * Sandbox reaper (§16.4, SEC-12): on start and every 5 minutes, sandboxes whose owning Engine is gone are destroyed
+   * (cgroup tree killed, labelled containers and directories removed); their rows are marked destroyed.
+   */
   private reapSandboxes(): void {
     this.db.run(`UPDATE sandboxes SET state = 'destroyed', destroyed_at = ? WHERE state != 'destroyed' AND owner_engine != ?`, new Date().toISOString(), this.id);
+    this.stopReaper = startReaper({ onReap: (r) => this.logger.info('reaped orphaned sandboxes', { sandboxes: r.reaped, containers: r.containers, cgroups: r.cgroups }) });
   }
 
   /** Register every JSON-RPC method (§22.1 M0 subset) on a peer. */
@@ -633,6 +639,7 @@ export class Engine {
     if (this.closed) return;
     this.closed = true;
     clearInterval(this.heartbeat);
+    this.stopReaper?.();
     await this.runtime.shutdown();
     await this.mcpReady.catch(() => []);
     await this.mcp.close();

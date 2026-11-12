@@ -1,6 +1,9 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
-import { chmodSync, constants, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, constants, copyFileSync, createReadStream, createWriteStream, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statfsSync, statSync, writeFileSync } from 'node:fs';
+import { cgroupUnavailableReason, DEFAULT_LIMITS, SandboxCgroup, type SandboxLimits } from './cgroup.ts';
+import { engineIdentity, removeSandboxRecord, writeSandboxRecord } from './reaper.ts';
+import { helixHome } from '../util/log.ts';
 import { FORWARDER_SOURCE, SANDBOX_PROXY_PORT, type EgressProxy } from './egress.ts';
 
 const SYSTEM_CA_BUNDLES = ['/etc/ssl/certs/ca-certificates.crt', '/etc/pki/tls/certs/ca-bundle.crt', '/etc/ssl/cert.pem'];
@@ -150,6 +153,8 @@ export interface SandboxInfo {
   egressProxy?: boolean;
   /** `full`, `light` (trusted-repo `local-os`, permanently indicated in the workbench), or `partial` (WSL). */
   isolation: SandboxIsolation;
+  /** Resource limits (R1.8): which are kernel-enforced, the sandbox cgroup, and why cgroups are unavailable if they are. */
+  limits?: { memoryBytes: number; pids: number; cpus: number; diskBytes: number; enforced: { memory: boolean; pids: boolean; cpu: boolean; disk: boolean }; cgroup: string | null; reason: string | null };
   /** `local-container` only: engine, OCI runtime, gVisor use, /proc mode, seccomp. */
   container?: { cli: string; runtime: string; gvisor: boolean; proc: 'proc' | 'masked'; seccomp: boolean; image: string | null };
   /** `local-os` only: the light-mode tool and whether a private /proc is mounted. */
@@ -313,8 +318,17 @@ export class LocalSandbox {
   private readonly egress?: EgressProxy;
 
   private readonly trace?: SpanRunner;
+  /** Per-sandbox cgroup (R1.8): limits, per-command leaves, freeze (suspend) and whole-tree kill. Null without delegation. */
+  private readonly cg: SandboxCgroup | null = null;
+  private readonly limits: Required<SandboxLimits>;
+  private readonly diskWatch: { baseline: number } | null = null;
+  private diskTimer: NodeJS.Timeout | null = null;
+  private diskHits = 0;
+  private suspended = false;
+  private readonly idleSuspendMs: number;
+  private idleTimer: NodeJS.Timeout | null = null;
 
-  constructor(id: string, root: string, opts: { lightMode?: boolean; roPaths?: string[]; egress?: EgressProxy; wsl?: WslConfig | null; backend?: SandboxBackend; trace?: SpanRunner } = {}) {
+  constructor(id: string, root: string, opts: { lightMode?: boolean; roPaths?: string[]; egress?: EgressProxy; wsl?: WslConfig | null; backend?: SandboxBackend; trace?: SpanRunner; limits?: SandboxLimits; idleSuspendMs?: number } = {}) {
     this.id = id;
     this.trace = opts.trace;
     this.root = realpathSync(resolve(root));
@@ -369,6 +383,140 @@ export class LocalSandbox {
     } else {
       this.egressReady = Promise.resolve(null);
     }
+    this.limits = { ...DEFAULT_LIMITS, ...opts.limits };
+    this.idleSuspendMs = opts.idleSuspendMs ?? 0;
+    if (!this.wsl) this.cg = SandboxCgroup.create(`${engineIdentity().replace(':', '_')}-${id}`, this.limits);
+    if (opts.limits?.diskBytes && !this.wsl) this.diskWatch = { baseline: duBytes([this.root, this.scratch]) };
+    writeSandboxRecord({ id, owner: engineIdentity(), createdAt: new Date().toISOString(), cgroup: this.cg?.path ?? null, containerCli: this.container?.cli ?? null, dirs: [this.scratch, this.newRoot, this.ctlDir].filter((d): d is string => !!d) });
+  }
+
+  /** Lifecycle state (§16.4). */
+  get state(): 'ready' | 'busy' | 'suspended' | 'destroyed' {
+    return this.destroyed ? 'destroyed' : this.suspended ? 'suspended' : this.processes.size ? 'busy' : 'ready';
+  }
+
+  /** Suspend: freeze every process of the sandbox in place (cgroup v2 freezer). Files and process state are kept. */
+  async suspend(): Promise<void> {
+    if (this.destroyed) throw new Error(`sandbox ${this.id} is destroyed`);
+    if (!this.cg) throw new SandboxUnavailableError(`suspend needs a delegated cgroup v2 subtree: ${cgroupUnavailableReason() ?? 'unavailable'}`);
+    await this.cg.freeze();
+    this.suspended = true;
+  }
+
+  /** Resume a suspended sandbox (also done implicitly by every exec/stdio/pty call). */
+  resume(): void {
+    if (this.suspended) { this.cg!.thaw(); this.suspended = false; }
+    if (this.idleSuspendMs > 0 && !this.destroyed) {
+      if (this.idleTimer) clearTimeout(this.idleTimer);
+      this.idleTimer = setTimeout(() => { if (!this.destroyed && !this.suspended && this.cg) void this.suspend().catch(() => {}); }, this.idleSuspendMs);
+      this.idleTimer.unref();
+    }
+  }
+
+  /** Limit hits: OOM kills and refused forks (kernel counters), and disk-quota kills. */
+  limitEvents(): { oomKills: number; pidsMax: number; disk: number } {
+    return { ...(this.cg?.events() ?? { oomKills: 0, pidsMax: 0 }), disk: this.diskHits };
+  }
+
+  /**
+   * Snapshot the workspace and sandbox /tmp into a host tar file, produced by `tar` inside the sandbox (the Engine never
+   * reads workspace content on the host, §16.3). Secrets cannot be in it: the sandbox only ever holds sentinels (§16.4).
+   */
+  async snapshot(dest?: string): Promise<{ path: string; bytes: number }> {
+    if (this.wsl) throw new SandboxUnavailableError('snapshots are not supported under WSL (partial isolation)');
+    const dir = join(helixHome(), 'snapshots');
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const path = dest ?? join(dir, `${this.id.replace(/[^a-zA-Z0-9_.-]/g, '_')}-${Date.now()}.tar`);
+    const tmp = this.remapsTmp ? 'tmp' : this.scratch.slice(1);
+    const { process: child } = await this.openStdio(`exec tar --exclude=${shq(`${tmp}/.helix`)} -C / -cf - ${shq(this.root.slice(1))} ${shq(tmp)}`, { egress: false });
+    child.stdin.end();
+    child.stderr.resume();
+    const out = createWriteStream(path, { mode: 0o600 });
+    child.stdout.pipe(out);
+    const code = await new Promise<number | null>((res) => child.once('close', res));
+    await new Promise<void>((res) => (out.writableFinished ? res() : out.once('finish', () => res())));
+    if (code !== 0 && code !== 1) throw new Error(`snapshot of ${this.id} failed (tar exit ${code})`);
+    return { path, bytes: statSync(path).size };
+  }
+
+  /** Restore files from a snapshot (extracted inside the sandbox). */
+  async restore(path: string): Promise<void> {
+    const { process: child } = await this.openStdio('exec tar -C / -xf -', { egress: false });
+    child.stdout.resume();
+    child.stderr.resume();
+    child.stdin.on('error', () => { /* tar exited early */ });
+    createReadStream(path).pipe(child.stdin);
+    const code = await new Promise<number | null>((res) => child.once('close', res));
+    if (code !== 0) throw new Error(`restore of ${this.id} failed (tar exit ${code})`);
+  }
+
+  /** Join a fresh per-command cgroup leaf before exec (no-op without a cgroup). */
+  private launch(cmd: string, args: string[]): { cmd: string; args: string[]; leaf: string | null } {
+    if (!this.cg) return { cmd, args, leaf: null };
+    const leaf = this.cg.leaf();
+    const [c, a] = this.cg.wrap(leaf, cmd, args);
+    return { cmd: c, args: a, leaf };
+  }
+
+  private releaseLeaf(leaf: string | null): void {
+    if (leaf) this.cg?.removeLeaf(leaf);
+    if (!this.processes.size && this.diskTimer) { clearInterval(this.diskTimer); this.diskTimer = null; }
+  }
+
+  /**
+   * Disk quota over the sandbox's writable area (workspace + /tmp) while commands run. A `statfs` free-space delta is
+   * sampled every 10 ms (cheap, sees page-cache writes at once); when it exceeds the quota the sandbox is frozen and
+   * `du` confirms the usage is the sandbox's own (not other host writers) before killing it. RLIMIT_FSIZE caps single files.
+   */
+  private watchDisk(): void {
+    if (!this.diskWatch || this.diskTimer) return;
+    const dirs = [this.root, this.scratch];
+    const free = () => {
+      const seen = new Set<number>();
+      let n = 0;
+      for (const d of dirs) {
+        try { const dev = statSync(d).dev; if (seen.has(dev)) continue; seen.add(dev); const f = statfsSync(d); n += f.bavail * f.bsize; } catch { /* gone */ }
+      }
+      return n;
+    };
+    const quota = this.limits.diskBytes;
+    const step = (used: number) => used + Math.max((quota - used) / 2, 1024 * 1024);
+    let anchor = { free: free(), used: 0 };
+    let threshold = step(0);
+    let checking = false;
+    let lastDu = Date.now();
+    const timer = setInterval(() => {
+      if (checking) return;
+      if (this.destroyed || !this.processes.size) { clearInterval(timer); if (this.diskTimer === timer) this.diskTimer = null; return; }
+      // statfs is filesystem-wide: deferred frees elsewhere can hide writes, so du also runs back-to-back (≥ 50 ms apart).
+      const suspect = anchor.used + (anchor.free - free()) > threshold;
+      if (!suspect && Date.now() - lastDu < 50) return;
+      checking = true;
+      void (async () => {
+        const frozeHere = suspect && !!this.cg && !this.suspended;
+        if (frozeHere) await this.cg!.freeze().catch(() => {});
+        const used = (await duBytesAsync(dirs)) - this.diskWatch!.baseline;
+        lastDu = Date.now();
+        if (used > quota) {
+          this.diskHits++;
+          this.cg?.kill();
+          for (const kill of this.processes.keys()) kill();
+        } else {
+          // Re-anchor on the measured usage (deferred frees and other host writers skew statfs) and halve the headroom.
+          anchor = { free: free(), used };
+          threshold = step(used);
+        }
+        if (frozeHere) this.cg!.thaw();
+        checking = false;
+      })();
+    }, 10);
+    timer.unref();
+    this.diskTimer = timer;
+  }
+
+  /** Shell prefix: per-file size limit (bash `ulimit -f` counts 1 KiB blocks). */
+  private limitPrefix(): string {
+    return `ulimit -f ${Math.max(1, Math.floor(this.limits.diskBytes / 1024))} 2>/dev/null; `;
   }
 
   info(): SandboxInfo {
@@ -377,6 +525,7 @@ export class LocalSandbox {
       id: this.id, provider: this.provider, root: this.root, network: !!this.wsl, fsIsolation: this.fsIsolation, egressProxy: this.egressOn, isolation: this.isolation,
       ...(c ? { container: { cli: c.cli, runtime: c.runtimeName, gvisor: c.gvisor, proc: c.proc, seccomp: c.seccomp, image: c.image } } : {}),
       ...(this.localOs ? { localOs: { tool: this.localOs.kind, proc: this.localOs.proc } } : {}),
+      limits: { ...this.limits, enforced: { memory: !!this.cg?.enforced.memory, pids: !!this.cg?.enforced.pids, cpu: !!this.cg?.enforced.cpu, disk: !!this.diskWatch }, cgroup: this.cg?.path ?? null, reason: this.cg ? null : cgroupUnavailableReason() },
     };
   }
 
@@ -386,7 +535,7 @@ export class LocalSandbox {
     const name = `helix-${this.id.replace(/[^a-zA-Z0-9_.-]/g, '_')}-${++this.seq}-${process.pid}`;
     const envFile = join(this.ctlDir!, `${name}.env`);
     writeFileSync(envFile, Object.entries(env).filter(([, v]) => !/[\r\n]/.test(v)).map(([k, v]) => `${k}=${v}`).join('\n') + '\n', { mode: 0o600 });
-    const args = runArgs({ rt: c, name, labels: { 'helix.sandbox': this.id, 'helix.owner': String(process.pid) }, rootfs: this.newRoot, roPaths: this.roPaths, workspace: this.root, scratch: this.scratch, cwd, envFile, tty, argv });
+    const args = runArgs({ rt: c, name, labels: { 'helix.sandbox': this.id, 'helix.owner': engineIdentity() }, rootfs: this.newRoot, roPaths: this.roPaths, workspace: this.root, scratch: this.scratch, cwd, envFile, tty, argv, limits: { inheritCgroup: !!this.cg, memoryBytes: this.limits.memoryBytes, pids: this.limits.pids, cpus: this.limits.cpus } });
     return { name, args };
   }
 
@@ -546,6 +695,7 @@ export class LocalSandbox {
   /** Binary-safe protocol channel; stdin stays open and teardown kills the entire contained process tree. */
   async openStdio(command: string, opts: Pick<ExecOptions, 'cwd' | 'env' | 'signal' | 'exposePorts' | 'inbound' | 'proc' | 'egress'> = {}): Promise<{ process: ChildProcessWithoutNullStreams; kill(): void }> {
     if (this.destroyed) throw new Error(`sandbox ${this.id} is destroyed`);
+    this.resume();
     const cwd = this.resolvePath(opts.cwd ?? '.');
     if (opts.proc && !this.procCapable()) throw new SandboxUnavailableError(`${this.provider} cannot mount a private /proc on this host (locked /proc overmounts or masked container /proc); refusing rather than exposing the host /proc`);
     const egress = opts.egress !== false && !!(await this.egressReady);
@@ -554,7 +704,7 @@ export class LocalSandbox {
     const ports = opts.exposePorts?.filter((p) => Number.isInteger(p) && p > 0 && p < 65536);
     const inbound = await this.openInbound(opts.inbound ?? []);
     const closeInbound = () => { for (const i of inbound) i.server.close(); };
-    command = this.prelude(egress, ports, inbound) + command;
+    command = this.limitPrefix() + this.prelude(egress, ports, inbound) + command;
     const env = this.env(opts.env);
     const ctr = this.container ? this.containerSpawn(cwd, ['bash', '-c', command], env, false) : null;
     const light = this.localOs ? this.localOsArgv(cwd, command, true) : null;
@@ -563,10 +713,12 @@ export class LocalSandbox {
       : light ? [light[0], light.slice(1)]
       : ['unshare', ['--user', '--map-root-user', '--net', '--mount', '--pid', '--fork', '--kill-child=KILL', '--', 'bash', '-c', CONTAIN_SCRIPT, 'helix', this.newRoot!, this.root, this.scratch, cwd, command, opts.proc ? '1' : '0', ...this.roPaths]];
     if (ctr) this.live.add(ctr.name);
-    const child = spawn(cmd, args, { cwd, env: ctr ? clientEnv() : env, detached: !IS_WINDOWS, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    const run = this.launch(cmd, args as string[]);
+    const child = spawn(run.cmd, run.args, { cwd, env: ctr ? clientEnv() : env, detached: !IS_WINDOWS, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
     const kill = () => {
       killTree(child.pid);
       if (ctr) this.stopContainer(ctr.name);
+      if (run.leaf) this.cg!.kill(run.leaf);
     };
     let closed!: () => void;
     this.processes.set(kill, new Promise<void>((resolve) => { closed = resolve; }));
@@ -576,11 +728,13 @@ export class LocalSandbox {
       this.processes.delete(kill);
       opts.signal?.removeEventListener('abort', kill);
       if (ctr) this.finishContainer(ctr.name);
+      this.releaseLeaf(run.leaf);
     };
     child.once('close', cleanup);
     child.once('error', cleanup);
     opts.signal?.addEventListener('abort', kill, { once: true });
     if (opts.signal?.aborted) kill();
+    this.watchDisk();
     await new Promise<void>((resolve, reject) => {
       child.once('spawn', resolve);
       child.once('error', reject);
@@ -600,11 +754,12 @@ export class LocalSandbox {
 
   private async execUntraced(command: string, opts: ExecOptions): Promise<ExecResult> {
     if (this.destroyed) throw new Error(`sandbox ${this.id} is destroyed`);
+    this.resume();
     const cwd = this.resolvePath(opts.cwd ?? '.', 'read');
     const egress = !!(await this.egressReady);
     opts.signal?.throwIfAborted();
     if (this.destroyed) throw new Error(`sandbox ${this.id} is destroyed`);
-    command = this.prelude(egress, opts.exposePorts?.filter((p) => Number.isInteger(p) && p > 0 && p < 65536)) + command;
+    command = this.limitPrefix() + this.prelude(egress, opts.exposePorts?.filter((p) => Number.isInteger(p) && p > 0 && p < 65536)) + command;
     const timeoutMs = opts.timeoutMs ?? 120_000;
     const max = opts.maxOutputBytes ?? 256 * 1024;
     const env = this.env(opts.env);
@@ -620,7 +775,8 @@ export class LocalSandbox {
     const started = performance.now();
     return new Promise((resolveExec) => {
       if (ctr) this.live.add(ctr.name);
-      const child = spawn(cmd, args, { cwd, env: ctr ? clientEnv() : env, detached: !IS_WINDOWS, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      const run = this.launch(cmd, args as string[]);
+      const child = spawn(run.cmd, run.args, { cwd, env: ctr ? clientEnv() : env, detached: !IS_WINDOWS, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
       let stdout = '';
       let stderr = '';
       let bytes = 0;
@@ -644,9 +800,11 @@ export class LocalSandbox {
       const kill = () => {
         if (ctr) this.stopContainer(ctr.name);
         else killTree(child.pid);
+        if (run.leaf) this.cg!.kill(run.leaf);
       };
       let closed!: () => void;
       this.processes.set(kill, new Promise<void>((resolve) => { closed = resolve; }));
+      this.watchDisk();
       const timer = setTimeout(() => {
         timedOut = true;
         kill();
@@ -659,6 +817,7 @@ export class LocalSandbox {
         this.processes.delete(kill);
         opts.signal?.removeEventListener('abort', onAbort);
         if (ctr) this.finishContainer(ctr.name);
+        this.releaseLeaf(run.leaf);
         if (ctr && timedOut) { code = null; signal = signal ?? 'SIGKILL'; }
         resolveExec({
           exitCode: code, signal, timedOut, truncated, durationMs: Math.round(performance.now() - started),
@@ -671,6 +830,7 @@ export class LocalSandbox {
         this.processes.delete(kill);
         opts.signal?.removeEventListener('abort', onAbort);
         if (ctr) this.finishContainer(ctr.name);
+        this.releaseLeaf(run.leaf);
         resolveExec({ exitCode: null, signal: null, timedOut, truncated, durationMs: 0, stdout: '', stderr: `spawn failed: ${err.message}` });
       });
     });
@@ -683,10 +843,11 @@ export class LocalSandbox {
    */
   pty(opts: { cols?: number; rows?: number; cwd?: string; onData: (data: string) => void; onExit: (exitCode: number | null) => void }): { pid: number | undefined; write(data: string): void; kill(): void } {
     if (this.destroyed) throw new Error(`sandbox ${this.id} is destroyed`);
+    this.resume();
     const cwd = this.resolvePath(opts.cwd ?? '.', 'read');
     const cols = Math.min(Math.max(Math.floor(Number(opts.cols) || 100), 20), 500);
     const rows = Math.min(Math.max(Math.floor(Number(opts.rows) || 30), 5), 200);
-    const shell = `${this.prelude(this.egressOn)}stty rows ${rows} cols ${cols} 2>/dev/null; export PS1='helix:\\W\\$ '; exec bash --noprofile --norc -i`;
+    const shell = `${this.limitPrefix()}${this.prelude(this.egressOn)}stty rows ${rows} cols ${cols} 2>/dev/null; export PS1='helix:\\W\\$ '; exec bash --noprofile --norc -i`;
     // No --pid here: as PID-namespace init the shell never owns the PTY's foreground group, so Ctrl-C is lost.
     // /proc stays unmounted, so host processes remain invisible.
     const ptyEnv = this.env();
@@ -702,12 +863,13 @@ export class LocalSandbox {
     const quoted = this.wsl ? '' : argv.map((a) => `'${a.replace(/'/g, `'\\''`)}'`).join(' ');
     const env = ctr ? { ...clientEnv(), TERM: 'xterm-256color' } : ptyEnv;
     if (ctr) this.live.add(ctr.name);
+    let ptyLeaf: string | null = null;
     // Under WSL the PTY is allocated by `script` inside the distro; the host only relays pipes. BSD `script` (macOS) takes argv.
     const child = this.wsl
       ? spawn(this.wsl.exe, wslExecArgs(this.wsl, cwd, `exec script -qfec '${shell.replace(/'/g, `'\\''`)}' /dev/null`), { cwd, env, detached: !IS_WINDOWS, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] })
       : process.platform === 'darwin'
       ? spawn('script', ['-q', '/dev/null', ...argv], { cwd, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] })
-      : spawn('script', ['-qfec', quoted, '/dev/null'], { cwd, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
+      : (() => { const run = this.launch('script', ['-qfec', quoted, '/dev/null']); ptyLeaf = run.leaf; return spawn(run.cmd, run.args, { cwd, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] }); })();
     const decoder = new StringDecoder('utf8');
     const emit = (chunk: Buffer) => { const s = decoder.write(chunk); if (s) opts.onData(globalRedactor.redact(s)); };
     child.stdout.on('data', emit);
@@ -716,11 +878,12 @@ export class LocalSandbox {
     const kill = () => {
       if (ctr) this.stopContainer(ctr.name);
       else killTree(child.pid);
+      if (ptyLeaf) this.cg!.kill(ptyLeaf);
     };
     let closed!: () => void;
     this.processes.set(kill, new Promise<void>((resolve) => { closed = resolve; }));
     let exited = false;
-    const done = (code: number | null) => { if (!exited) { exited = true; closed(); this.processes.delete(kill); if (ctr) this.finishContainer(ctr.name); opts.onExit(code); } };
+    const done = (code: number | null) => { if (!exited) { exited = true; closed(); this.processes.delete(kill); if (ctr) this.finishContainer(ctr.name); this.releaseLeaf(ptyLeaf); opts.onExit(code); } };
     child.on('close', (code) => done(code));
     child.on('error', (err) => { opts.onData(`spawn failed: ${err.message}\r\n`); done(null); });
     return {
@@ -739,8 +902,12 @@ export class LocalSandbox {
   destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+    if (this.diskTimer) clearInterval(this.diskTimer);
+    if (this.suspended) { this.cg?.thaw(); this.suspended = false; }
     for (const kill of this.processes.keys()) kill();
     for (const name of this.live) this.stopContainer(name);
+    this.cg?.destroy();
     if (this.ctlDir) rmSync(this.ctlDir, { recursive: true, force: true });
     void this.egressReady.then((close) => close?.());
     for (const dir of [this.scratch, this.newRoot]) {
@@ -748,5 +915,24 @@ export class LocalSandbox {
       if (this.container) removeContainerDirectory(this.container.cli, dir);
       else rmSync(dir, { recursive: true, force: true });
     }
+    removeSandboxRecord(this.id);
   }
+}
+
+const shq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+
+/** Bytes used under `paths` (`du -sxb`, no symlink following). */
+function duBytes(paths: string[]): number {
+  const r = spawnSync('du', ['-sxb', ...paths], { encoding: 'utf8', timeout: 60_000 });
+  return (r.stdout ?? '').split('\n').reduce((n, l) => n + (Number(l.split('\t')[0]) || 0), 0);
+}
+
+function duBytesAsync(paths: string[]): Promise<number> {
+  return new Promise((res) => {
+    let out = '';
+    const c = spawn('du', ['-sxb', ...paths], { stdio: ['ignore', 'pipe', 'ignore'] });
+    c.stdout.on('data', (d: Buffer) => { out += d.toString('utf8'); });
+    c.once('close', () => res(out.split('\n').reduce((n, l) => n + (Number(l.split('\t')[0]) || 0), 0)));
+    c.once('error', () => res(0));
+  });
 }

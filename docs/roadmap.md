@@ -196,6 +196,9 @@ Sandbox
   - Blocked: needs a runner that can mount a fresh procfs in a user namespace (CI ubuntu-24.04 with `HELIX_REDTEAM_REQUIRE_BROWSER=1`); the v0 VM's /proc has locked overmounts (/proc/kcore, /proc/keys) so crun/runc/unshare all get EPERM and Chrome exits without /proc. A-local parts pass (`node --test test/redteam-containment.test.ts` → 8/8 here: shell, file tools, LSP, dev server, test runner, MCP stdio contained in a separate mount ns, hook; browser fails closed with no host Chrome; strict mode → 7/8, browser refused)
 - [ ] **R1.8 Sandbox lifecycle and resources** (F-SBX-5, SEC-12, PERF-9) [§16.4] — cgroup CPU/memory/PID/disk limits (ISSUE-005), hydrate/snapshot/suspend/resume, reaper for orphaned sandboxes on Engine start and on a timer; no secrets in snapshots.
   - Accept [A-local]: `node --test test/sandbox-lifecycle.test.ts` → memory hog killed at its cgroup limit, fork bomb stopped by PID limit, disk filler stopped by quota; snapshot → suspend → resume restores files and processes; orphaned sandboxes from a killed Engine are reaped on next start; no sentinel secret value appears in snapshot bytes
+  - Blocked: needs a host whose delegated cgroup subtree has the memory controller (CI ubuntu-24.04 domain cgroups via `scripts/cgroup-delegate.sh`); the v0 VM root cgroup is threaded (cpu/pids only). A-local parts pass (`sudo sh scripts/cgroup-delegate.sh $(id -u) $$ && node --test test/sandbox-lifecycle.test.ts` → 5/6: fork bomb stopped by pids.max, disk filler stopped by quota, snapshot→suspend→resume keeps the same process and restores files, no secret value in snapshot bytes, killed-Engine orphans reaped on next Engine start; memory hog fails with `memory limit is not enforced on this host`)
+- [ ] **R1.8a Hard per-sandbox disk quota** (F-SBX-5) [§16.4] — the sandbox's writable layer is an overlay whose upper dir lives on a size-limited filesystem, so writes past the quota fail with ENOSPC at the byte (closes the sampling gap of IMPL-ADR-034).
+  - Accept [A-local]: `node --test test/sandbox-lifecycle.test.ts` with `HELIX_DISK_QUOTA=hard` → a 500 MB/s single- and multi-file filler gets ENOSPC with ≤ 1 MiB written beyond the quota; workspace edits below the quota still reach the host repo
 - [ ] **R1.9 Per-tool egress and network approvals** (F-SBX-3, FR-18) [§16.5, §10.5] — allowlists per workspace and per tool; per-domain network approval class with one-click allow.
   - Accept [A-local]: `node --test test/egress.test.ts test/net-approval.test.ts` → a host allowed for tool A is denied for tool B; an unknown domain raises a `network` approval; approve-once allows that call only; approve-always persists per workspace
 
@@ -646,7 +649,7 @@ External exit gates (plan §12 M4; not build tasks, never simulated):
 | F-SBX-2 | M1 | Partial | RED | R1.7 | MCP and browser containment; red-team suite (§15.5) |
 | F-SBX-3 | M1 | Partial (audit FV, residual gap) | FV | R1.9 | Per-tool allowlist |
 | F-SBX-4 | M2 | Partial | RED | R2.9 | MCP path (MCP not sandboxed); memory-dump test; persisted bindings |
-| F-SBX-5 | M1 | Partial | RED | R1.8 | cgroups (ISSUE-005), snapshot/suspend/resume, reaper, PERF-9 |
+| F-SBX-5 | M1 | Partial | RED | R1.8; R1.8a | cgroup memory limit evidence on a domain-cgroup host (CI); hard overlay-size disk quota (R1.8a); PERF-9 warm-start benchmark; hydrate from deps cache. Done locally: pids/cpu limits, freeze suspend/resume, in-sandbox snapshot/restore, reaper (`test/sandbox-lifecycle.test.ts` 5/6) |
 | F-PRV-1 | M1 | Partial | RED | R1.21 | Framework fixture set, persisted recipe |
 | F-PRV-2 | M1 | Partial | RED | R1.22 | All extras; no roadmap follow-up |
 | F-PRV-3 | M1 | Partial | RED | R1.24 | Source maps, Web Vitals, perf marks, overlay detection, Problems panel |
@@ -714,7 +717,7 @@ External exit gates (plan §12 M4; not build tasks, never simulated):
 | SEC-9 | M0 (export M4) | Partial | RED | R0.5; M4 control plane | M0 part: Evidence: `node --test test/trace-audit.test.ts` → append-only (UPDATE/DELETE rejected), hash-chained over the §26.5 record fields, covers approvals, credential use (injection count), policy changes, pushes and the other categories, `audit.verify` and JSONL `audit.export` work; commit d13622d. Remaining (M4): SIEM export connectors |
 | SEC-10 | M4 | Not started | DEF(M4) | M4 OAuth broker | OAuth |
 | SEC-11 | M1 | Not started | MISS | R1.44 | Data-handling display, zero retention |
-| SEC-12 | M1 | Not started | NI | R1.8 | Reaper |
+| SEC-12 | M1 | Partial | RED | R1.8 | Reaper and secret-free snapshots pass locally (`test/sandbox-lifecycle.test.ts`: orphans of a SIGKILLed Engine reaped on next start; snapshot bytes hold only the sentinel); Done after the R1.8 Accept passes in full on CI |
 | SEC-13 | M1 | Partial | AMBER | R1.4; R0.8 | A-local verified (commit 2cb5096: context isolation, OS + renderer sandbox, no nodeIntegration, script-strict CSP with `frame-ancestors 'none'`, validated MessagePort IPC allowlist). Remaining: packaged hardening/crash step in `ci.yml` not yet run on CI (R0.8 Actions blocker). `style-src 'unsafe-inline'` retained for Monaco runtime styles (decisions.md, 2026-11-11 R1.4) |
 | SEC-14 | M1 | Not started | MISS | R1.43 | Signing, SBOM, reproducibility |
 | PERF-1 | M1 | Partial | RED | R1.1; R1.4; R1.38; G1.4 | Real packaged Electron launch verified locally (7a31567), not startup performance evidence. R1.4 part: crash hardening verified locally (2cb5096); local packaged cold start → connected 2496 ms (build VM, informational). Reference-hardware cold-start p95 benchmark remains R1.38/G1.4; CI launch run remains R0.8 |
@@ -731,5 +734,5 @@ External exit gates (plan §12 M4; not build tasks, never simulated):
 | PERF-12 | M1 | Not started | NI | R1.38; G1.4 | No benchmark; blocker: No fixture |
 | PERF-13 | M1 | Partial | NI | R1.3; R1.38; G1.4 | Local packaged Electron engine→panel event-stream latency p95 = 34 ms ≤ 50 ms across 128 samples (`cd packages/desktop && npx playwright test e2e/monitor.spec.ts` → 1/1; commit 6cfeda8; artifact `evals/results/r1-3-packaged-monitor-2026-11-11.json`); reference-hardware benchmark and ±10% CI regression gate remain R1.38/G1.4 |
 
-Totals: **154 IDs**: Done 18, Partial 85, Not started 51. The rejected items X19–X21 are not numbered requirements; task R1.46 keeps their enforcement tested.
+Totals: **154 IDs**: Done 18, Partial 86, Not started 50. The rejected items X19–X21 are not numbered requirements; task R1.46 keeps their enforcement tested.
 
