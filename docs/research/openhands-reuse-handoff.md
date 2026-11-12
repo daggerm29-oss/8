@@ -96,7 +96,13 @@
 | O16 Terminal | Already implemented adequately in Helix | — |
 | O17 LLM/ledger | Rejected | litellm; Helix ledger stronger |
 
-Approved for implementation: **none**.
+### Approvals (user, 2026-11-12)
+
+- **Q1 APPROVED:** O1 and O2 are approved as design inputs for R1.30, R1.36 and R1.17. Adapt the algorithms and test cases into Helix TypeScript; no second agent runtime, no unnecessary dependencies; preserve all existing security policies; uncertain shell parsing fails toward `ask`; the loop detector must support minimal-diff retries (a retry that differs only slightly from the prior attempt must not be flagged as a loop, and retries should be steered toward minimal diffs). Execution still happens on the Helix branch when the roadmap reaches those tasks, never from this research branch.
+- **Q4 APPROVED and completed:** see `docs/research/openhands/audit-benchmarks-r1-39.md` (OpenHands/benchmarks @ `60b3548cea8b41276ac0d44ea36a01b82936bbe4`). Verdict: methodology reference only; do not adopt its Python runtime. Open questions Q5-Q7 are in that file.
+- Q2, Q3 still unanswered. O3, O4 remain "needs investigation".
+
+Approved for implementation as design input: **O1, O2** (not started). Everything else: none.
 
 ## 6. Session handoff
 
