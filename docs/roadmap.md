@@ -111,7 +111,7 @@
   - Requirement status: Partial (F-SBX-5): only wall-time and output limits; no cgroups, snapshots, reaper → R1.8
 - [x] Symbol index, heuristic (F-IDX-1)
   - Evidence: legacy, built in sessions 1–16 before evidence rule (see docs/history/progress-sessions-1-16.md)
-  - Requirement status: Partial (F-IDX-1): 6 of 20 languages, no watcher, SHA-256 not BLAKE3, no Merkle → R1.10
+  - Requirement status: Partial (F-IDX-1): 20 languages, watcher, BLAKE3, Merkle done in R1.10 (594dd0d); 1M LOC cold-index benchmark and branch-switch test remain → R1.38
 - [x] Hybrid retrieval (F-IDX-4)
   - Evidence: legacy, built in sessions 1–16 before evidence rule (see docs/history/progress-sessions-1-16.md)
   - Requirement status: Partial (F-IDX-4): no rerank, graph retriever, dependency expansion; O5 unmeasured → R1.12, G2.2
@@ -208,8 +208,9 @@ Sandbox
   - Evidence: node --test test/egress.test.ts test/net-approval.test.ts → 6/6 pass (tool A host 502-dialed, tool B 403 + net.denied{tool}; unknown domain → `network` approval; once → only that call; always → persisted workspace allow); commit 18616d4; artifact evals/results/r1.9-egress-net-approval.log
 
 Codebase intelligence
-- [ ] **R1.10 Indexer completion** (F-IDX-1, FR-8, FR-11, PERF-6, PERF-7) [§11.1–11.3, §12.1, §12.4] — file watcher, `.helixignore`, BLAKE3 content hashes and Merkle tree, docs indexing, tree-sitter for the top 20 languages of §12.4.
+- [x] **R1.10 Indexer completion** (F-IDX-1, FR-8, FR-11, PERF-6, PERF-7) [§11.1–11.3, §12.1, §12.4] — file watcher, `.helixignore`, BLAKE3 content hashes and Merkle tree, docs indexing, tree-sitter for the top 20 languages of §12.4.
   - Accept [A-local]: `node --test test/indexer.test.ts test/treesitter.test.ts` → saving a file re-indexes it through the watcher without a manual call; `.helixignore` paths are absent; content hash is BLAKE3 and the Merkle root changes only along the edited path; Markdown docs indexed; tree-sitter parses one snippet in each of the 20 §12.4 languages with correct symbol ranges
+  - Evidence: `cd packages/engine && node --test test/indexer.test.ts test/treesitter.test.ts` → 12/12 pass (watcher re-index on save, `.helixignore` absent, BLAKE3 vectors, Merkle root changes only along edited path, Markdown indexed, 20-language tree-sitter ranges); commit 594dd0d
 - [ ] **R1.11 Structural and graph queries** (FR-9) [§12.2, §11.5] — AST-pattern search tool and a general `graph.query`.
   - Accept [A-local]: `node --test test/structural-search.test.ts test/graph-query.test.ts` → AST pattern `call(fetch, _)` returns exactly the fixture call sites; `graph.query` answers "callers of X", "tests covering F", "files importing M" with expected sets
 - [ ] **R1.12 Retrieval completion** (F-IDX-4, FR-9, PERF-5) [§11.6] — reranker, graph-neighborhood retriever, dependency expansion, packing; retrieval eval harness (Recall@k, MRR, tokens per recall point) from plan §15.3.
@@ -591,10 +592,10 @@ External exit gates (plan §12 M4; not build tasks, never simulated):
 | FR-5 | M0 | Done | FV | M0 Provider adapter framework; R0.3 | Evidence: `node --test test/models.test.ts` → a new self-contained adapter package loads through the public gateway, returns a model response and reconciles its ledger without agent-core changes; commit ad1386e. `cd packages/providers/conformance && node --test` → 23 A-local passes, 7 live skips (new FR-1 live case adds one skip; separately passed live). |
 | FR-6 | M1 (desktop), M4 (KMS) | Partial | RED | R1.37; R2.15; R4.4 | KMS (cloud) not built; keychains tested only via Linux shims |
 | FR-7 | M4 | Not started | DEF(M4) | M4 OAuth broker | Entire OAuth flow |
-| FR-8 | M1 | Partial | RED | R1.10 | No docs indexing, no file watcher (ISSUE-007), heuristic call edges |
+| FR-8 | M1 | Partial | RED | R1.11 | M1 part (R1.10): Evidence: `node --test test/indexer.test.ts test/treesitter.test.ts` → 12/12; commit 594dd0d. Missing: precise call edges |
 | FR-9 | M1 | Partial | RED | R1.11; R1.12; R1.13 | No structural (AST pattern) query; no general `graph.query`; vector is not semantic |
 | FR-10 | M1 (import graph), M2 (call graph; plan §19, §11) | Partial (audit FV, residual gap) | FV | M2 Code graph v0; R2.2 | M1 part: impact queries on the import graph without an LLM (re-verify); M2: precision limited by heuristic graph outside TS |
-| FR-11 | M1 | Partial | RED | R1.10 | `.helixignore` not supported |
+| FR-11 | M1 | Done | FV | R1.10 | Evidence: `node --test test/indexer.test.ts` → `.helixignore`, secret files absent; commit 594dd0d |
 | FR-12 | M1 | Partial | RED | R1.16 | No plan edit/approve API before execution found |
 | FR-13 | M1 | Not started | MISS | R1.19 | Rename/delete tools, atomic changeset, per-hunk accept/reject |
 | FR-14 | M1 | Done | FV | M0 tools; M1 parsers | Evidence: `node --test test/sandbox.test.ts test/m1.test.ts` → 16/16 pass, sandbox command execution/live stdout/stderr streaming, structured diagnostics and retry feedback, rollback; commit 222a759 |
@@ -630,7 +631,7 @@ External exit gates (plan §12 M4; not build tasks, never simulated):
 | F-AUTH-1 | M1 (desktop), M4 (KMS) | Partial (unverified) | NV | R1.37; R1.40; R2.15; R4.4 | Fuzzed secret-scanner test absent; KMS; real-OS keychain runs |
 | F-AUTH-2 | M4 | Not started | DEF(M4) | M4 OAuth broker | All |
 | F-AUTH-3 | M4 | Not started | DEF(M4) | M4 SSO + SCIM | All |
-| F-IDX-1 | M1 | Partial | RED | R1.10 | 14 more languages, watcher, BLAKE3 (`IMPL-ADR-004`), Merkle, perf AC |
+| F-IDX-1 | M1 | Partial | RED | R1.38 | 20 languages, watcher, BLAKE3, Merkle, 300 ms incremental (Evidence: `node --test test/indexer.test.ts test/treesitter.test.ts` → 12/12; commit 594dd0d). Missing: 1M LOC cold-index benchmark (PERF-6), branch-switch survival test |
 | F-IDX-2 | M2 | Partial | RED | R2.1 | SCIP, non-TS LSPs, per-edge confidence, precision benchmark |
 | F-IDX-3 | M2 (import graph M1) | Partial | RED | R2.2 | Most node/edge types, `graph.query`, perf AC |
 | F-IDX-4 | M1 | Partial | RED | R1.12 | Rerank, graph-neighborhood retriever, dependency expansion; Recall@10 (O5) unmeasured |
@@ -731,7 +732,7 @@ External exit gates (plan §12 M4; not build tasks, never simulated):
 | PERF-4 | M1 | Not started | NI | R1.38; G1.4 | No benchmark; blocker: No 1M LOC fixture |
 | PERF-5 | M1 | Not started | NI | R1.12; R1.38; G1.4 | No benchmark; blocker: Brute-force cosine; no fixture |
 | PERF-6 | M1 | Not started | NI | R1.10; R1.38; G1.4 | No benchmark; blocker: No fixture |
-| PERF-7 | M1 | Not started | NI | R1.10; R1.38; G1.4 | No benchmark; blocker: No watcher (ISSUE-007) |
+| PERF-7 | M1 | Partial | RED | R1.38; G1.4 | Watcher exists; 300 ms incremental covered on a 200-file fixture only; no full benchmark |
 | PERF-8 | M1 (import-graph Impact Report; plan §12 M1 exit), M2 (re-met on full graph) | Not started | NI | R1.38; G1.4; R2.2 | No benchmark; blocker: No fixture |
 | PERF-9 | M1 | Not started | NI | R1.8; R1.38; G1.4 | No benchmark; blocker: No suspend/resume |
 | PERF-10 | M1 | Not started | NI | R1.25; R1.38; G1.4 | No benchmark; blocker: No timing assertion |
@@ -739,5 +740,5 @@ External exit gates (plan §12 M4; not build tasks, never simulated):
 | PERF-12 | M1 | Not started | NI | R1.38; G1.4 | No benchmark; blocker: No fixture |
 | PERF-13 | M1 | Partial | NI | R1.3; R1.38; G1.4 | Local packaged Electron engine→panel event-stream latency p95 = 34 ms ≤ 50 ms across 128 samples (`cd packages/desktop && npx playwright test e2e/monitor.spec.ts` → 1/1; commit 6cfeda8; artifact `evals/results/r1-3-packaged-monitor-2026-11-11.json`); reference-hardware benchmark and ±10% CI regression gate remain R1.38/G1.4 |
 
-Totals: **154 IDs**: Done 22, Partial 82, Not started 50. The rejected items X19–X21 are not numbered requirements; task R1.46 keeps their enforcement tested.
+Totals: **154 IDs**: Done 23, Partial 82, Not started 49. The rejected items X19–X21 are not numbered requirements; task R1.46 keeps their enforcement tested.
 

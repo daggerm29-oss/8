@@ -15,7 +15,7 @@
 
 > These are **checklist completion** numbers (ticked items with recorded evidence ÷ all items). They are not a measure of product quality or release readiness; human launch gates in `docs/roadmap.md` are not counted.
 
-**Overall checklist completion: 40%** (80/198 roadmap items)  
+**Overall checklist completion: 41%** (81/198 roadmap items)  
 **Current milestone:** M1 MVP, grounded single agent  
 **Next task:** R1.8b Hard disk quota on `local-container` (F-SBX-5) [§16.4]
 
@@ -24,7 +24,7 @@
 | Milestone | Progress | Items | Status |
 | --- | --- | --- | --- |
 | M0 Foundations | ██████████ 96% | 22/23 | Unfinished (execution postponed) |
-| M1 MVP, grounded single agent | ████░░░░░░ 44% | 36/81 | In progress |
+| M1 MVP, grounded single agent | █████░░░░░ 46% | 37/81 | In progress |
 | M2 Precision and efficiency | █████░░░░░ 45% | 22/49 | Partly built early |
 | M3 Parallel and background | ░░░░░░░░░░ 0% | 0/20 | Not started |
 | M4 Team and ecosystem | ░░░░░░░░░░ 0% | 0/16 | Not started |
@@ -37,7 +37,7 @@
 - Branch helix/session-2026-11-10-m1-workbench, draft PR #23 (https://github.com/daggerm29-oss/8/pull/23). PR #19 (M3) parked, untouched.
 - R1.1–R1.9 complete except R1.8b (Blocked: needs container runtime). R1.9 (18616d4): per-tool egress + `network` approvals (IMPL-ADR-036).
 - CI at e803082 fails only at the R1.4 packaged crash e2e (`crash.spec.ts` "reopened window reattaches"); investigate before marking the PR ready.
-- Next: R1.10 indexer completion (`test/indexer.test.ts test/treesitter.test.ts`), then R1.11. R0.8 still postponed; do not start M2+.
+- R1.10 complete (594dd0d): watcher, `.helixignore`, BLAKE3 (@noble/hashes), Merkle, 20-language tree-sitter. Next: R1.11 structural/graph queries, then R1.12. R0.8 still postponed; do not start M2+.
 
 ## Ideas parking lot (one line each, max 15 — do not implement)
 
