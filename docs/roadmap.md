@@ -214,8 +214,9 @@ Codebase intelligence
 - [x] **R1.11 Structural and graph queries** (FR-9) [§12.2, §11.5] — AST-pattern search tool and a general `graph.query`.
   - Accept [A-local]: `node --test test/structural-search.test.ts test/graph-query.test.ts` → AST pattern `call(fetch, _)` returns exactly the fixture call sites; `graph.query` answers "callers of X", "tests covering F", "files importing M" with expected sets
   - Evidence: `cd packages/engine && node --test test/structural-search.test.ts test/graph-query.test.ts` → 9/9 pass (call(fetch, _) returns exactly the fixture call sites; callers of X, tests covering F/S, files importing M return expected sets); agent tools `structural_search` and `graph_query` registered; commit cf54e9d
-- [ ] **R1.12 Retrieval completion** (F-IDX-4, FR-9, PERF-5) [§11.6] — reranker, graph-neighborhood retriever, dependency expansion, packing; retrieval eval harness (Recall@k, MRR, tokens per recall point) from plan §15.3.
+- [x] **R1.12 Retrieval completion** (F-IDX-4, FR-9, PERF-5) [§11.6] — reranker, graph-neighborhood retriever, dependency expansion, packing; retrieval eval harness (Recall@k, MRR, tokens per recall point) from plan §15.3.
   - Accept [A-local]: `node evals/retrieval-eval.ts --suite fixtures/retrieval/smoke` → harness reports Recall@10, MRR, tokens per recall point; rerank, graph-neighborhood retriever and dependency expansion appear in `why`; smoke suite Recall@10 not lower than without them
+  - Evidence: `node --disable-warning=ExperimentalWarning evals/retrieval-eval.ts --suite fixtures/retrieval/smoke` → RETRIEVAL EVAL: PASS; 12 queries, Recall@10 0.917 → 0.958 (baseline → rerank+graph+expansion), MRR 0.829 → 0.826, tokens per recall point 5.73 → 9.60 (expansion adds context), p95 3.5 ms; `why` contains rerank (7/12 queries, auto on close scores), graph:calls/graph:called-by/graph:imports, expand:type/expand:caller; `npx tsc -p tsconfig.helix.json` → 0 errors; 30 index/graph/retrieval engine tests pass; commit 603dbeb; artifact evals/results/retrieval-eval-smoke.json
 - [ ] **R1.13 Semantic embeddings** (F-IDX-6, FR-9) [§12.3] — a real semantic embedding model (bundled local model, or provider embeddings such as `gemini-embedding-2`) on AST-aligned chunks, lazy prioritization, embedding cost in the ledger. `helix-local-hash-v1` stays only as an offline fallback and is labeled lexical.
   - Accept [A-local]: `node --test test/semantic-embed.test.ts` → with the semantic model, paraphrase queries with no shared identifier words ("make a string lowercase" → `toLower`) rank the target in top 3 for ≥ 8/10 fixture pairs where `helix-local-hash-v1` scores ≤ 3/10; embedding cost appears in the ledger; vectors computed lazily (open files first)
 
@@ -635,7 +636,7 @@ External exit gates (plan §12 M4; not build tasks, never simulated):
 | F-IDX-1 | M1 | Partial | RED | R1.38 | 20 languages, watcher, BLAKE3, Merkle, 300 ms incremental (Evidence: `node --test test/indexer.test.ts test/treesitter.test.ts` → 12/12; commit 594dd0d). Missing: 1M LOC cold-index benchmark (PERF-6), branch-switch survival test |
 | F-IDX-2 | M2 | Partial | RED | R2.1 | SCIP, non-TS LSPs, per-edge confidence, precision benchmark |
 | F-IDX-3 | M2 (import graph M1) | Partial | RED | R2.2 | Most node/edge types, `graph.query`, perf AC |
-| F-IDX-4 | M1 | Partial | RED | R1.12 | Rerank, graph-neighborhood retriever, dependency expansion; Recall@10 (O5) unmeasured |
+| F-IDX-4 | M1 | Partial | RED | R1.12 | M1 part (R1.12): Evidence: `node evals/retrieval-eval.ts --suite fixtures/retrieval/smoke` → Recall@10 0.917 → 0.958, rerank/graph/expansion in `why`; commit 603dbeb. Missing: Recall@10 ≥ 0.70 on held-out PR file sets (O5) unmeasured; no bundled cross-encoder (local reranker is lexical); vectors not semantic (R1.13) |
 | F-IDX-5 | M2 | Partial | RED | R2.3 | Docs, git history (blame, co-change), Django/Rails/Spring, ActiveRecord; no Explorer UI |
 | F-IDX-6 | M1 | Partial | RED | R1.13 | Real semantic model, provider embeddings, lazy prioritization |
 | F-CTX-1 | M1 | Partial (unverified) | NV | R1.15 | Prefix-stability metric not measured (legacy) |
@@ -731,7 +732,7 @@ External exit gates (plan §12 M4; not build tasks, never simulated):
 | PERF-2 | M1 | Partial | RED | R1.1; R1.38; G1.4 | Real Monaco open/edit/save round-trip verified (7a31567), not latency evidence; reference-hardware editor p95 benchmark remains R1.38/G1.4 |
 | PERF-3 | M1 | Not started | NI | R1.38; G1.4 | No benchmark; blocker: No harness |
 | PERF-4 | M1 | Not started | NI | R1.38; G1.4 | No benchmark; blocker: No 1M LOC fixture |
-| PERF-5 | M1 | Not started | NI | R1.12; R1.38; G1.4 | No benchmark; blocker: Brute-force cosine; no fixture |
+| PERF-5 | M1 | Not started | NI | R1.12; R1.38; G1.4 | Smoke-suite p95 3.5 ms (not the benchmark); needs the R1.38 benchmark on reference hardware (G1.4); vectors are brute-force cosine |
 | PERF-6 | M1 | Not started | NI | R1.10; R1.38; G1.4 | No benchmark; blocker: No fixture |
 | PERF-7 | M1 | Partial | RED | R1.38; G1.4 | Watcher exists; 300 ms incremental covered on a 200-file fixture only; no full benchmark |
 | PERF-8 | M1 (import-graph Impact Report; plan §12 M1 exit), M2 (re-met on full graph) | Not started | NI | R1.38; G1.4; R2.2 | No benchmark; blocker: No fixture |
