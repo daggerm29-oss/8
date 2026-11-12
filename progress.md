@@ -15,7 +15,7 @@
 
 > These are **checklist completion** numbers (ticked items with recorded evidence ÷ all items). They are not a measure of product quality or release readiness; human launch gates in `docs/roadmap.md` are not counted.
 
-**Overall checklist completion: 43%** (86/198 roadmap items)  
+**Overall checklist completion: 44%** (87/198 roadmap items)  
 **Current milestone:** M1 MVP, grounded single agent  
 **Next task:** R1.8b Hard disk quota on `local-container` (F-SBX-5) [§16.4]
 
@@ -24,7 +24,7 @@
 | Milestone | Progress | Items | Status |
 | --- | --- | --- | --- |
 | M0 Foundations | ██████████ 96% | 22/23 | Unfinished (execution postponed) |
-| M1 MVP, grounded single agent | █████░░░░░ 52% | 42/81 | In progress |
+| M1 MVP, grounded single agent | █████░░░░░ 53% | 43/81 | In progress |
 | M2 Precision and efficiency | █████░░░░░ 45% | 22/49 | Partly built early |
 | M3 Parallel and background | ░░░░░░░░░░ 0% | 0/20 | Not started |
 | M4 Team and ecosystem | ░░░░░░░░░░ 0% | 0/16 | Not started |
@@ -35,9 +35,9 @@
 ## Current task notes (overwrite when the task changes)
 
 - Branch helix/session-2026-11-10-m1-workbench, draft PR #23 (https://github.com/daggerm29-oss/8/pull/23), kept draft: M1 exit gates are not met. PR #19 (M3) parked, untouched.
-- R1.1–R1.14 complete except R1.8b (Blocked: needs container runtime). CI at e803082 failed only at the R1.4 packaged crash e2e (`crash.spec.ts` "reopened window reattaches"); investigate before marking ready.
-- R1.15 context metrics is [A-live] and needs the HTS-lite suite (R1.39, not built) plus Gemini quota; do R1.16 or R1.17 (A-local) first, or build `evals/context-metrics.ts` and leave R1.15 unticked with a Blocked line.
-- Embeddings: `HELIX_EMBEDDINGS=local|gemini|off` (default off); live test needs `node --env-file=.env.development.local`. Full engine suite: 207 pass, 12 fail, all `local-container`/cgroup tests (environmental, R1.8b).
+- R1.1–R1.14, R1.16, R1.17 complete except R1.8b (Blocked: needs container runtime). CI at e803082 failed only at the R1.4 packaged crash e2e (`crash.spec.ts` "reopened window reattaches"); investigate before marking ready.
+- Next: R1.15 context metrics is [A-live] (needs HTS-lite R1.39 + Gemini quota): build `evals/context-metrics.ts` and leave unticked with a Blocked line, or continue with R1.18+. Plan review and gate-waiver UIs (`plan-review-panel.tsx`, `gate-waiver-panel.tsx`) are typechecked but have no packaged e2e yet.
+- Embeddings: `HELIX_EMBEDDINGS=local|gemini|off` (default off). Run `pnpm install --frozen-lockfile` on a fresh checkout before tests.
 
 ## Ideas parking lot (one line each, max 15 — do not implement)
 
