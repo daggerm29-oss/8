@@ -135,6 +135,7 @@ export const Methods = {
   indexSearch: 'index.search',
   indexSymbols: 'index.symbols',
   indexImpact: 'index.impact',
+  contextExplain: 'context.explain',
   indexStructural: 'index.structural',
   indexGraph: 'index.graph',
   checkpointList: 'checkpoint.list',

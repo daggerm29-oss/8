@@ -6,7 +6,7 @@ export { ToolRegistry, validate, truncate, type Tool, type ToolContext, type Too
 export { builtinTools } from './tools/builtin.ts';
 export { WorkspaceIndex, type SearchHit, type SymbolHit, type IndexStats } from './index/index.ts';
 export { extract, identifierTerms, langOf } from './index/extract.ts';
-export { loadInstructions } from './context/instructions.ts';
+export { explainInstructions, loadInstructions } from './context/instructions.ts';
 export { assembleContext, estimateTokens, type ComposedContext } from './context/assembler.ts';
 export { parseDiagnostics, formatDiagnostics, type Diagnostic } from './diagnostics/parsers.ts';
 export { ModelGateway, BudgetExceededError } from './models/gateway.ts';

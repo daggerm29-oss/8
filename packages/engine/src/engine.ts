@@ -38,6 +38,7 @@ import { PreviewBrowser } from './preview/browser.ts';
 import { elementContext, mapElementToSource, parseLoc } from './preview/locate.ts';
 import { listWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile } from './workspace/files.ts';
 import { gitCommit, gitDiff, gitStageAll, gitStatus } from './workspace/git.ts';
+import { explainInstructions } from './context/instructions.ts';
 import { WorkspaceIndex, type GraphOp } from './index/index.ts';
 import type { Lang } from './index/extract.ts';
 import { parseDiagnostics } from './diagnostics/parsers.ts';
@@ -323,6 +324,7 @@ export class Engine {
       const semantic = this.embedder ? await idx.queryEmbedding(this.embedder, p.query, this.ledger).catch(() => undefined) : undefined;
       return idx.search(p.query, { limit: p.limit, rerank: 'auto', graph: true, expand: true, tokenBudget: 4000, semantic });
     }));
+    peer.handle(Methods.contextExplain, guard<{ workspacePath: string; touchedPaths?: string[] }>((p) => explainInstructions(realpathSync(resolve(p.workspacePath)), { helixHome: this.home, touchedPaths: p.touchedPaths })));
     peer.handle(Methods.indexStructural, guard<{ workspacePath: string; pattern: string; lang?: Lang; path?: string; limit?: number }>((p) => {
       const idx = this.index(p.workspacePath);
       idx.update();

@@ -1,5 +1,5 @@
 import type { WorkspaceIndex } from '../index/index.ts';
-import type { Instructions } from './instructions.ts';
+import { CONFLICT_RULE, type Instructions } from './instructions.ts';
 
 /**
  * Budgeted context assembler v0 (F-CTX-1, §13.1–13.2). Builds the task's static/session block once at
@@ -50,7 +50,7 @@ export function assembleContext(input: AssembleInput): ComposedContext {
     const quota = Math.floor(budget * QUOTAS.instructions) + carry;
     const t = estimateTokens(instr);
     if (instr && t <= quota) {
-      sections.push(`# Project instructions\nFollow these repository instructions; they override general defaults.\n${instr}`);
+      sections.push(`# Project instructions\nFollow these repository instructions; they override general defaults. ${CONFLICT_RULE}\n${instr}`);
       for (const s of input.instructions!.sources) items.push({ kind: 'instructions', ref: s.path, tokens: Math.ceil(s.chars / 4), why: [s.scope] });
       used += t;
       carry = quota - t;
