@@ -23,7 +23,7 @@ import { MODEL_ROLES, assertUsable, loadRoleLayers, refString, resolveRoles, typ
 import { route, type StepType } from '../models/router.ts';
 import { ToolScript, type ReplayAdapter, type SessionBundle } from '../replay/bundle.ts';
 import type { DepGate } from '../policy/depgate.ts';
-import { formatHookRuns, loadHooks, loadSkills, runHooks, skillsContext, type Hook } from './skills.ts';
+import { formatHookRuns, hookFailed, hookSummary, loadHooks, loadSkills, runHooks, skillsContext, type Hook } from './skills.ts';
 import { buildEvidence, reverify, type ReverifyResult, type VerificationEvidence } from '../artifacts/evidence.ts';
 import { StatusCode, type Span, type SpanContext, type Tracer } from '../obs/tracing.ts';
 import { auditIntentOf } from '../events/audit.ts';
@@ -38,6 +38,7 @@ import { prefixedId } from '../util/ids.ts';
 import { globalRedactor } from '../util/redact.ts';
 import { unifiedDiff, type FileDiff } from '../util/diff.ts';
 
+import { gitCommit } from '../workspace/git.ts';
 import { taskActivity } from './activity.ts';
 import { applyPlanEdit, approvedPlanPrompt, type PlanEdit } from './plan-review.ts';
 
@@ -736,6 +737,7 @@ export class TaskRuntime {
           .catch((error: Error) => this.o.logger?.warn('semantic embedding failed', { task: id, error: error.message }));
       }
       await this.baseline(initial, sandbox, signal);
+      await this.sessionStartHooks(initial, sandbox, signal);
       while (!signal.aborted) {
         await this.safePoint(id, signal);
         const t = this.row(id);
@@ -1410,11 +1412,11 @@ export class TaskRuntime {
         span.setAttributes({ 'model.step_id': origin?.step_id, 'model.ledger.entry': origin?.ledger_entry, 'model.cost_usd': origin?.cost_usd ?? undefined });
         const hooks = replayed || !allowed ? [] : this.hooksFor(sandbox.root);
         const pre = await runHooks(sandbox, hooks, 'pre_tool', { tool: call.name, args: call.args }, signal);
-        const blocked = pre.find((r) => r.exitCode !== 0);
-        if (pre.length) this.publish(t.id, t.ws, 'hook.ran', { event: 'pre_tool', tool: call.name, runs: pre.map((r) => ({ run: r.run, exitCode: r.exitCode })) }, 'audit');
+        const blocked = pre.find(hookFailed);
+        if (pre.length) this.publish(t.id, t.ws, 'hook.ran', { event: 'pre_tool', tool: call.name, runs: pre.map(hookSummary) }, 'audit');
         await this.safePoint(t.id, signal);
         let res: ToolOutput = blocked
-          ? { content: `blocked by pre_tool hook \`${blocked.run}\` (exit ${blocked.exitCode})\n${formatHookRuns('pre_tool', pre)}`, isError: true, summary: `hook blocked ${call.name}`, provenance: { source: 'repo', trust: 'untrusted', taint: true, origin: 'hook:pre_tool' } }
+          ? { content: `blocked by pre_tool hook \`${blocked.run}\` (${blocked.denied?.length ? 'denied write' : `exit ${blocked.exitCode}`})\n${formatHookRuns('pre_tool', pre)}`, isError: true, summary: `hook blocked ${call.name}`, provenance: { source: 'repo', trust: 'untrusted', taint: true, origin: 'hook:pre_tool' } }
           : replayed && allowed
           ? replayed
           : allowed
@@ -1435,7 +1437,7 @@ export class TaskRuntime {
         if (!blocked && hooks.length && !signal.aborted) {
           const post = await runHooks(sandbox, hooks, 'post_tool', { tool: call.name, args: call.args }, signal);
           if (post.length) {
-            this.publish(t.id, t.ws, 'hook.ran', { event: 'post_tool', tool: call.name, runs: post.map((r) => ({ run: r.run, exitCode: r.exitCode })) }, 'audit');
+            this.publish(t.id, t.ws, 'hook.ran', { event: 'post_tool', tool: call.name, runs: post.map(hookSummary) }, 'audit');
             res = { ...res, content: `${res.content}\n${formatHookRuns('post_tool', post)}`, provenance: { source: res.provenance?.source ?? 'builtin', trust: 'untrusted', taint: true, origin: 'hook:post_tool' } };
           }
         }
@@ -1469,12 +1471,44 @@ export class TaskRuntime {
     }
   }
 
+  /** `session_start` hooks run once per task session: the marker artifact survives pauses, resumes and Engine restarts. */
+  private async sessionStartHooks(t: TaskRow, sandbox: LocalSandbox, signal: AbortSignal): Promise<void> {
+    if (this.artifacts(t.id, 'hook_output').some((a) => (a.data as { event?: string }).event === 'session_start')) return;
+    const runs = await runHooks(sandbox, this.hooksFor(sandbox.root), 'session_start', {}, signal);
+    if (!runs.length) return;
+    this.saveArtifact(t.id, 'hook_output', 'session_start hooks', { event: 'session_start', runs, provenance: { source: 'repo', trust: 'untrusted', taint: true } });
+    this.publish(t.id, t.ws, 'hook.ran', { event: 'session_start', runs: runs.map(hookSummary) }, 'audit');
+  }
+
+  /**
+   * Commit through the Git panel: `pre_commit` hooks run in a sandbox first and a non-zero exit (or a write outside the hook's
+   * declared permissions) blocks the commit. Host-side git still never runs repository hooks (§20.1).
+   */
+  async commit(root: string, message: string): Promise<{ sha: string; subject: string }> {
+    const hooks = this.hooksFor(root).filter((h) => h.event === 'pre_commit');
+    if (hooks.length) {
+      const ws = this.workspaceFor(root);
+      const sandbox = this.sandboxFor(root, 'hook', { purpose: 'pre_commit' });
+      let runs;
+      try {
+        runs = await runHooks(sandbox, hooks, 'pre_commit', { commitMessage: message });
+      } finally {
+        await sandbox.stopProcesses();
+        sandbox.destroy();
+      }
+      this.o.bus.publish({ topic: 'hook.ran', ws: ws.id, persist: 'audit', data: { event: 'pre_commit', runs: runs.map(hookSummary) } });
+      const blocked = runs.find(hookFailed);
+      if (blocked) throw new Error(`commit blocked by pre_commit hook \`${blocked.run}\` (${blocked.denied?.length ? 'denied write' : `exit ${blocked.exitCode}`})\n${formatHookRuns('pre_commit', runs)}`);
+    }
+    return gitCommit(root, message);
+  }
+
   private async taskDoneHooks(id: string, sandbox: LocalSandbox, signal: AbortSignal): Promise<void> {
     const t = this.row(id);
     const runs = await runHooks(sandbox, this.hooksFor(sandbox.root), 'task_done', { status: t.status }, signal);
     if (!runs.length) return;
     this.saveArtifact(id, 'hook_output', 'task_done hooks', { event: 'task_done', status: t.status, runs, provenance: { source: 'repo', trust: 'untrusted', taint: true } });
-    this.publish(id, t.ws, 'hook.ran', { event: 'task_done', status: t.status, runs: runs.map((r) => ({ run: r.run, exitCode: r.exitCode })) }, 'audit');
+    this.publish(id, t.ws, 'hook.ran', { event: 'task_done', status: t.status, runs: runs.map(hookSummary) }, 'audit');
   }
 
   private checkpoint(t: TaskRow, sandbox: LocalSandbox, abs: string, previous: string | null, checkpointId: string): void {

@@ -38,7 +38,7 @@ import { DevServers } from './preview/devserver.ts';
 import { PreviewBrowser } from './preview/browser.ts';
 import { elementContext, mapElementToSource, parseLoc } from './preview/locate.ts';
 import { listWorkspaceFiles, readWorkspaceFile, writeWorkspaceFile } from './workspace/files.ts';
-import { gitCommit, gitDiff, gitStageAll, gitStatus } from './workspace/git.ts';
+import { gitDiff, gitStageAll, gitStatus } from './workspace/git.ts';
 import { explainInstructions } from './context/instructions.ts';
 import { WorkspaceIndex, type GraphOp } from './index/index.ts';
 import type { Lang } from './index/extract.ts';
@@ -535,7 +535,7 @@ export class Engine {
     peer.handle(Methods.gitStatus, guard<{ workspacePath: string }>((p) => gitStatus(this.knownWorkspace(p.workspacePath))));
     peer.handle(Methods.gitDiff, guard<{ workspacePath: string }>((p) => gitDiff(this.knownWorkspace(p.workspacePath))));
     peer.handle(Methods.gitStageAll, guard<{ workspacePath: string }>((p) => gitStageAll(this.knownWorkspace(p.workspacePath))));
-    peer.handle(Methods.gitCommit, guard<{ workspacePath: string; message: string }>((p) => gitCommit(this.knownWorkspace(p.workspacePath), p.message)));
+    peer.handle(Methods.gitCommit, guard<{ workspacePath: string; message: string }>((p) => this.runtime.commit(this.knownWorkspace(p.workspacePath), p.message)));
 
     const ptys = new Map<string, ReturnType<LocalSandbox['pty']>>();
     peer.onClose(() => { ptys.forEach((p) => p.kill()); ptys.clear(); });
