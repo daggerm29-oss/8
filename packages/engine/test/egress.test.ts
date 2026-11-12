@@ -82,6 +82,7 @@ test('egress: per-tool allowlist — a host allowed for tool A is denied for too
   const home = mkdtempSync(join(tmpdir(), 'helix-home-'));
   const root = realpathSync(ws());
   const engine = new Engine({ home, env: {}, recover: false, mcp: false, indexing: false });
+  engine.runtime.workspaceFor(root);
   const denied: Array<{ host: string; tool?: string; reason: string }> = [];
   const unsub = engine.bus.subscribe('egress.*', (e) => { if (e.topic === 'egress.denied') denied.push(e.data as never); });
   const dir = mkdtempSync(join(tmpdir(), 'helix-pertool-'));
