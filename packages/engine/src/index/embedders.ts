@@ -131,3 +131,14 @@ function normalize(v: Float32Array): Float32Array {
   if (norm > 0) for (let i = 0; i < v.length; i++) v[i] /= norm;
   return v;
 }
+
+/**
+ * `HELIX_EMBEDDINGS`: `local` (bundled-by-pin model), `gemini` (provider embeddings, needs GEMINI_API) or `off`/unset.
+ * Off by default so a model is never downloaded, and no code is sent to a provider, without an explicit choice.
+ */
+export function embedderFromEnv(env: NodeJS.ProcessEnv): Embedder | undefined {
+  const choice = (env.HELIX_EMBEDDINGS ?? 'off').toLowerCase();
+  if (choice === 'local') return localSemanticEmbedder({ cacheDir: env.HELIX_MODEL_CACHE });
+  if (choice === 'gemini' && env.GEMINI_API) return geminiEmbedder({ apiKey: env.GEMINI_API, model: env.HELIX_EMBEDDING_MODEL, dim: env.HELIX_EMBEDDING_DIM ? Number(env.HELIX_EMBEDDING_DIM) : undefined });
+  return undefined;
+}

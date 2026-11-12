@@ -1,4 +1,6 @@
 import type { EnvironmentSnapshot, NetEvent } from '../preview/browser.ts';
+import type { Embedder } from '../index/embedders.ts';
+import type { Ledger } from '../models/ledger.ts';
 import type { Provenance } from '@helix/protocol';
 import type { JsonSchema, ToolSpec } from '@helix/protocol';
 import type { LocalSandbox } from '../sandbox/sandbox.ts';
@@ -9,6 +11,11 @@ export interface ToolContext {
   sandbox: LocalSandbox;
   signal: AbortSignal;
   index?: WorkspaceIndex;
+  /** Semantic embedder for query vectors (F-IDX-6); absent = lexical retrieval only. */
+  embedder?: Embedder;
+  /** Records embedding calls as `embedder` ledger rows. */
+  ledger?: Pick<Ledger, 'record'>;
+  taskId?: string;
   /** Runs a unit of work inside a trace span (§26.1); absent when the caller is not traced. */
   trace?: SpanRunner;
   /** Persist a task artifact (plan, report); returns the artifact id (§5.6). */

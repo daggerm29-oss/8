@@ -1,4 +1,5 @@
 import type { CompactionOptions } from './context/compaction.ts';
+import { embedderFromEnv, type Embedder } from './index/embedders.ts';
 import { mkdirSync, writeFileSync, rmSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -71,6 +72,8 @@ export interface EngineOptions {
   recover?: boolean;
   /** Build the code index and composed context per task (default true). */
   indexing?: boolean;
+  /** Semantic embedder; default from `HELIX_EMBEDDINGS` (local | gemini | off). */
+  embedder?: Embedder;
   /** Connect MCP servers from `$HELIX_HOME/mcp.json` (default true). */
   mcp?: boolean;
   /** Inline MCP server config (overrides mcp.json; tests). */
@@ -169,7 +172,7 @@ export class Engine {
     const tools = builtinTools();
     this.mcp = new McpManager({ home: this.home, registry: tools, logger: this.logger, config: opts.mcpServers, toolSearchThreshold: opts.mcpToolSearchThreshold, egress: this.egress, audit: (topic, data) => this.bus.publish({ topic, ws: 'engine', data, persist: 'audit' }) });
     this.mcpReady = opts.mcp === false ? Promise.resolve([]) : this.mcp.start();
-    this.runtime = new TaskRuntime({ db: this.db, bus: this.bus, gateway: this.gateway, ledger: this.ledger, tools, tracer: this.tracer, engineId: this.id, blobs: this.blobs, logger: this.logger, egress: this.egress, devServers: this.devServers, browser: this.browser, taskRetryScale: opts.taskRetryScale, helixHome: this.home, replay: this.replay, indexing: opts.indexing, compaction: compactionFrom(env, opts.compaction),
+    this.runtime = new TaskRuntime({ db: this.db, bus: this.bus, gateway: this.gateway, ledger: this.ledger, tools, tracer: this.tracer, engineId: this.id, blobs: this.blobs, logger: this.logger, egress: this.egress, devServers: this.devServers, browser: this.browser, taskRetryScale: opts.taskRetryScale, helixHome: this.home, replay: this.replay, indexing: opts.indexing, embedder: opts.embedder ?? embedderFromEnv(env), compaction: compactionFrom(env, opts.compaction),
       depGate: env.HELIX_DEP_GATE === 'off' ? undefined : new DepGate({ osvUrl: env.HELIX_OSV_URL, npmRegistryUrl: env.HELIX_NPM_REGISTRY_URL, pypiUrl: env.HELIX_PYPI_URL }) });
 
     const now = new Date().toISOString();

@@ -16,6 +16,7 @@ import { json, parseJson } from '../storage/db.ts';
 import type { BlobStore } from '../storage/blobs.ts';
 import type { EventBus } from '../events/bus.ts';
 import type { GatewayCall, GatewayResult, ModelGateway } from '../models/gateway.ts';
+import type { Embedder } from '../index/embedders.ts';
 import type { Ledger, ModelRole } from '../models/ledger.ts';
 import { MODEL_ROLES, assertUsable, loadRoleLayers, refString, resolveRoles, type ModelRef, type ResolvedRoles, type RolesInput } from '../models/roles.ts';
 import { route, type StepType } from '../models/router.ts';
@@ -78,6 +79,8 @@ export interface RuntimeOptions {
   helixHome?: string;
   /** Build the code index + composed context at task start (default true). */
   indexing?: boolean;
+  /** Semantic embedder (F-IDX-6): chunks embed lazily in the background, queries embed in `code_search`. */
+  embedder?: Embedder;
   contextBudgetTokens?: number;
   /** Transcript compaction (F-CTX-2, §13.4). */
   compaction?: CompactionOptions;
@@ -717,6 +720,11 @@ export class TaskRuntime {
     const index = this.o.indexing === false ? undefined : new WorkspaceIndex(this.o.db, initial.ws, root);
     try {
       const context = this.composeContext(initial, root, index);
+      if (index && this.o.embedder) {
+        void index.embedPending(this.o.embedder, { ledger: this.o.ledger, task: id })
+          .then((run) => { if (run.error) this.o.logger?.warn('semantic embedding stopped; retrieval continues without vectors', { task: id, error: run.error }); })
+          .catch((error: Error) => this.o.logger?.warn('semantic embedding failed', { task: id, error: error.message }));
+      }
       await this.baseline(initial, sandbox, signal);
       while (!signal.aborted) {
         await this.safePoint(id, signal);
@@ -1125,7 +1133,7 @@ export class TaskRuntime {
           const started = performance.now();
           const allowed = EXPLORE_TOOLS.includes(call.name);
           const out = allowed
-            ? await this.o.tools.run(call.name, call.args, { sandbox, signal, index })
+            ? await this.o.tools.run(call.name, call.args, { sandbox, signal, index, embedder: this.o.embedder, ledger: this.o.ledger, taskId: t.id })
             : { content: `tool '${call.name}' is not available to the read-only explore subagent`, isError: true };
           this.o.db.run('UPDATE tool_calls SET status = ?, summary = ?, duration_ms = ? WHERE id = ?', signal.aborted ? 'cancelled' : !allowed ? 'denied' : out.isError ? 'error' : 'ok', globalRedactor.redact(out.content.slice(0, 300)), Math.round(performance.now() - started), id);
           this.emitActivity(t.id);
@@ -1233,7 +1241,7 @@ export class TaskRuntime {
           ? replayed
           : allowed
           ? await this.o.tools.run(call.name, call.args, {
-              sandbox, signal, index,
+              sandbox, signal, index, embedder: this.o.embedder, ledger: this.o.ledger, taskId: t.id,
               trace: (name, attrs, fn) => this.o.tracer.withSpan(name, attrs, fn),
               startDevServer: this.o.devServers ? () => this.o.devServers!.start(sandbox.root) : undefined,
               previewBrowser: this.previewBrowserFor(sandbox.root),

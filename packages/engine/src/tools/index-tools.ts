@@ -45,7 +45,9 @@ export const codeSearch: Tool = {
   async run(args, ctx) {
     const { index } = ctx;
     if (!index) return { content: 'code index unavailable for this task; use search', isError: true };
-    const hits = await retrieve(ctx, 'hybrid', String(args.query), () => { index.update(); return index.search(String(args.query), { limit: Number(args.limit ?? 6), pathPrefix: args.path ? String(args.path) : undefined, rerank: 'auto', graph: true, expand: true, tokenBudget: 4000 }); }, (h) => h.length);
+    const query = String(args.query);
+    const semantic = ctx.embedder ? await index.queryEmbedding(ctx.embedder, query, ctx.ledger, { task: ctx.taskId }).catch(() => undefined) : undefined;
+    const hits = await retrieve(ctx, 'hybrid', query, () => { index.update(); return index.search(query, { limit: Number(args.limit ?? 6), pathPrefix: args.path ? String(args.path) : undefined, rerank: 'auto', graph: true, expand: true, tokenBudget: 4000, semantic }); }, (h) => h.length);
     if (!hits.length) return { content: 'no results', summary: `code_search: 0` };
     return {
       content: hits.map((h) => `## ${h.path}:${h.startLine}-${h.endLine}${h.symbol ? ` (${h.symbol})` : ''} [${h.why.join('+')}]\n${h.preview}`).join('\n\n'),
